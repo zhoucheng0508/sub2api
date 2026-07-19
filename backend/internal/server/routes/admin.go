@@ -63,8 +63,10 @@ func RegisterAdminRoutes(
 		// 优惠码管理
 		registerPromoCodeRoutes(admin, h)
 
-		// 系统设置
+		// 系统设置与文档
 		registerSettingsRoutes(admin, h)
+		admin.GET("/docs", h.Admin.Setting.GetDocs)
+		admin.PUT("/docs", h.Admin.Setting.UpdateDocs)
 
 		// 数据管理
 		registerDataManagementRoutes(admin, h, stepUpAuth)

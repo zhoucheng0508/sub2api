@@ -9,11 +9,17 @@
 
   html {
     @apply scroll-smooth antialiased;
+    background-color: #fcf9f4;
   }
 
   body {
     @apply bg-gray-50 text-gray-900 dark:bg-dark-950 dark:text-gray-100;
     @apply min-h-screen;
+    background-color: #fcf9f4;
+  }
+
+  html.dark {
+    background-color: #15100d;
   }
 
   /* 自定义滚动条 - 仅针对 Firefox，避免 Chrome 取消 webkit 的全局定制 */

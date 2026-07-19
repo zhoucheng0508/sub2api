@@ -4,8 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -78,6 +81,45 @@ func NewSettingHandler(settingService *service.SettingService, emailService *ser
 // the constructor signature used by existing unit tests.
 func (h *SettingHandler) SetNotificationEmailService(notificationEmailService *service.NotificationEmailService) {
 	h.notificationEmailService = notificationEmailService
+}
+
+func (h *SettingHandler) GetDocs(c *gin.Context) {
+	docs, err := h.settingService.GetDocs(c.Request.Context(), false)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, docs)
+}
+
+func (h *SettingHandler) UpdateDocs(c *gin.Context) {
+	if c.Request.ContentLength > service.MaxDocsRequestBytes {
+		response.Error(c, http.StatusRequestEntityTooLarge, "Request body is too large")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, service.MaxDocsRequestBytes)
+	var docs []service.DocArticle
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&docs); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			response.Error(c, http.StatusRequestEntityTooLarge, "Request body is too large")
+			return
+		}
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		response.BadRequest(c, "Invalid request: request body must contain one JSON array")
+		return
+	}
+	saved, err := h.settingService.SaveDocs(c.Request.Context(), docs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, saved)
 }
 
 // GetSettings 获取所有系统设置

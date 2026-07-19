@@ -213,6 +213,9 @@ func RegisterAuthRoutes(
 		)
 	}
 
+	// 公开文档（无需认证）
+	v1.GET("/docs", h.Setting.GetDocs)
+
 	// 公开设置（无需认证）
 	settings := v1.Group("/settings")
 	{
