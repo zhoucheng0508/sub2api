@@ -21,6 +21,32 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and resolve version
+        id: release
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^custom-v([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)$ ]]; then
+            echo "Invalid custom image tag: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          VERSION="${BASH_REMATCH[1]}"
+          FILE_VERSION="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
+          if [[ "${VERSION}" != "${FILE_VERSION}" ]]; then
+            echo "Tag version ${VERSION} does not match backend version ${FILE_VERSION}"
+            exit 1
+          fi
+
+          git fetch origin custom --no-tags
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/custom; then
+            echo "Tagged commit is not part of the custom branch"
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -41,7 +67,7 @@ jobs:
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ steps.release.outputs.version }}
             COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
