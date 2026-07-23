@@ -4,7 +4,7 @@
       <nav class="site-nav" aria-label="价格页导航">
         <router-link to="/home" class="brand" aria-label="返回 Vote AI 首页">
           <span class="brand-logo">
-            <img :src="siteLogo || '/logo.png'" alt="" />
+            <img :src="siteLogo || '/logo.svg'" alt="" />
           </span>
           <span>Vote AI</span>
         </router-link>

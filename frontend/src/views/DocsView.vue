@@ -2,7 +2,7 @@
   <div class="docs-page" :class="{ 'theme-dark': isDark }">
     <header class="site-header">
       <nav class="site-nav" aria-label="文档页导航">
-        <router-link to="/home" class="brand"><span class="brand-logo"><img :src="siteLogo || '/logo.png'" alt="" /></span><span>Vote AI</span></router-link>
+        <router-link to="/home" class="brand"><span class="brand-logo"><img :src="siteLogo || '/logo.svg'" alt="" /></span><span>Vote AI</span></router-link>
         <div class="nav-links">
           <router-link to="/home">{{ copy.nav.home }}</router-link>
           <router-link to="/pricing">{{ copy.nav.pricing }}</router-link>
@@ -215,8 +215,16 @@ async function moveDoc(id: string, direction: number) {
 }
 
 watch([() => route.params.slug, visibleDocs], syncRoute, { immediate: true })
-watch(isAdmin, admin => { if (!saving.value) loadDocs(admin) })
-onMounted(() => { loadDocs(false); authStore.checkAuth(); const saved = localStorage.getItem('theme'); if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) { isDark.value = true; document.documentElement.classList.add('dark') }; if (!appStore.publicSettingsLoaded) appStore.fetchPublicSettings() })
+watch(isAdmin, admin => { if (!saving.value) loadDocs(admin) }, { immediate: true })
+onMounted(() => {
+  authStore.checkAuth()
+  const saved = localStorage.getItem('theme')
+  if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    isDark.value = true
+    document.documentElement.classList.add('dark')
+  }
+  if (!appStore.publicSettingsLoaded) appStore.fetchPublicSettings()
+})
 </script>
 
 <style scoped>
