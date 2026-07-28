@@ -21,9 +21,21 @@ vi.mock('@/stores/auth', () => ({
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    fetchPublicSettings: fetchPublicSettingsMock
+    fetchPublicSettings: fetchPublicSettingsMock,
+    showError: vi.fn()
   })
 }))
+
+vi.mock('@/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api')>()
+  return {
+    ...actual,
+    passkeyAPI: {
+      isSupported: () => false,
+      list: vi.fn().mockResolvedValue([])
+    }
+  }
+})
 
 vi.mock('@/utils/format', () => ({
   formatDate: () => 'April 2026'
