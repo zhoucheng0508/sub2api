@@ -4,7 +4,7 @@
       <nav class="site-nav" aria-label="首页导航">
         <a href="#home" class="brand" aria-label="返回 Vote AI 首页">
           <span class="brand-logo">
-            <img :src="VOTE_AI_LOGO_URL" alt="" />
+            <img :src="siteLogo || VOTE_AI_LOGO_URL" alt="" />
           </span>
           <span class="brand-name">Vote AI</span>
         </a>

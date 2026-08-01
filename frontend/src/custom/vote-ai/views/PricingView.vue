@@ -4,7 +4,7 @@
       <nav class="site-nav" aria-label="价格页导航">
         <router-link to="/home" class="brand" aria-label="返回 Vote AI 首页">
           <span class="brand-logo">
-            <img :src="VOTE_AI_LOGO_URL" alt="" />
+            <img :src="siteLogo || VOTE_AI_LOGO_URL" alt="" />
           </span>
           <span>Vote AI</span>
         </router-link>
@@ -181,6 +181,7 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { VOTE_AI_LOGO_URL } from '../branding'
+import { sanitizeUrl } from '@/utils/url'
 import {
   pricingFamilies as families,
   pricingGroups as groups,
@@ -197,6 +198,7 @@ const copiedModel = ref('')
 const mobileMenuOpen = ref(false)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 
+const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const dashboardPath = computed(() => authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
 const currentYear = computed(() => new Date().getFullYear())

@@ -23,10 +23,10 @@ vi.mock('../components/InteractiveGlobe.vue', () => ({
   default: { template: '<div data-testid="interactive-globe" />' }
 }))
 
-function mountHome() {
+function mountHome(siteLogo = '/configured-logo.png') {
   return mount(VoteAiHome, {
     props: {
-      siteLogo: '/logo.svg',
+      siteLogo,
       siteSubtitle: 'Test subtitle',
       isDark: false,
       isAuthenticated: false,
@@ -55,6 +55,11 @@ describe('VoteAiHome', () => {
     expect(wrapper.get('[data-testid="interactive-globe"]').exists()).toBe(true)
     expect(destinations).toContain('/pricing')
     expect(destinations).toContain('/docs')
+  })
+
+  it('prefers the configured site logo and falls back to the Vote AI default', () => {
+    expect(mountHome().get('.brand-logo img').attributes('src')).toBe('/configured-logo.png')
+    expect(mountHome('').get('.brand-logo img').attributes('src')).toBe('/vote-ai-logo.png')
   })
 
   it('delegates theme changes to the official HomeView shell', async () => {

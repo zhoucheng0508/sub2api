@@ -2,7 +2,7 @@
   <div class="docs-page" :class="{ 'theme-dark': isDark }">
     <header class="site-header">
       <nav class="site-nav" aria-label="文档页导航">
-        <router-link to="/home" class="brand"><span class="brand-logo"><img :src="VOTE_AI_LOGO_URL" alt="" /></span><span>Vote AI</span></router-link>
+        <router-link to="/home" class="brand"><span class="brand-logo"><img :src="siteLogo || VOTE_AI_LOGO_URL" alt="" /></span><span>Vote AI</span></router-link>
         <div class="nav-links">
           <router-link to="/home">{{ copy.nav.home }}</router-link>
           <router-link to="/pricing">{{ copy.nav.pricing }}</router-link>
@@ -84,6 +84,7 @@ import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
 import MarkdownContent from '../components/MarkdownContent.vue'
 import { VOTE_AI_LOGO_URL } from '../branding'
+import { sanitizeUrl } from '@/utils/url'
 
 type LocalizedText = { zh: string; en: string }
 interface DocArticle { id: string; slug: string; published: boolean; title: LocalizedText; content: LocalizedText }
@@ -114,6 +115,7 @@ const copy = computed(() => locale.value.startsWith('zh') ? zhCopy : enCopy)
 const isAdmin = computed(() => authStore.isAuthenticated && authStore.isAdmin)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const dashboardPath = computed(() => authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const visibleDocs = computed(() => isAdmin.value ? docs.value : docs.value.filter(doc => doc.published))
 const activeDoc = computed(() => visibleDocs.value.find(doc => doc.slug === route.params.slug) || visibleDocs.value[0])
 

@@ -9,7 +9,7 @@ import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
 import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminComplianceStore, useAdminSettingsStore } from '@/stores'
 import { getSetupStatus } from '@/api/setup'
 import { updateFavicon } from '@/utils/branding'
-import { VOTE_AI_LOGO_URL, isVoteAiPublicPath } from '@/custom/vote-ai/branding'
+import { VOTE_AI_LOGO_URL } from '@/custom/vote-ai/branding'
 
 const router = useRouter()
 const route = useRoute()
@@ -28,11 +28,11 @@ function updateDocumentTitle() {
   document.title = resolveRouteDocumentTitle(route, appStore.siteName, customMenuItems)
 }
 
-// CUSTOM(VOTE-AI-BRANDING): branded public routes use the isolated Vote AI icon.
+// CUSTOM(VOTE-AI-BRANDING): prefer the admin-configured logo and keep Vote AI as the default.
 watch(
-  [() => route.path, () => appStore.siteLogo],
-  ([path, siteLogo]) => {
-    updateFavicon(isVoteAiPublicPath(path) ? VOTE_AI_LOGO_URL : (siteLogo || VOTE_AI_LOGO_URL))
+  () => appStore.siteLogo,
+  (siteLogo) => {
+    updateFavicon(siteLogo || VOTE_AI_LOGO_URL)
   },
   { immediate: true }
 )

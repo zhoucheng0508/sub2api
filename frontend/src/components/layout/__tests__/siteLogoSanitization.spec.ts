@@ -33,9 +33,10 @@ describe('site_logo sanitization', () => {
     expect(docsViewSource).not.toContain('loadDocs(false)')
   })
 
-  it('DocsView uses the isolated Vote AI brand asset', () => {
+  it('DocsView prefers the configured logo and falls back to the Vote AI asset', () => {
     expect(docsViewSource).toContain("import { VOTE_AI_LOGO_URL } from '../branding'")
-    expect(docsViewSource).toContain(':src="VOTE_AI_LOGO_URL"')
+    expect(docsViewSource).toContain('sanitizeUrl(appStore.cachedPublicSettings?.site_logo || appStore.siteLogo')
+    expect(docsViewSource).toContain(':src="siteLogo || VOTE_AI_LOGO_URL"')
   })
 
   it('KeyUsageView applies sanitizeUrl to siteLogo', () => {
@@ -43,7 +44,7 @@ describe('site_logo sanitization', () => {
   })
 
   it('configurable official page logos pass allowRelative and allowDataUrl options', () => {
-    for (const src of [sidebarSource, homeViewSource, keyUsageViewSource]) {
+    for (const src of [sidebarSource, homeViewSource, docsViewSource, keyUsageViewSource]) {
       expect(src).toContain('allowRelative: true')
       expect(src).toContain('allowDataUrl: true')
     }
