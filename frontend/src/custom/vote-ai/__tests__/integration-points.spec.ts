@@ -9,6 +9,7 @@ const frontendRoot = resolve(dir, '../../../..')
 const homeSource = readFileSync(resolve(frontendRoot, 'src/views/HomeView.vue'), 'utf8')
 const routerSource = readFileSync(resolve(frontendRoot, 'src/router/index.ts'), 'utf8')
 const tailwindSource = readFileSync(resolve(frontendRoot, 'tailwind.config.js'), 'utf8')
+const appSource = readFileSync(resolve(frontendRoot, 'src/App.vue'), 'utf8')
 
 describe('Vote AI upstream integration points', () => {
   it('keeps the isolated branded homepage attached to the official shell', () => {
@@ -25,5 +26,10 @@ describe('Vote AI upstream integration points', () => {
 
   it('keeps the branded theme marker searchable', () => {
     expect(tailwindSource).toContain('CUSTOM(VOTE-AI-THEME)')
+  })
+
+  it('keeps the public-route favicon integration searchable', () => {
+    expect(appSource).toContain('CUSTOM(VOTE-AI-BRANDING)')
+    expect(appSource).toContain("@/custom/vote-ai/branding")
   })
 })

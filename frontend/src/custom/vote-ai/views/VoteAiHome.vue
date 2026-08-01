@@ -4,7 +4,7 @@
       <nav class="site-nav" aria-label="首页导航">
         <a href="#home" class="brand" aria-label="返回 Vote AI 首页">
           <span class="brand-logo">
-            <img :src="siteLogo || '/logo.svg'" alt="" />
+            <img :src="VOTE_AI_LOGO_URL" alt="" />
           </span>
           <span class="brand-name">Vote AI</span>
         </a>
@@ -187,6 +187,7 @@ import { useRouter } from 'vue-router'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import InteractiveGlobe from '../components/InteractiveGlobe.vue'
+import { VOTE_AI_LOGO_URL } from '../branding'
 
 defineProps<{
   siteLogo: string

@@ -7,6 +7,7 @@ This directory owns the Vote AI-specific public frontend. Official Sub2API files
 - `CUSTOM(VOTE-AI-DOCS)`
 - `CUSTOM(VOTE-AI-THEME)`
 - `CUSTOM(VOTE-AI-BUILD)`
+- `CUSTOM(VOTE-AI-BRANDING)`
 
 Owned code:
 
@@ -17,6 +18,7 @@ Owned code:
 - `components/MarkdownContent.vue`: sanitized documentation renderer;
 - `api/docs.ts`: managed-document API client;
 - `pricing-data.ts`: static model prices and group multipliers;
+- `branding.ts`: shared logo path and branded-route detection;
 - `__tests__/`: focused customization tests.
 
 Official integration points:
