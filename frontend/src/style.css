@@ -9,6 +9,7 @@
 
   html {
     @apply scroll-smooth antialiased;
+    /* CUSTOM(VOTE-AI-THEME): branded public-page base surface. */
     background-color: #fcf9f4;
   }
 

@@ -1,0 +1,29 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { describe, expect, it } from 'vitest'
+
+const dir = dirname(fileURLToPath(import.meta.url))
+const frontendRoot = resolve(dir, '../../../..')
+const homeSource = readFileSync(resolve(frontendRoot, 'src/views/HomeView.vue'), 'utf8')
+const routerSource = readFileSync(resolve(frontendRoot, 'src/router/index.ts'), 'utf8')
+const tailwindSource = readFileSync(resolve(frontendRoot, 'tailwind.config.js'), 'utf8')
+
+describe('Vote AI upstream integration points', () => {
+  it('keeps the isolated branded homepage attached to the official shell', () => {
+    expect(homeSource).toContain('CUSTOM(VOTE-AI-HOME)')
+    expect(homeSource).toContain("@/custom/vote-ai/views/VoteAiHome.vue")
+  })
+
+  it('keeps pricing and documentation on isolated route components', () => {
+    expect(routerSource).toContain('CUSTOM(VOTE-AI-PRICING)')
+    expect(routerSource).toContain("@/custom/vote-ai/views/PricingView.vue")
+    expect(routerSource).toContain('CUSTOM(VOTE-AI-DOCS)')
+    expect(routerSource).toContain("@/custom/vote-ai/views/DocsView.vue")
+  })
+
+  it('keeps the branded theme marker searchable', () => {
+    expect(tailwindSource).toContain('CUSTOM(VOTE-AI-THEME)')
+  })
+})

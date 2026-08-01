@@ -181,18 +181,12 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
-
-type FamilyId = 'codex'
-type GroupId = 'special' | 'plus' | 'pro'
-type PriceColumn = 'input' | 'output' | 'cacheRead'
-type PriceModel = { id: string } & Partial<Record<PriceColumn, number>>
-interface PricingFamily {
-  id: FamilyId
-  name: string
-  mark: string
-  columns: PriceColumn[]
-  models: PriceModel[]
-}
+import {
+  pricingFamilies as families,
+  pricingGroups as groups,
+  type FamilyId,
+  type GroupId
+} from '../pricing-data'
 
 const { locale } = useI18n()
 const authStore = useAuthStore()
@@ -207,36 +201,6 @@ const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const dashboardPath = computed(() => authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
 const currentYear = computed(() => new Date().getFullYear())
-
-const families: PricingFamily[] = [
-  {
-    id: 'codex',
-    name: 'Codex',
-    mark: '◎',
-    columns: ['input', 'output', 'cacheRead'],
-    models: [
-      { id: 'gpt-5.6-sol', input: 5, output: 30, cacheRead: 0.5 },
-      { id: 'gpt-5.6-terra', input: 2.5, output: 15, cacheRead: 0.25 },
-      { id: 'gpt-5.6-luna', input: 1, output: 6, cacheRead: 0.1 },
-      { id: 'gpt-5.5', input: 5, output: 30, cacheRead: 0.5 },
-      { id: 'gpt-5.4', input: 2.5, output: 15, cacheRead: 0.25 },
-      { id: 'gpt-5.4-mini', input: 0.75, output: 4.5, cacheRead: 0.075 }
-    ]
-  }
-]
-
-const groups = {
-  zh: [
-    { id: 'special' as GroupId, name: '特惠', multiplier: 0.05, badge: '0.5 折', summary: '官方 API 价格 × 0.05', description: '特惠分组，按官方 API 价格的 5% 计算。' },
-    { id: 'plus' as GroupId, name: 'Plus', multiplier: 0.12, badge: '1.2 折', summary: '官方 API 价格 × 0.12', description: 'Plus 分组，按官方 API 价格的 12% 计算。' },
-    { id: 'pro' as GroupId, name: 'Pro', multiplier: 0.2, badge: '2 折', summary: '官方 API 价格 × 0.2', description: 'Pro 分组，按官方 API 价格的 20% 计算。' }
-  ],
-  en: [
-    { id: 'special' as GroupId, name: 'Special', multiplier: 0.05, badge: '5%', summary: 'Official API price × 0.05', description: 'Special group pricing is calculated at 5% of the official API price.' },
-    { id: 'plus' as GroupId, name: 'Plus', multiplier: 0.12, badge: '12%', summary: 'Official API price × 0.12', description: 'Plus group pricing is calculated at 12% of the official API price.' },
-    { id: 'pro' as GroupId, name: 'Pro', multiplier: 0.2, badge: '20%', summary: 'Official API price × 0.2', description: 'Pro group pricing is calculated at 20% of the official API price.' }
-  ]
-}
 
 const zhCopy = {
   nav: { home: '首页', pricing: '模型价格', docs: '接入文档', docsPending: '文档入口即将开放', faq: '常见问题' },

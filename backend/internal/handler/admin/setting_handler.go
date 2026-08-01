@@ -94,6 +94,7 @@ func (h *SettingHandler) SetStepUpDeps(totpService *service.TotpService, userSer
 	h.userService = userService
 }
 
+// CUSTOM(VOTE-AI-DOCS): return drafts and published documents to administrators.
 func (h *SettingHandler) GetDocs(c *gin.Context) {
 	docs, err := h.settingService.GetDocs(c.Request.Context(), false)
 	if err != nil {
@@ -103,6 +104,7 @@ func (h *SettingHandler) GetDocs(c *gin.Context) {
 	response.Success(c, docs)
 }
 
+// CUSTOM(VOTE-AI-DOCS): validate and persist the complete managed document set.
 func (h *SettingHandler) UpdateDocs(c *gin.Context) {
 	if c.Request.ContentLength > service.MaxDocsRequestBytes {
 		response.Error(c, http.StatusRequestEntityTooLarge, "Request body is too large")

@@ -66,8 +66,9 @@ func RegisterAdminRoutes(
 		// 优惠码管理
 		registerPromoCodeRoutes(admin, h)
 
-		// 系统设置与文档
+		// 系统设置
 		registerSettingsRoutes(admin, h)
+		// CUSTOM(VOTE-AI-DOCS): administrator-managed documentation endpoints.
 		admin.GET("/docs", h.Admin.Setting.GetDocs)
 		admin.PUT("/docs", h.Admin.Setting.UpdateDocs)
 

@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { apiClient } from '@/api/client'
 
 export type LocalizedDocText = { zh: string; en: string }
 

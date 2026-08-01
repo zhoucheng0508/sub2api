@@ -40,18 +40,20 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    // CUSTOM(VOTE-AI-PRICING): isolated static public pricing page.
     path: '/pricing',
     name: 'Pricing',
-    component: () => import('@/views/PricingView.vue'),
+    component: () => import('@/custom/vote-ai/views/PricingView.vue'),
     meta: {
       requiresAuth: false,
       title: 'Model Pricing'
     }
   },
   {
+    // CUSTOM(VOTE-AI-DOCS): isolated managed public documentation page.
     path: '/docs/:slug?',
     name: 'Docs',
-    component: () => import('@/views/DocsView.vue'),
+    component: () => import('@/custom/vote-ai/views/DocsView.vue'),
     meta: {
       requiresAuth: false,
       title: 'Documentation'

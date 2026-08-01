@@ -80,6 +80,7 @@ git diff --name-status upstream/main..HEAD
 主要文件：
 
 - `frontend/src/views/HomeView.vue`
+- `frontend/src/custom/vote-ai/views/VoteAiHome.vue`
 - `frontend/src/views/__tests__/HomeView.compact.spec.ts`
 
 ### 5.2 默认首页新增内容
@@ -112,7 +113,7 @@ Vote AI 默认首页包含：
 
 相关文件：
 
-- `frontend/src/components/home/InteractiveGlobe.vue`
+- `frontend/src/custom/vote-ai/components/InteractiveGlobe.vue`
 - `frontend/package.json`
 - `frontend/pnpm-lock.yaml`
 
@@ -136,7 +137,8 @@ Vote AI 默认首页包含：
 
 主要文件：
 
-- `frontend/src/views/PricingView.vue`
+- `frontend/src/custom/vote-ai/views/PricingView.vue`
+- `frontend/src/custom/vote-ai/pricing-data.ts`
 - `frontend/src/router/index.ts`
 
 ### 6.1 页面能力
@@ -176,7 +178,7 @@ Vote AI 默认首页包含：
 页面分组价格 = 前端内置的官方展示价 × 分组倍率
 ```
 
-重要限制：这个页面目前是静态展示页，没有读取后台渠道定价、用户分组、密钥倍率或实际账单。最终扣费仍以控制台和后端计费记录为准。模型价格或倍率发生变化时，需要修改 `PricingView.vue` 并重新构建前端。
+重要限制：这个页面目前是静态展示页，没有读取后台渠道定价、用户分组、密钥倍率或实际账单。最终扣费仍以控制台和后端计费记录为准。模型价格或倍率发生变化时，需要修改 `frontend/src/custom/vote-ai/pricing-data.ts` 并重新构建前端。
 
 ## 7. 站内文档系统
 
@@ -209,9 +211,9 @@ Vote AI 默认首页包含：
 
 主要前端文件：
 
-- `frontend/src/api/docs.ts`
-- `frontend/src/views/DocsView.vue`
-- `frontend/src/components/docs/MarkdownContent.vue`
+- `frontend/src/custom/vote-ai/api/docs.ts`
+- `frontend/src/custom/vote-ai/views/DocsView.vue`
+- `frontend/src/custom/vote-ai/components/MarkdownContent.vue`
 
 ### 7.2 数据存储
 
@@ -360,11 +362,13 @@ Markdown -> marked 生成 HTML -> DOMPurify 清理 -> 页面展示
 ### 11.3 前端公开站点
 
 - `frontend/src/views/HomeView.vue`
-- `frontend/src/views/PricingView.vue`
-- `frontend/src/views/DocsView.vue`
-- `frontend/src/components/home/InteractiveGlobe.vue`
-- `frontend/src/components/docs/MarkdownContent.vue`
-- `frontend/src/api/docs.ts`
+- `frontend/src/custom/vote-ai/views/VoteAiHome.vue`
+- `frontend/src/custom/vote-ai/views/PricingView.vue`
+- `frontend/src/custom/vote-ai/views/DocsView.vue`
+- `frontend/src/custom/vote-ai/components/InteractiveGlobe.vue`
+- `frontend/src/custom/vote-ai/components/MarkdownContent.vue`
+- `frontend/src/custom/vote-ai/api/docs.ts`
+- `frontend/src/custom/vote-ai/pricing-data.ts`
 - `frontend/src/router/index.ts`
 
 ### 11.4 前端主题和构建
@@ -420,12 +424,14 @@ Markdown -> marked 生成 HTML -> DOMPurify 清理 -> 页面展示
 
 后续同步官方版本时，以下文件最容易产生冲突：
 
-1. `frontend/src/views/HomeView.vue`：官方首页与 Vote AI 首页在同一文件；
+1. `frontend/src/views/HomeView.vue`：现在只保留官方首页优先级判断和 Vote AI 组件接入，是首页同步时的薄接入层；
 2. `frontend/src/router/index.ts`：官方持续新增或调整路由；
 3. `frontend/tailwind.config.js`：二开覆盖全局颜色；
 4. `backend/internal/handler/admin/setting_handler.go`：官方设置功能较多；
 5. `backend/internal/server/routes/admin.go` 和 `auth.go`：官方路由经常变化；
 6. `frontend/package.json` 和 `pnpm-lock.yaml`：官方依赖升级时可能冲突。
+
+Vote AI 页面、组件、接口封装和静态价格数据已集中在 `frontend/src/custom/vote-ai/`。后续同步时，应优先检查带 `CUSTOM(VOTE-AI-*)` 标记的官方文件接入位置，而不是重新比较整份二开页面实现。
 
 ### 13.2 硬编码品牌
 
@@ -477,7 +483,7 @@ Vote AI 默认首页、价格页和文档页直接显示 `Vote AI`。后台修�
 7. 保留 `/pricing`、`/docs/:slug?` 和文档后端接口；
 8. 确认首页文档入口仍指向站内 `/docs`；
 9. 检查价格模型及倍率是否仍有效；
-10. 执行前端 lint、类型检查、生产构建和完整测试；
+10. 先执行 `pnpm test:custom`，再执行前端 lint、类型检查、生产构建和完整测试；
 11. 执行后端核心测试；
 12. 构建 Docker 镜像并使用备份数据进行本地验证；
 13. 浏览器验证公开页、移动端和管理后台；
@@ -497,7 +503,20 @@ git diff --name-status upstream/main..HEAD
 只查看二开公开站点差异：
 
 ```powershell
-git diff upstream/main..HEAD -- frontend/src/views frontend/src/components/home frontend/src/components/docs frontend/src/api/docs.ts
+git diff upstream/main..HEAD -- frontend/src/custom/vote-ai frontend/src/views/HomeView.vue frontend/src/router/index.ts
+```
+
+定位官方文件中的二开接入点：
+
+```powershell
+rg "CUSTOM\(VOTE-AI" frontend backend
+```
+
+执行二开专项测试：
+
+```powershell
+cd frontend
+pnpm test:custom
 ```
 
 只查看二开后端文档接口差异：

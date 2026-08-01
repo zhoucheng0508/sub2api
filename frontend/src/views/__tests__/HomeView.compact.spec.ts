@@ -26,8 +26,12 @@ vi.mock('@/stores', () => ({
   useAuthStore: () => authStore,
 }))
 
-vi.mock('@/components/home/InteractiveGlobe.vue', () => ({
+vi.mock('@/custom/vote-ai/components/InteractiveGlobe.vue', () => ({
   default: { template: '<div data-testid="interactive-globe" />' },
+}))
+
+vi.mock('@/custom/vote-ai/views/VoteAiHome.vue', () => ({
+  default: { template: '<div class="home-page"><span class="brand-name">Vote AI</span></div>' },
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => {

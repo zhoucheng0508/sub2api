@@ -12,6 +12,7 @@
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:custom": "vitest run src/custom/vote-ai src/views/__tests__/HomeView.compact.spec.ts src/components/layout/__tests__/docUrlSanitization.spec.ts src/components/layout/__tests__/siteLogoSanitization.spec.ts",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
