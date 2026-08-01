@@ -32,7 +32,7 @@ function updateDocumentTitle() {
 watch(
   [() => route.path, () => appStore.siteLogo],
   ([path, siteLogo]) => {
-    updateFavicon(isVoteAiPublicPath(path) ? VOTE_AI_LOGO_URL : (siteLogo || '/logo.svg'))
+    updateFavicon(isVoteAiPublicPath(path) ? VOTE_AI_LOGO_URL : (siteLogo || VOTE_AI_LOGO_URL))
   },
   { immediate: true }
 )

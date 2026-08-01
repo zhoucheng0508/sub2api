@@ -33,7 +33,8 @@
           <div
             class="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl shadow-lg shadow-primary-500/30"
           >
-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
+            <!-- CUSTOM(VOTE-AI-BRANDING): use the isolated logo as the auth-page default. -->
+            <img :src="siteLogo || VOTE_AI_LOGO_URL" alt="Logo" class="h-full w-full object-contain" />
           </div>
           <h1 class="text-gradient mb-2 text-3xl font-bold">
             {{ siteName }}
@@ -66,6 +67,7 @@
 import { computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores'
 import { sanitizeUrl } from '@/utils/url'
+import { VOTE_AI_LOGO_URL } from '@/custom/vote-ai/branding'
 
 const appStore = useAppStore()
 

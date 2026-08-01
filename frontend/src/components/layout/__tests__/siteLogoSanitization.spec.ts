@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 const dir = dirname(fileURLToPath(import.meta.url))
 const sidebarSource = readFileSync(resolve(dir, '../AppSidebar.vue'), 'utf8')
+const authLayoutSource = readFileSync(resolve(dir, '../AuthLayout.vue'), 'utf8')
 const homeViewSource = readFileSync(resolve(dir, '../../../views/HomeView.vue'), 'utf8')
 const docsViewSource = readFileSync(resolve(dir, '../../../custom/vote-ai/views/DocsView.vue'), 'utf8')
 const keyUsageViewSource = readFileSync(resolve(dir, '../../../views/KeyUsageView.vue'), 'utf8')
@@ -14,6 +15,13 @@ describe('site_logo sanitization', () => {
   it('AppSidebar imports sanitizeUrl and applies it to siteLogo', () => {
     expect(sidebarSource).toContain("import { sanitizeUrl } from '@/utils/url'")
     expect(sidebarSource).toContain('sanitizeUrl(appStore.siteLogo')
+  })
+
+  it('console and authentication layouts use the isolated Vote AI fallback', () => {
+    for (const src of [sidebarSource, authLayoutSource]) {
+      expect(src).toContain("import { VOTE_AI_LOGO_URL } from '@/custom/vote-ai/branding'")
+      expect(src).toContain('siteLogo || VOTE_AI_LOGO_URL')
+    }
   })
 
   it('HomeView applies sanitizeUrl to siteLogo', () => {
