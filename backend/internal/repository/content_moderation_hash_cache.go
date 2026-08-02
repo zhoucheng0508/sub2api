@@ -3,12 +3,14 @@ package repository
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
 const contentModerationFlaggedHashSetKey = "content_moderation:flagged_hashes"
+const contentModerationResultCachePrefix = "content_moderation:result:v1:"
 
 type contentModerationHashCache struct {
 	rdb *redis.Client
@@ -68,4 +70,28 @@ func (c *contentModerationHashCache) CountFlaggedInputHashes(ctx context.Context
 		return 0, nil
 	}
 	return c.rdb.SCard(ctx, contentModerationFlaggedHashSetKey).Result()
+}
+
+// CUSTOM(VOTE-AI-AI-AUDIT): cache only normalized verdicts, never raw user input.
+func (c *contentModerationHashCache) GetContentModerationResult(ctx context.Context, key string) ([]byte, bool, error) {
+	key = strings.TrimSpace(key)
+	if c == nil || c.rdb == nil || key == "" {
+		return nil, false, nil
+	}
+	value, err := c.rdb.Get(ctx, contentModerationResultCachePrefix+key).Bytes()
+	if err == redis.Nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return value, true, nil
+}
+
+func (c *contentModerationHashCache) SetContentModerationResult(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	key = strings.TrimSpace(key)
+	if c == nil || c.rdb == nil || key == "" || len(value) == 0 || ttl <= 0 {
+		return nil
+	}
+	return c.rdb.Set(ctx, contentModerationResultCachePrefix+key, value, ttl).Err()
 }

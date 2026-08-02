@@ -11,6 +11,7 @@ const routerSource = readFileSync(resolve(frontendRoot, 'src/router/index.ts'), 
 const tailwindSource = readFileSync(resolve(frontendRoot, 'tailwind.config.js'), 'utf8')
 const appSource = readFileSync(resolve(frontendRoot, 'src/App.vue'), 'utf8')
 const sidebarSource = readFileSync(resolve(frontendRoot, 'src/components/layout/AppSidebar.vue'), 'utf8')
+const riskControlSource = readFileSync(resolve(frontendRoot, 'src/views/admin/RiskControlView.vue'), 'utf8')
 
 describe('Vote AI upstream integration points', () => {
   it('keeps the isolated branded homepage attached to the official shell', () => {
@@ -41,5 +42,16 @@ describe('Vote AI upstream integration points', () => {
   it('keeps the console brand fallback searchable', () => {
     expect(sidebarSource).toContain('CUSTOM(VOTE-AI-BRANDING)')
     expect(sidebarSource).toContain('siteLogo || VOTE_AI_LOGO_URL')
+  })
+
+  it('keeps AI content audit isolated at the official risk-control integration point', () => {
+    expect(riskControlSource).toContain('CUSTOM(VOTE-AI-AI-AUDIT)')
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/AuditProviderSelector.vue")
+    expect(riskControlSource).toContain('providerDrafts')
+    expect(riskControlSource).toContain('@close="closeSettings"')
+    expect(riskControlSource).toContain('applyConfig(savedConfigSnapshot.value)')
+    expect(riskControlSource).toContain('audit_provider: configForm.audit_provider')
+    expect(riskControlSource).toContain('ai_confidence_threshold:')
+    expect(riskControlSource).toContain("configForm.audit_provider === 'ai_chat' ? [] : moderationTestImages.value")
   })
 })

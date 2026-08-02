@@ -1,6 +1,8 @@
 import { apiClient } from '../client'
 
 export type ModerationMode = 'off' | 'observe' | 'pre_block'
+export type ContentModerationAuditProvider = 'openai_moderations' | 'ai_chat'
+export type AIAuditFailurePolicy = 'allow' | 'block'
 export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
 
@@ -9,9 +11,32 @@ export interface ContentModerationModelFilter {
   models: string[]
 }
 
+export interface ContentModerationProviderProfile {
+  base_url: string
+  model: string
+  proxy_id: number | null
+  api_key_configured: boolean
+  api_key_count: number
+  api_key_masks: string[]
+  timeout_ms: number
+  retry_count: number
+}
+
+export interface ContentModerationAIChatProfile extends ContentModerationProviderProfile {
+  confidence_threshold: number
+  cache_enabled: boolean
+  cache_ttl_seconds: number
+  system_prompt: string
+  failure_policy: AIAuditFailurePolicy
+  max_input_chars: number
+}
+
 export interface ContentModerationConfig {
   enabled: boolean
   mode: ModerationMode
+  audit_provider?: ContentModerationAuditProvider
+  openai_moderations?: ContentModerationProviderProfile
+  ai_chat?: ContentModerationAIChatProfile
   base_url: string
   model: string
   proxy_id: number | null
@@ -64,6 +89,7 @@ export interface ContentModerationAPIKeyStatus {
 
 export interface TestContentModerationAPIKeysPayload {
   api_keys?: string[]
+  audit_provider?: ContentModerationAuditProvider
   base_url?: string
   model?: string
   timeout_ms?: number
@@ -71,6 +97,9 @@ export interface TestContentModerationAPIKeysPayload {
   proxy_id?: number
   prompt?: string
   images?: string[]
+  ai_confidence_threshold?: number
+  ai_system_prompt?: string
+  ai_max_input_chars?: number
 }
 
 export interface TestContentModerationAPIKeysResponse {
@@ -86,11 +115,13 @@ export interface ContentModerationTestAuditResult {
   composite_score: number
   category_scores: Record<string, number>
   thresholds: Record<string, number>
+  reason?: string
 }
 
 export interface UpdateContentModerationConfig {
   enabled?: boolean
   mode?: ModerationMode
+  audit_provider?: ContentModerationAuditProvider
   base_url?: string
   model?: string
   // undefined 不修改；0 清除（直连）；>0 指定代理
@@ -122,6 +153,12 @@ export interface UpdateContentModerationConfig {
   keyword_blocking_mode?: KeywordBlockingMode
   model_filter?: ContentModerationModelFilter
   cyber_policy_exclude_from_ban_count?: boolean
+  ai_confidence_threshold?: number
+  ai_cache_enabled?: boolean
+  ai_cache_ttl_seconds?: number
+  ai_system_prompt?: string
+  ai_failure_policy?: AIAuditFailurePolicy
+  ai_max_input_chars?: number
 }
 
 export interface ContentModerationRuntimeStatus {

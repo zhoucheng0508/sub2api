@@ -20,10 +20,11 @@ func NewContentModerationHandler(svc *service.ContentModerationService) *Content
 }
 
 type contentModerationConfigRequest struct {
-	Enabled *bool   `json:"enabled"`
-	Mode    *string `json:"mode"`
-	BaseURL *string `json:"base_url"`
-	Model   *string `json:"model"`
+	Enabled       *bool   `json:"enabled"`
+	Mode          *string `json:"mode"`
+	AuditProvider *string `json:"audit_provider"`
+	BaseURL       *string `json:"base_url"`
+	Model         *string `json:"model"`
 	// 审计请求使用的代理服务器：null 不修改；0 清除（直连）；>0 指定代理。
 	ProxyID              *int64              `json:"proxy_id"`
 	APIKey               *string             `json:"api_key"`
@@ -55,16 +56,26 @@ type contentModerationConfigRequest struct {
 	BlockedKeywords                *[]string                             `json:"blocked_keywords"`
 	KeywordBlockingMode            *string                               `json:"keyword_blocking_mode"`
 	ModelFilter                    *service.ContentModerationModelFilter `json:"model_filter"`
+	AIConfidenceThreshold          *float64                              `json:"ai_confidence_threshold"`
+	AICacheEnabled                 *bool                                 `json:"ai_cache_enabled"`
+	AICacheTTLSeconds              *int                                  `json:"ai_cache_ttl_seconds"`
+	AISystemPrompt                 *string                               `json:"ai_system_prompt"`
+	AIFailurePolicy                *string                               `json:"ai_failure_policy"`
+	AIMaxInputChars                *int                                  `json:"ai_max_input_chars"`
 }
 
 type contentModerationAPIKeyTestRequest struct {
-	APIKeys   []string `json:"api_keys"`
-	BaseURL   string   `json:"base_url"`
-	Model     string   `json:"model"`
-	TimeoutMS int      `json:"timeout_ms"`
-	ProxyID   *int64   `json:"proxy_id"`
-	Prompt    string   `json:"prompt"`
-	Images    []string `json:"images"`
+	APIKeys               []string `json:"api_keys"`
+	AuditProvider         string   `json:"audit_provider"`
+	BaseURL               string   `json:"base_url"`
+	Model                 string   `json:"model"`
+	TimeoutMS             int      `json:"timeout_ms"`
+	ProxyID               *int64   `json:"proxy_id"`
+	Prompt                string   `json:"prompt"`
+	Images                []string `json:"images"`
+	AIConfidenceThreshold float64  `json:"ai_confidence_threshold"`
+	AISystemPrompt        string   `json:"ai_system_prompt"`
+	AIMaxInputChars       int      `json:"ai_max_input_chars"`
 }
 
 type contentModerationHashRequest struct {
@@ -89,6 +100,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 	cfg, err := h.service.UpdateConfig(c.Request.Context(), service.UpdateContentModerationConfigInput{
 		Enabled:                        req.Enabled,
 		Mode:                           req.Mode,
+		AuditProvider:                  req.AuditProvider,
 		BaseURL:                        req.BaseURL,
 		Model:                          req.Model,
 		ProxyID:                        req.ProxyID,
@@ -119,6 +131,12 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		BlockedKeywords:                req.BlockedKeywords,
 		KeywordBlockingMode:            req.KeywordBlockingMode,
 		ModelFilter:                    req.ModelFilter,
+		AIConfidenceThreshold:          req.AIConfidenceThreshold,
+		AICacheEnabled:                 req.AICacheEnabled,
+		AICacheTTLSeconds:              req.AICacheTTLSeconds,
+		AISystemPrompt:                 req.AISystemPrompt,
+		AIFailurePolicy:                req.AIFailurePolicy,
+		AIMaxInputChars:                req.AIMaxInputChars,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -134,13 +152,17 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		return
 	}
 	result, err := h.service.TestAPIKeys(c.Request.Context(), service.TestContentModerationAPIKeysInput{
-		APIKeys:   req.APIKeys,
-		BaseURL:   req.BaseURL,
-		Model:     req.Model,
-		TimeoutMS: req.TimeoutMS,
-		ProxyID:   req.ProxyID,
-		Prompt:    req.Prompt,
-		Images:    req.Images,
+		APIKeys:               req.APIKeys,
+		AuditProvider:         req.AuditProvider,
+		BaseURL:               req.BaseURL,
+		Model:                 req.Model,
+		TimeoutMS:             req.TimeoutMS,
+		ProxyID:               req.ProxyID,
+		Prompt:                req.Prompt,
+		Images:                req.Images,
+		AIConfidenceThreshold: req.AIConfidenceThreshold,
+		AISystemPrompt:        req.AISystemPrompt,
+		AIMaxInputChars:       req.AIMaxInputChars,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
