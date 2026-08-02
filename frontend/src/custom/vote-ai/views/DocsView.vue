@@ -5,7 +5,7 @@
         <router-link to="/home" class="brand"><span class="brand-logo"><img :src="siteLogo || VOTE_AI_LOGO_URL" alt="" /></span><span>Vote AI</span></router-link>
         <div class="nav-links">
           <router-link to="/home">{{ copy.nav.home }}</router-link>
-          <router-link to="/pricing">{{ copy.nav.pricing }}</router-link>
+          <router-link to="/model-plaza">{{ copy.nav.pricing }}</router-link>
           <router-link to="/home#faq">{{ copy.nav.faq }}</router-link>
           <router-link to="/docs" class="active">{{ copy.nav.docs }}</router-link>
         </div>
@@ -18,7 +18,7 @@
         </div>
       </nav>
       <div v-if="mobileMenuOpen" class="mobile-menu">
-        <router-link to="/home" @click="mobileMenuOpen = false">{{ copy.nav.home }}</router-link><router-link to="/pricing" @click="mobileMenuOpen = false">{{ copy.nav.pricing }}</router-link><router-link to="/home#faq" @click="mobileMenuOpen = false">{{ copy.nav.faq }}</router-link><router-link to="/docs" class="active" @click="mobileMenuOpen = false">{{ copy.nav.docs }}</router-link>
+        <router-link to="/home" @click="mobileMenuOpen = false">{{ copy.nav.home }}</router-link><router-link to="/model-plaza" @click="mobileMenuOpen = false">{{ copy.nav.pricing }}</router-link><router-link to="/home#faq" @click="mobileMenuOpen = false">{{ copy.nav.faq }}</router-link><router-link to="/docs" class="active" @click="mobileMenuOpen = false">{{ copy.nav.docs }}</router-link>
         <div class="mobile-tools"><LocaleSwitcher /><button type="button" @click="toggleTheme"><Icon :name="isDark ? 'sun' : 'moon'" size="md" />{{ isDark ? copy.light : copy.dark }}</button></div>
         <router-link :to="isAuthenticated ? dashboardPath : '/login'" class="mobile-primary">{{ isAuthenticated ? copy.console : copy.login }}</router-link>
       </div>

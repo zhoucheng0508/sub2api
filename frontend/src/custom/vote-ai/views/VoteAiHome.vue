@@ -11,7 +11,7 @@
 
         <div class="nav-links">
           <a href="#home">{{ copy.nav.home }}</a>
-          <router-link to="/pricing">{{ copy.nav.pricing }}</router-link>
+          <router-link to="/model-plaza">{{ copy.nav.pricing }}</router-link>
           <a href="#faq">{{ copy.nav.faq }}</a>
           <router-link to="/docs">{{ copy.nav.docs }}</router-link>
         </div>
@@ -55,7 +55,7 @@
                 {{ isAuthenticated ? t('home.goToDashboard') : copy.hero.cta }}
                 <Icon name="arrowRight" size="md" />
               </router-link>
-              <router-link to="/pricing" class="secondary-cta">{{ copy.hero.pricingCta }}</router-link>
+              <router-link to="/model-plaza" class="secondary-cta">{{ copy.hero.pricingCta }}</router-link>
             </div>
             <div class="hero-trust">
               <span v-for="item in copy.hero.trust" :key="item">
@@ -173,7 +173,7 @@
       </div>
       <div class="footer-links">
         <a href="#home">{{ copy.nav.home }}</a>
-        <router-link to="/pricing">{{ copy.nav.pricing }}</router-link>
+        <router-link to="/model-plaza">{{ copy.nav.pricing }}</router-link>
         <a href="#faq">{{ copy.nav.faq }}</a>
       </div>
     </footer>
@@ -218,7 +218,7 @@ const zhCopy = {
     title: '按量付费，按需使用',
     subtitle: '透明、灵活的计费方式，按照实际用量结算，无需承担长期订阅成本。',
     recommended: '推荐',
-    note: '价格页面与完整模型费率表将在下一阶段接入。',
+    note: '完整模型费率和分组倍率可在模型广场实时查看。',
     plans: [
       {
         kicker: 'PAYGO', name: '按量付费', rate: '灵活充值', description: '一次充值，按实际使用量扣费。', dark: true,
@@ -250,7 +250,7 @@ const zhCopy = {
     back: '返回顶部',
     items: [
       { question: '如何开始使用 Vote AI？', answer: '登录控制台后创建 API Key，根据控制台提供的地址替换原有 API Endpoint，即可使用兼容的客户端和开发工具。' },
-      { question: '余额和用量如何计算？', answer: '平台按实际模型调用量计费。详细倍率和模型费率将在价格页面展示，控制台中可以实时查看余额与用量记录。' },
+      { question: '余额和用量如何计算？', answer: '平台按实际模型调用量计费。详细分组倍率和模型费率可在模型广场查看，控制台中可以实时查看余额与用量记录。' },
       { question: '支持哪些模型和开发工具？', answer: '当前面向 Claude、OpenAI、Gemini 等主流模型提供统一接入，并兼容 Claude Code、Codex 等常用 AI 开发工具。' },
       { question: '是否需要长期订阅？', answer: '不需要。默认采用按量付费方式，按需充值、按实际使用量结算。' },
       { question: 'API 接入方式是否复杂？', answer: '不复杂。大多数情况下只需修改 API 地址与密钥，不需要重写现有业务代码。' }
@@ -268,7 +268,7 @@ const enCopy = {
   },
   pricing: {
     eyebrow: 'Pricing', title: 'Pay as you go', subtitle: 'Transparent usage-based billing without long-term subscription costs.', recommended: 'Recommended',
-    note: 'The dedicated pricing page and full model rate table will be added next.',
+    note: 'Current model rates and group multipliers are available in the model plaza.',
     plans: [
       { kicker: 'PAYGO', name: 'Pay as you go', rate: 'Flexible top-up', description: 'Top up once and pay for actual usage.', dark: true, features: ['Platform balance after top-up', 'Usage-based model billing', 'Balance remains valid'], cta: 'Get started', action: 'login' },
       { kicker: 'CLAUDE', name: 'Claude on demand', rate: 'Official rates synced', description: 'No subscription. Pay for what you use.', featured: true, features: ['All Claude model families', 'Optimized for Claude Code', 'Stable global connectivity'], cta: 'Coming soon', action: 'pending' },
@@ -289,7 +289,7 @@ const enCopy = {
     title: 'Frequently asked questions', subtitle: 'Quick answers about access, billing, and usage.', back: 'Back to top',
     items: [
       { question: 'How do I start using Vote AI?', answer: 'Sign in, create an API key, and replace your existing API endpoint with the address shown in the console.' },
-      { question: 'How are balance and usage calculated?', answer: 'Billing follows actual model usage. Detailed rates will be available on the upcoming pricing page.' },
+      { question: 'How are balance and usage calculated?', answer: 'Billing follows actual model usage. Detailed group multipliers and model rates are available in the model plaza.' },
       { question: 'Which models and tools are supported?', answer: 'The gateway targets Claude, OpenAI, Gemini, and common AI development tools including Claude Code and Codex.' },
       { question: 'Do I need a subscription?', answer: 'No. The default model is pay as you go, so you only pay for actual usage.' },
       { question: 'Is API integration difficult?', answer: 'Usually not. In most cases, changing the endpoint and API key is all that is required.' }
@@ -306,7 +306,7 @@ function handlePlanAction(action: string) {
   }
 
   if (action === 'pricing') {
-    router.push('/pricing')
+    router.push('/model-plaza')
   }
 }
 

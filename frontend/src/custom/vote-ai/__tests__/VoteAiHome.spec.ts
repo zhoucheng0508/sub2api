@@ -53,7 +53,7 @@ describe('VoteAiHome', () => {
 
     expect(wrapper.get('.brand-name').text()).toBe('Vote AI')
     expect(wrapper.get('[data-testid="interactive-globe"]').exists()).toBe(true)
-    expect(destinations).toContain('/pricing')
+    expect(destinations).toContain('/model-plaza')
     expect(destinations).toContain('/docs')
   })
 

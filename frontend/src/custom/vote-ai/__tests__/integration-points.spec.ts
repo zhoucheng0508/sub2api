@@ -18,9 +18,13 @@ describe('Vote AI upstream integration points', () => {
     expect(homeSource).toContain("@/custom/vote-ai/views/VoteAiHome.vue")
   })
 
-  it('keeps pricing and documentation on isolated route components', () => {
-    expect(routerSource).toContain('CUSTOM(VOTE-AI-PRICING)')
-    expect(routerSource).toContain("@/custom/vote-ai/views/PricingView.vue")
+  it('redirects legacy pricing links to the official model plaza', () => {
+    expect(routerSource).toContain("path: '/pricing'")
+    expect(routerSource).toContain("redirect: '/model-plaza'")
+    expect(routerSource).not.toContain("@/custom/vote-ai/views/PricingView.vue")
+  })
+
+  it('keeps documentation on its isolated route component', () => {
     expect(routerSource).toContain('CUSTOM(VOTE-AI-DOCS)')
     expect(routerSource).toContain("@/custom/vote-ai/views/DocsView.vue")
   })
