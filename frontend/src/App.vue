@@ -9,6 +9,7 @@ import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
 import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminComplianceStore, useAdminSettingsStore } from '@/stores'
 import { getSetupStatus } from '@/api/setup'
 import { updateFavicon } from '@/utils/branding'
+import { VOTE_AI_LOGO_URL } from '@/custom/vote-ai/branding'
 
 const router = useRouter()
 const route = useRoute()
@@ -27,13 +28,11 @@ function updateDocumentTitle() {
   document.title = resolveRouteDocumentTitle(route, appStore.siteName, customMenuItems)
 }
 
-// Watch for site settings changes and update favicon/title
+// CUSTOM(VOTE-AI-BRANDING): prefer the admin-configured logo and keep Vote AI as the default.
 watch(
   () => appStore.siteLogo,
-  (newLogo) => {
-    if (newLogo) {
-      updateFavicon(newLogo)
-    }
+  (siteLogo) => {
+    updateFavicon(siteLogo || VOTE_AI_LOGO_URL)
   },
   { immediate: true }
 )

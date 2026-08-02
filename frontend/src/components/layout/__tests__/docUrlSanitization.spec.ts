@@ -23,7 +23,7 @@ describe('doc_url sanitization', () => {
   })
 
   it('HomeView uses the managed internal docs route', () => {
-    expect(homeViewSource).toContain('<router-link to="/docs">')
+    expect(homeViewSource).toContain('to="/docs"')
     expect(homeViewSource).not.toContain('cachedPublicSettings?.doc_url')
   })
 

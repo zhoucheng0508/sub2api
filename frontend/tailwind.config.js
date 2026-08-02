@@ -5,6 +5,7 @@ export default {
   theme: {
     extend: {
       colors: {
+        // CUSTOM(VOTE-AI-THEME): warm public-site palette shared with the current shell.
         // 主色调 - 暖橙棕色系
         primary: {
           50: '#fef8f4',

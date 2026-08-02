@@ -137,6 +137,7 @@ docs/*
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
 !docs/ASYNC_IMAGE_TASKS.md
 !docs/CUSTOMIZATION_DIFF_V0.1.169_CN.md
+!docs/SUB2API_CUSTOM_UPGRADE_PROMPT_CN.md
 !docs/legal/
 !docs/legal/*.md
 .serena/

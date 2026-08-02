@@ -220,7 +220,7 @@ func RegisterAuthRoutes(
 		)
 	}
 
-	// 公开文档（无需认证）
+	// CUSTOM(VOTE-AI-DOCS): public managed documentation endpoint.
 	v1.GET("/docs", h.Setting.GetDocs)
 
 	// 公开设置（无需认证）：每次请求都会查询 DB，按客户端 IP 兜底限流，
