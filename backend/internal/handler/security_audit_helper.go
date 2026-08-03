@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/internalprobe"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -11,7 +12,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const securityAuditCompletedContextKey = "sub2api.security_audit.completed"
+const (
+	securityAuditCompletedContextKey = "sub2api.security_audit.completed"
+	securityAuditBypassContextKey    = "sub2api.security_audit.bypass"
+)
 
 // cachesSecurityAuditCompletion reports whether a successful audit may be
 // reused for the rest of the gin request. WebSocket turns share one Context
@@ -32,11 +36,25 @@ func (h *GatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, 
 	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
 }
 
+func (h *GatewayHandler) checkSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, account *service.Account, protocol, model string, body []byte) *securityaudit.Decision {
+	if h == nil {
+		return nil
+	}
+	return runSecurityAuditForAccount(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, account, protocol, model, body, "http")
+}
+
 func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
 	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+}
+
+func (h *OpenAIGatewayHandler) checkSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, account *service.Account, protocol, model string, body []byte) *securityaudit.Decision {
+	if h == nil {
+		return nil
+	}
+	return runSecurityAuditForAccount(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, account, protocol, model, body, "http")
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
@@ -46,14 +64,73 @@ func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *z
 	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
 }
 
+func (h *OpenAIGatewayHandler) checkSecurityAuditStageForAccount(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, account *service.Account, protocol, model string, body []byte, stage string) *securityaudit.Decision {
+	if h == nil {
+		return nil
+	}
+	return runSecurityAuditForAccount(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, account, protocol, model, body, stage)
+}
+
 func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
+	return runSecurityAuditForAccount(c, reqLog, coordinator, legacy, apiKey, subject, nil, protocol, model, body, stage)
+}
+
+func runSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, account *service.Account, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if c == nil || c.Request == nil {
+		return nil
+	}
+	if reason, exists := c.Get(securityAuditBypassContextKey); exists && strings.TrimSpace(asSecurityAuditString(reason)) != "" {
+		return nil
+	}
+	if internalprobe.IsMarked(c.Request.Context()) {
+		c.Set(securityAuditBypassContextKey, "skip_internal_probe")
+		logSecurityAuditScopeSkip(reqLog, "skip_internal_probe", subject.UserID, nil)
 		return nil
 	}
 	cacheCompletion := cachesSecurityAuditCompletion(stage)
 	if cacheCompletion {
 		if completed, exists := c.Get(securityAuditCompletedContextKey); exists && completed == true {
 			return nil
+		}
+	}
+	if legacy != nil {
+		shouldAuditUser, reason, err := legacy.ShouldAuditUser(c.Request.Context(), subject.UserID)
+		if err != nil {
+			if reqLog != nil {
+				reqLog.Warn("security_audit.scope_user_check_failed", zap.Int64("user_id", subject.UserID), zap.Error(err))
+			}
+		} else if !shouldAuditUser {
+			c.Set(securityAuditBypassContextKey, reason)
+			logSecurityAuditScopeSkip(reqLog, reason, subject.UserID, nil)
+			return nil
+		}
+
+		if account == nil {
+			requiresAccount, err := legacy.RequiresAccountScopeResolution(c.Request.Context())
+			if err != nil {
+				if reqLog != nil {
+					reqLog.Warn("security_audit.scope_account_mode_check_failed", zap.Error(err))
+				}
+			} else if requiresAccount {
+				if reqLog != nil {
+					reqLog.Debug("security_audit.scope_deferred_until_account_selection", zap.Int64("user_id", subject.UserID))
+				}
+				return nil
+			}
+		} else {
+			scopeAccountID := securityAuditScopeAccountID(account)
+			shouldAuditAccount, reason, err := legacy.ShouldAuditAccount(c.Request.Context(), scopeAccountID)
+			if err != nil {
+				if reqLog != nil {
+					reqLog.Warn("security_audit.scope_account_check_failed",
+						zap.Int64("selected_account_id", account.ID),
+						zap.Int64("scope_account_id", scopeAccountID),
+						zap.Error(err))
+				}
+			} else if !shouldAuditAccount {
+				logSecurityAuditScopeSkip(reqLog, reason, subject.UserID, account)
+				return nil
+			}
 		}
 	}
 	if coordinator == nil {
@@ -75,13 +152,15 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 		}
 		return &decision
 	}
-	request := buildSecurityAuditRequest(c, apiKey, subject, protocol, model, body, stage)
+	request := buildSecurityAuditRequestForAccount(c, apiKey, subject, account, protocol, model, body, stage)
 	if reqLog != nil {
 		reqLog.Info("security_audit.gateway_check_start",
 			zap.String("request_id", request.RequestID), zap.Int64("user_id", request.UserID),
 			zap.Int64("api_key_id", request.APIKeyID), zap.Int64p("group_id", request.GroupID),
 			zap.String("endpoint", request.Endpoint), zap.String("provider", request.Provider),
 			zap.String("protocol", request.Protocol), zap.String("model", request.Model), zap.String("stage", request.Stage),
+			zap.Int64("selected_account_id", request.AccountID), zap.String("selected_account_name", request.AccountName),
+			zap.Int64("scope_account_id", securityAuditScopeAccountID(account)),
 			zap.Int("body_bytes", len(body)))
 	}
 	decision := coordinator.Check(c.Request.Context(), request)
@@ -98,12 +177,20 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 }
 
 func buildSecurityAuditRequest(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) securityaudit.Request {
+	return buildSecurityAuditRequestForAccount(c, apiKey, subject, nil, protocol, model, body, stage)
+}
+
+func buildSecurityAuditRequestForAccount(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, account *service.Account, protocol, model string, body []byte, stage string) securityaudit.Request {
 	legacy := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
 	request := securityaudit.Request{
 		RequestID: legacy.RequestID, SessionID: legacy.SessionID, UserID: legacy.UserID, UserEmail: legacy.UserEmail,
 		APIKeyID: legacy.APIKeyID, APIKeyName: legacy.APIKeyName, GroupID: cloneSecurityAuditGroupID(legacy.GroupID),
 		GroupName: legacy.GroupName, Provider: legacy.Provider, Endpoint: legacy.Endpoint,
 		Protocol: legacy.Protocol, Model: legacy.Model, Body: body, Stage: strings.TrimSpace(stage),
+	}
+	if account != nil {
+		request.AccountID = account.ID
+		request.AccountName = account.Name
 	}
 	if apiKey != nil && apiKey.User != nil {
 		request.Username = apiKey.User.Username
@@ -115,6 +202,44 @@ func buildSecurityAuditRequest(c *gin.Context, apiKey *service.APIKey, subject m
 		request.Stage = "http"
 	}
 	return request
+}
+
+func logSecurityAuditScopeSkip(reqLog *zap.Logger, reason string, userID int64, account *service.Account) {
+	if reqLog == nil {
+		return
+	}
+	fields := []zap.Field{zap.String("reason", strings.TrimSpace(reason)), zap.Int64("user_id", userID)}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("selected_account_id", account.ID),
+			zap.String("selected_account_name", account.Name),
+			zap.Int64("scope_account_id", securityAuditScopeAccountID(account)))
+	}
+	reqLog.Info("security_audit.scope_skipped", fields...)
+}
+
+func securityAuditScopeAccountID(account *service.Account) int64 {
+	if account == nil {
+		return 0
+	}
+	if account.ParentAccountID != nil && *account.ParentAccountID > 0 {
+		return *account.ParentAccountID
+	}
+	return account.ID
+}
+
+func asSecurityAuditString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func releaseSecurityAuditSelection(selection *service.AccountSelectionResult) {
+	if selection == nil || selection.ReleaseFunc == nil {
+		return
+	}
+	selection.ReleaseFunc()
+	selection.ReleaseFunc = nil
+	selection.Acquired = false
 }
 
 func securityAuditStatus(decision *securityaudit.Decision) int {

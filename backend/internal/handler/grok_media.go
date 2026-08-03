@@ -99,6 +99,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 
 	contentType := c.GetHeader("Content-Type")
 	requestInfo := service.ParseGrokMediaRequest(contentType, body)
+	moderationBody := requestInfo.ModerationBody()
 	requestModel := requestInfo.Model
 	routingModel := service.NormalizeGrokMediaModelForEndpoint(endpoint, requestModel, requestInfo.HasInputImage())
 	if endpoint.IsGenerationRequest() && strings.TrimSpace(requestModel) == "" {
@@ -119,7 +120,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 			return
 		}
-		if moderationBody := requestInfo.ModerationBody(); len(moderationBody) > 0 {
+		if len(moderationBody) > 0 {
 			decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, moderationBody)
 			if decision != nil && !decision.AllowNextStage {
 				h.openAISecurityAuditError(c, decision)
@@ -296,6 +297,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if len(moderationBody) > 0 {
+			if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIImages, requestModel, moderationBody); decision != nil && !decision.AllowNextStage {
+				releaseSecurityAuditSelection(selection)
+				h.openAISecurityAuditError(c, decision)
+				return
+			}
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {

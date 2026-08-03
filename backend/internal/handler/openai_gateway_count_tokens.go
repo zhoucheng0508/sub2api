@@ -128,6 +128,11 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
 
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
+		h.anthropicSecurityAuditError(c, decision)
+		return
+	}
+
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 	mappedBodyForMessages := newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
 
@@ -187,6 +192,11 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 
 	account := selection.Account
 	setOpsSelectedAccount(c, account.ID, account.Platform)
+	if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
+		releaseSecurityAuditSelection(selection)
+		h.anthropicSecurityAuditError(c, decision)
+		return
+	}
 	if selection.Acquired && selection.ReleaseFunc != nil {
 		defer selection.ReleaseFunc()
 	}

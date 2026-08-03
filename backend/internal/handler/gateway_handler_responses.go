@@ -203,6 +203,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, reqModel, body); decision != nil && !decision.AllowNextStage {
+			releaseSecurityAuditSelection(selection)
+			h.responsesSecurityAuditError(c, decision)
+			return
+		}
 
 		// 4. Acquire account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc

@@ -4,11 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/internalprobe"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +60,153 @@ func TestRunSecurityAuditDoesNotSkipSubsequentWebSocketTurns(t *testing.T) {
 		[]byte(`{"type":"response.create","response":{"input":"malicious follow-up"}}`), "subsequent_turn")
 	require.NotNil(t, second)
 	require.Equal(t, int64(2), engine.enqueues.Load(), "subsequent WebSocket turns must be audited again")
+}
+
+func TestRunSecurityAuditDefersUntilProtectedAccountAndCachesSuccessfulAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newHandlerScopeModerationService(t,
+		service.ContentModerationUserFilter{Type: service.ContentModerationScopeFilterAll},
+		service.ContentModerationAccountFilter{Type: service.ContentModerationScopeFilterInclude, AccountIDs: []int64{202}},
+	)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+		Kind: securityaudit.DecisionAllow, AllowNextStage: true,
+	}}
+	coordinator := securityaudit.NewCoordinator(nil, engine)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"hello"}`))
+	subject := middleware2.AuthSubject{UserID: 7}
+
+	decision := runSecurityAudit(c, nil, coordinator, svc, nil, subject, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{"input":"hello"}`), "http")
+	require.Nil(t, decision, "account-scoped audit must wait for routing")
+	require.Zero(t, engine.evaluated)
+	_, completed := c.Get(securityAuditCompletedContextKey)
+	require.False(t, completed)
+
+	plus := &service.Account{ID: 101, Name: "plus"}
+	decision = runSecurityAuditForAccount(c, nil, coordinator, svc, nil, subject, plus, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{"input":"hello"}`), "http")
+	require.Nil(t, decision, "unprotected account must skip without completing the request audit")
+	require.Zero(t, engine.evaluated)
+	_, completed = c.Get(securityAuditCompletedContextKey)
+	require.False(t, completed)
+
+	proParentID := int64(202)
+	pro := &service.Account{ID: 302, Name: "pro-spark-shadow", ParentAccountID: &proParentID}
+	decision = runSecurityAuditForAccount(c, nil, coordinator, svc, nil, subject, pro, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{"input":"hello"}`), "http")
+	require.NotNil(t, decision)
+	require.True(t, decision.AllowNextStage)
+	evaluated, _, requests := engine.snapshot()
+	require.Equal(t, 1, evaluated)
+	require.Len(t, requests, 1)
+	require.Equal(t, pro.ID, requests[0].AccountID)
+	require.Equal(t, pro.Name, requests[0].AccountName)
+
+	decision = runSecurityAuditForAccount(c, nil, coordinator, svc, nil, subject, &service.Account{ID: 203, Name: "fallback-pro"}, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{"input":"hello"}`), "http")
+	require.Nil(t, decision, "a passed request must not be re-audited during failover")
+	evaluated, _, _ = engine.snapshot()
+	require.Equal(t, 1, evaluated)
+}
+
+func TestRunSecurityAuditAccountExcludeUsesShadowParentIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newHandlerScopeModerationService(t,
+		service.ContentModerationUserFilter{Type: service.ContentModerationScopeFilterAll},
+		service.ContentModerationAccountFilter{Type: service.ContentModerationScopeFilterExclude, AccountIDs: []int64{202}},
+	)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+		Kind: securityaudit.DecisionAllow, AllowNextStage: true,
+	}}
+	coordinator := securityaudit.NewCoordinator(nil, engine)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	subject := middleware2.AuthSubject{UserID: 7}
+
+	require.Nil(t, runSecurityAudit(c, nil, coordinator, svc, nil, subject, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http"))
+	excludedParentID := int64(202)
+	excludedShadow := &service.Account{ID: 302, Name: "excluded-shadow", ParentAccountID: &excludedParentID}
+	require.Nil(t, runSecurityAuditForAccount(c, nil, coordinator, svc, nil, subject, excludedShadow, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http"))
+	evaluated, _, _ := engine.snapshot()
+	require.Zero(t, evaluated)
+
+	includedParentID := int64(203)
+	includedShadow := &service.Account{ID: 303, Name: "included-shadow", ParentAccountID: &includedParentID}
+	decision := runSecurityAuditForAccount(c, nil, coordinator, svc, nil, subject, includedShadow, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http")
+	require.NotNil(t, decision)
+	require.True(t, decision.AllowNextStage)
+	evaluated, _, requests := engine.snapshot()
+	require.Equal(t, 1, evaluated)
+	require.Len(t, requests, 1)
+	require.Equal(t, includedShadow.ID, requests[0].AccountID, "audit request logging keeps the selected child identity")
+	require.Equal(t, includedShadow.Name, requests[0].AccountName)
+}
+
+func TestRunSecurityAuditExcludedUserBypassesEveryAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newHandlerScopeModerationService(t,
+		service.ContentModerationUserFilter{Type: service.ContentModerationScopeFilterExclude, UserIDs: []int64{7}},
+		service.ContentModerationAccountFilter{Type: service.ContentModerationScopeFilterInclude, AccountIDs: []int64{202}},
+	)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{Kind: securityaudit.DecisionAllow, AllowNextStage: true}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	subject := middleware2.AuthSubject{UserID: 7}
+
+	require.Nil(t, runSecurityAudit(c, nil, securityaudit.NewCoordinator(nil, engine), svc, nil, subject, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http"))
+	require.Nil(t, runSecurityAuditForAccount(c, nil, securityaudit.NewCoordinator(nil, engine), svc, nil, subject, &service.Account{ID: 202}, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http"))
+	require.Zero(t, engine.evaluated)
+	_, completed := c.Get(securityAuditCompletedContextKey)
+	require.False(t, completed)
+}
+
+func TestRunSecurityAuditInternalProbeBypassesCoordinator(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	authenticator := internalprobe.NewAuthenticator("unit-test-secret")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
+	require.NoError(t, authenticator.SignRequest(req))
+	require.True(t, authenticator.VerifyAndMarkRequest(req))
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{Kind: securityaudit.DecisionAllow, AllowNextStage: true}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+
+	decision := runSecurityAudit(c, nil, securityaudit.NewCoordinator(nil, engine), nil, nil, middleware2.AuthSubject{UserID: 1}, service.ContentModerationProtocolOpenAIChat, "gpt-test", []byte(`{}`), "http")
+	require.Nil(t, decision)
+	require.Zero(t, engine.evaluated)
+	_, completed := c.Get(securityAuditCompletedContextKey)
+	require.False(t, completed)
+}
+
+func TestRunSecurityAuditBlockedProtectedAccountDoesNotComplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newHandlerScopeModerationService(t,
+		service.ContentModerationUserFilter{Type: service.ContentModerationScopeFilterAll},
+		service.ContentModerationAccountFilter{Type: service.ContentModerationScopeFilterInclude, AccountIDs: []int64{202}},
+	)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{Kind: securityaudit.DecisionBlock, AllowNextStage: false}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	subject := middleware2.AuthSubject{UserID: 7}
+
+	require.Nil(t, runSecurityAudit(c, nil, securityaudit.NewCoordinator(nil, engine), svc, nil, subject, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http"))
+	decision := runSecurityAuditForAccount(c, nil, securityaudit.NewCoordinator(nil, engine), svc, nil, subject, &service.Account{ID: 202}, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{}`), "http")
+	require.NotNil(t, decision)
+	require.False(t, decision.AllowNextStage)
+	_, completed := c.Get(securityAuditCompletedContextKey)
+	require.False(t, completed)
+	upstreamCalls := 0
+	if decision.AllowNextStage {
+		upstreamCalls++
+	}
+	require.Zero(t, upstreamCalls)
+}
+
+func newHandlerScopeModerationService(t *testing.T, userFilter service.ContentModerationUserFilter, accountFilter service.ContentModerationAccountFilter) *service.ContentModerationService {
+	t.Helper()
+	repo := &contentModerationHandlerSettingRepo{values: map[string]string{}}
+	svc := service.NewContentModerationService(repo, nil, nil, nil, nil, nil, nil, nil)
+	_, err := svc.UpdateConfig(context.Background(), service.UpdateContentModerationConfigInput{
+		UserFilter: &userFilter, AccountFilter: &accountFilter,
+	})
+	require.NoError(t, err)
+	return svc
 }
 
 type turnCountingEngine struct {

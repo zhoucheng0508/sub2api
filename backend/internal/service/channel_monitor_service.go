@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/internalprobe"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -63,8 +65,10 @@ type ChannelMonitorRepository interface {
 
 // ChannelMonitorService 渠道监控管理服务。
 type ChannelMonitorService struct {
-	repo      ChannelMonitorRepository
-	encryptor SecretEncryptor
+	repo                  ChannelMonitorRepository
+	encryptor             SecretEncryptor
+	internalProbeAuth     *internalprobe.Authenticator
+	internalProbeSettings *SettingService
 	// scheduler 由 wire 通过 SetScheduler 注入；CRUD 后调用对应钩子即时同步任务。
 	// 测试或未注入场景下保持 nil，所有钩子调用变为 no-op。
 	scheduler MonitorScheduler
@@ -81,6 +85,14 @@ const ChannelMonitorDuplicateOperationIDMetadataKey = "sub2api:duplicate_operati
 // NewChannelMonitorService 创建渠道监控服务实例。
 func NewChannelMonitorService(repo ChannelMonitorRepository, encryptor SecretEncryptor) *ChannelMonitorService {
 	return &ChannelMonitorService{repo: repo, encryptor: encryptor}
+}
+
+func (s *ChannelMonitorService) setInternalProbeAuthenticator(
+	auth *internalprobe.Authenticator,
+	settings *SettingService,
+) {
+	s.internalProbeAuth = auth
+	s.internalProbeSettings = settings
 }
 
 // ---------- CRUD ----------
@@ -476,10 +488,11 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 
 	// 所有模型共用同一份 CheckOptions（来自监控的快照字段）。
 	opts := &CheckOptions{
-		APIMode:          m.APIMode,
-		ExtraHeaders:     m.ExtraHeaders,
-		BodyOverrideMode: m.BodyOverrideMode,
-		BodyOverride:     m.BodyOverride,
+		APIMode:                    m.APIMode,
+		ExtraHeaders:               m.ExtraHeaders,
+		BodyOverrideMode:           m.BodyOverrideMode,
+		BodyOverride:               m.BodyOverride,
+		InternalProbeAuthenticator: s.internalProbeAuthenticatorFor(ctx, m.Endpoint),
 	}
 
 	var eg errgroup.Group
@@ -497,6 +510,53 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 	}
 	_ = eg.Wait()
 	return results
+}
+
+func (s *ChannelMonitorService) internalProbeAuthenticatorFor(
+	ctx context.Context,
+	endpoint string,
+) *internalprobe.Authenticator {
+	if s == nil || s.internalProbeAuth == nil || s.internalProbeSettings == nil {
+		return nil
+	}
+	if sameHTTPOrigin(endpoint, s.internalProbeSettings.GetAPIBaseURL(ctx)) {
+		return s.internalProbeAuth
+	}
+	return nil
+}
+
+func sameHTTPOrigin(left, right string) bool {
+	leftURL, leftOK := parseHTTPOrigin(left)
+	rightURL, rightOK := parseHTTPOrigin(right)
+	if !leftOK || !rightOK {
+		return false
+	}
+	return strings.EqualFold(leftURL.Scheme, rightURL.Scheme) &&
+		strings.EqualFold(leftURL.Hostname(), rightURL.Hostname()) &&
+		originPort(leftURL) == originPort(rightURL)
+}
+
+func parseHTTPOrigin(raw string) (*url.URL, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return nil, false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed, true
+	default:
+		return nil, false
+	}
+}
+
+func originPort(parsed *url.URL) string {
+	if port := parsed.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 // ---------- 调度器协作 ----------

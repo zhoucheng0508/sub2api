@@ -54,4 +54,11 @@ describe('Vote AI upstream integration points', () => {
     expect(riskControlSource).toContain('ai_confidence_threshold:')
     expect(riskControlSource).toContain("configForm.audit_provider === 'ai_chat' ? [] : moderationTestImages.value")
   })
+
+  it('keeps user and account audit scopes isolated at the risk-control integration point', () => {
+    expect(riskControlSource).toContain('CUSTOM(VOTE-AI-RISK-SCOPE)')
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/ScopeEntitySelector.vue")
+    expect(riskControlSource).toContain('user_filter: buildUserFilterPayload()')
+    expect(riskControlSource).toContain('account_filter: buildAccountFilterPayload()')
+  })
 })
