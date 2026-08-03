@@ -813,6 +813,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if dialer == nil {
 		return errors.New("openai ws passthrough dialer is nil")
 	}
+	tlsRouterMatch := s.matchOpenAITLSFingerprintRouter(c, account)
+	tlsProfile, tlsRouterMatch := s.resolveOpenAITLSConfiguration(account, tlsRouterMatch)
 
 	agentTaskRecoveryTried := false
 	var upstreamConn openAIWSClientConn
@@ -823,8 +825,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		if err != nil {
 			return fmt.Errorf("refresh ws authentication headers: %w", err)
 		}
+		applyOpenAITLSIdentity(&http.Request{Header: headers}, tlsProfile, tlsRouterMatch)
 		dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
-		upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
+		if tlsDialer, ok := dialer.(openAIWSTLSClientDialer); ok {
+			upstreamConn, statusCode, handshakeHeaders, err = tlsDialer.DialWithTLS(dialCtx, wsURL, headers, proxyURL, tlsProfile)
+		} else {
+			upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
+		}
 		cancelDial()
 		if err == nil {
 			break

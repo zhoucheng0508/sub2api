@@ -17,7 +17,6 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"golang.org/x/net/http2"
 	"golang.org/x/sync/singleflight"
 )
@@ -144,6 +143,7 @@ type codexModelsManifestRequest struct {
 	url                 string
 	headers             http.Header
 	proxyURL            string
+	account             *Account
 	accountID           int64
 	credentialAccountID int64
 	credentialAccount   *Account
@@ -317,6 +317,7 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 		url:                 requestURL.String(),
 		headers:             headers,
 		proxyURL:            proxyURL,
+		account:             account,
 		accountID:           account.ID,
 		credentialAccountID: credAccount.ID,
 		credentialAccount:   credAccount,
@@ -449,24 +450,15 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 		req.Header.Set("If-None-Match", ifNoneMatch)
 	}
 
-	var resp *http.Response
-	if request.useAPIKeyUpstream {
-		if s.httpUpstream == nil {
-			return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_UPSTREAM_NOT_CONFIGURED", "Codex models upstream HTTP client is not configured")
-		}
-		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-		resp, err = s.httpUpstream.Do(req, request.proxyURL, request.accountID, request.accountConcurrency)
-	} else {
-		client, clientErr := httpclient.GetClient(httpclient.Options{
-			ProxyURL:              request.proxyURL,
-			Timeout:               codexModelsManifestRequestTimeout,
-			ResponseHeaderTimeout: 10 * time.Second,
-		})
-		if clientErr != nil {
-			return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_PROXY_INVALID", "invalid proxy configuration: %v", clientErr)
-		}
-		resp, err = client.Do(req)
+	if s.httpUpstream == nil {
+		return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_UPSTREAM_NOT_CONFIGURED", "Codex models upstream HTTP client is not configured")
 	}
+	if request.useAPIKeyUpstream {
+		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	}
+	// CUSTOM(VOTE-AI-OPENAI-TLS): model discovery uses the same account-bound
+	// proxy, TLS profile, and identity policy as normal OpenAI forwarding.
+	resp, err := s.doOpenAIUpstream(nil, req, request.account, request.proxyURL)
 	if err != nil {
 		return nil, &codexModelsManifestUpstreamError{
 			err:       infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "codex models manifest request failed: %v", err),

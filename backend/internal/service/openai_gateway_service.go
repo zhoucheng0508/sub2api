@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
@@ -401,6 +402,8 @@ type OpenAIGatewayService struct {
 	billingCacheService   *BillingCacheService
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream
+	tlsFPProfileService   *TLSFingerprintProfileService
+	tlsFPRouterService    *TLSFingerprintRouterService
 	deferredService       *DeferredService
 	openAITokenProvider   *OpenAITokenProvider
 	grokTokenProvider     *GrokTokenProvider
@@ -446,6 +449,24 @@ type OpenAIGatewayService struct {
 	openaiCompatAnthropicDigestSessions sync.Map
 }
 
+// OpenAIGatewayTLSDependency keeps TLS customization additive to the upstream
+// constructor so future Sub2API merges do not require updating every caller.
+type OpenAIGatewayTLSDependency interface {
+	configureOpenAIGatewayTLS(*OpenAIGatewayService)
+}
+
+func (s *TLSFingerprintProfileService) configureOpenAIGatewayTLS(gateway *OpenAIGatewayService) {
+	if gateway != nil {
+		gateway.tlsFPProfileService = s
+	}
+}
+
+func (s *TLSFingerprintRouterService) configureOpenAIGatewayTLS(gateway *OpenAIGatewayService) {
+	if gateway != nil {
+		gateway.tlsFPRouterService = s
+	}
+}
+
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
 func NewOpenAIGatewayService(
 	accountRepo AccountRepository,
@@ -470,6 +491,7 @@ func NewOpenAIGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	tlsDependencies ...OpenAIGatewayTLSDependency,
 ) *OpenAIGatewayService {
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -509,6 +531,11 @@ func NewOpenAIGatewayService(
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 		openaiModelTransient:  newOpenAIAccountModelTransientState(openAIModelTransientDefaultMax),
 	}
+	for _, dependency := range tlsDependencies {
+		if dependency != nil {
+			dependency.configureOpenAIGatewayTLS(svc)
+		}
+	}
 	if rateLimitService != nil {
 		rateLimitService.SetAccountRuntimeBlocker(svc)
 	}
@@ -517,6 +544,67 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// matchOpenAITLSFingerprintRouter resolves the inbound client identity once per
+// request. A missing/disabled router intentionally falls through to the fixed
+// account profile and Codex CLI identity.
+func (s *OpenAIGatewayService) matchOpenAITLSFingerprintRouter(c *gin.Context, account *Account) TLSFingerprintRouterMatchResult {
+	if s == nil || s.tlsFPRouterService == nil || account == nil || !account.IsTLSFingerprintEnabled() {
+		return TLSFingerprintRouterMatchResult{}
+	}
+	userAgent := ""
+	if c != nil {
+		userAgent = c.GetHeader("User-Agent")
+	}
+	return s.tlsFPRouterService.MatchUserAgent(account.GetTLSFingerprintRouterID(), userAgent)
+}
+
+func (s *OpenAIGatewayService) resolveOpenAITLSConfiguration(account *Account, match TLSFingerprintRouterMatchResult) (*tlsfingerprint.Profile, TLSFingerprintRouterMatchResult) {
+	if s == nil || s.tlsFPProfileService == nil {
+		return nil, TLSFingerprintRouterMatchResult{}
+	}
+	if match.Matched {
+		if profile, ok := s.tlsFPProfileService.ResolveRoutableTLSProfileByID(account, match.TLSFingerprintProfileID); ok {
+			return profile, match
+		}
+	}
+	return s.tlsFPProfileService.ResolveTLSProfile(account), TLSFingerprintRouterMatchResult{}
+}
+
+func applyOpenAITLSIdentity(req *http.Request, profile *tlsfingerprint.Profile, match TLSFingerprintRouterMatchResult) {
+	if req == nil || profile == nil {
+		return
+	}
+	userAgent := strings.TrimSpace(match.UpstreamUserAgent)
+	originator := strings.TrimSpace(match.UpstreamOriginator)
+	// A partial route identity is unsafe. Use the known fixed pair instead.
+	if !match.Matched || userAgent == "" || originator == "" {
+		userAgent = codexCLIUserAgent
+		originator = "codex_cli_rs"
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("originator", originator)
+	// Keep the routed TLS identity behind the official Codex identity policy.
+	// This preserves UA/originator pairing now and automatically picks up
+	// future upstream originator normalization fixes after version syncs.
+	enforceCodexIdentityHeaders(req.Header)
+}
+
+// doOpenAIUpstream preserves the exact account proxy URL for both normal and
+// TLS transports. TLS errors are returned to normal account failover; this
+// helper never retries through a direct connection.
+func (s *OpenAIGatewayService) doOpenAIUpstream(c *gin.Context, req *http.Request, account *Account, proxyURL string) (*http.Response, error) {
+	if account == nil {
+		return s.httpUpstream.Do(req, proxyURL, 0, 0)
+	}
+	match := s.matchOpenAITLSFingerprintRouter(c, account)
+	profile, match := s.resolveOpenAITLSConfiguration(account, match)
+	if profile == nil {
+		return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	}
+	applyOpenAITLSIdentity(req, profile, match)
+	return s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, profile)
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）

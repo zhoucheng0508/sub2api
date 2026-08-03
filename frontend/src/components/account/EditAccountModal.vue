@@ -1912,6 +1912,18 @@
         </div>
       </div>
 
+      <!-- CUSTOM(VOTE-AI-OPENAI-TLS): OpenAI OAuth TLS identity controls. -->
+      <div v-if="account?.platform === 'openai' && account?.type === 'oauth'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="flex items-center justify-between gap-4">
+          <div><label class="input-label mb-0">{{ t('admin.accounts.quotaControl.tlsFingerprint.label') }}</label><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.quotaControl.tlsFingerprint.hint') }}</p></div>
+          <button type="button" role="switch" :aria-checked="tlsFingerprintEnabled" @click="tlsFingerprintEnabled = !tlsFingerprintEnabled" :class="['relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors', tlsFingerprintEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"><span :class="['inline-block h-5 w-5 rounded-full bg-white shadow transition-transform', tlsFingerprintEnabled ? 'translate-x-5' : 'translate-x-0']" /></button>
+        </div>
+        <div v-if="tlsFingerprintEnabled" class="mt-3 grid gap-3 md:grid-cols-2">
+          <div><label class="input-label">{{ t('admin.tlsFingerprintRouters.profile') }}</label><select v-model.number="tlsFingerprintProfileId" class="input"><option :value="null">{{ t('admin.tlsFingerprintRouters.builtin') }}</option><option :value="-1">{{ t('admin.tlsFingerprintRouters.random') }}</option><option v-for="profile in tlsFingerprintProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option></select></div>
+          <div><label class="input-label">{{ t('admin.tlsFingerprintRouters.title') }}</label><select v-model.number="tlsFingerprintRouterId" class="input"><option :value="null">{{ t('common.none') }}</option><option v-for="router in tlsFingerprintRouters" :key="router.id" :value="router.id">{{ router.name }}</option></select></div>
+        </div>
+      </div>
+
       <div
         v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -2901,6 +2913,8 @@ const umqModeOptions = computed(() => [
 const tlsFingerprintEnabled = ref(false)
 const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
+const tlsFingerprintRouterId = ref<number | null>(null)
+const tlsFingerprintRouters = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
@@ -3647,10 +3661,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
 async function loadTLSProfiles() {
   try {
-    const profiles = await adminAPI.tlsFingerprintProfiles.list()
+    const [profiles, routers] = await Promise.all([
+      adminAPI.tlsFingerprintProfiles.list(),
+      adminAPI.tlsFingerprintRouters.list()
+    ])
     tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name }))
+    tlsFingerprintRouters.value = routers.map(router => ({ id: router.id, name: router.name }))
   } catch {
     tlsFingerprintProfiles.value = []
+    tlsFingerprintRouters.value = []
   }
 }
 
@@ -3909,11 +3928,18 @@ function loadQuotaControlSettings(account: Account) {
   userMsgQueueMode.value = ''
   tlsFingerprintEnabled.value = false
   tlsFingerprintProfileId.value = null
+  tlsFingerprintRouterId.value = null
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
   customBaseUrlEnabled.value = false
   customBaseUrl.value = ''
+
+  if ((account.platform === 'openai' && account.type === 'oauth') || account.platform === 'anthropic') {
+    tlsFingerprintEnabled.value = account.enable_tls_fingerprint === true
+    tlsFingerprintProfileId.value = account.tls_fingerprint_profile_id ?? null
+    tlsFingerprintRouterId.value = account.tls_fingerprint_router_id ?? null
+  }
 
   // Remaining quota control settings only apply to Anthropic accounts
   if (account.platform !== 'anthropic') {
@@ -4486,6 +4512,24 @@ const handleSubmit = async () => {
         newExtra.allow_overages = true
       } else {
         delete newExtra.allow_overages
+      }
+      updatePayload.extra = newExtra
+    }
+
+    // CUSTOM(VOTE-AI-OPENAI-TLS): persist OpenAI OAuth TLS identity settings.
+    if (props.account.platform === 'openai' && props.account.type === 'oauth') {
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      if (tlsFingerprintEnabled.value) {
+        newExtra.enable_tls_fingerprint = true
+        if (tlsFingerprintProfileId.value != null) newExtra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+        else delete newExtra.tls_fingerprint_profile_id
+        if (tlsFingerprintRouterId.value != null) newExtra.tls_fingerprint_router_id = tlsFingerprintRouterId.value
+        else delete newExtra.tls_fingerprint_router_id
+      } else {
+        delete newExtra.enable_tls_fingerprint
+        delete newExtra.tls_fingerprint_profile_id
+        delete newExtra.tls_fingerprint_router_id
       }
       updatePayload.extra = newExtra
     }

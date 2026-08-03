@@ -1359,5 +1359,17 @@ export default {
       loadFailed: 'Failed to load profiles',
       saveFailed: 'Failed to save profile',
       deleteFailed: 'Failed to delete profile'
+    },
+    tlsFingerprintRouters: {
+      title: 'TLS Fingerprint Routers',
+      description: 'Route inbound User-Agent values to a coherent TLS fingerprint and upstream identity.',
+      create: 'Create router', edit: 'Edit router', empty: 'No routers configured',
+      name: 'Name', descriptionLabel: 'Description', rules: 'Rules', status: 'Status', enabled: 'Router enabled',
+      firstMatch: 'Rules run from top to bottom; the first match wins.', addRule: 'Add rule', ruleNumber: 'Rule {index}',
+      ruleName: 'Rule name', profile: 'TLS profile', builtin: 'Built-in Node.js 24.x', random: 'Random custom profile',
+      matchType: 'Match type', pattern: 'User-Agent pattern', caseSensitive: 'Case sensitive',
+      deleteTitle: 'Delete router', deleteMessage: 'Delete router "{name}"?',
+      loadFailed: 'Failed to load TLS routers', saveFailed: 'Failed to save TLS router', deleteFailed: 'Failed to delete TLS router',
+      required: 'Router name and every rule pattern are required.', identityPair: 'User-Agent and Originator must be configured together.', saved: 'TLS router saved.'
     }
 }

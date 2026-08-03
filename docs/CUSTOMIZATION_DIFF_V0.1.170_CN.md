@@ -30,7 +30,8 @@
 3. 后台站点 Logo 驱动的首页、登录页和控制台品牌展示；
 4. Vote AI 主题、构建接入和专项测试；
 5. `custom-v*` 标签触发的自定义镜像发布工作流；
-6. `/pricing` 到官方 `/model-plaza` 的兼容跳转。
+6. `/pricing` 到官方 `/model-plaza` 的兼容跳转；
+7. OpenAI OAuth 账号的 TLS 指纹、客户端身份路由和代理保持能力。
 
 二开没有重写官方账号调度、利润控制、计费、渠道、鉴权或网关转发核心。
 
@@ -53,9 +54,10 @@
 | --- | --- | --- |
 | `192_group_profit_control.sql` | 为 `groups` 增加利润控制开关、最低利润率和安全缓冲字段 | 字段均有默认值，功能默认关闭 |
 | `193_group_profit_control_auth_cache_invalidation.sql` | 扩展分组认证缓存失效函数 | `CREATE OR REPLACE`，不删除业务数据 |
+| `194_add_tls_fingerprint_routers.sql` | 新增按入站 User-Agent 匹配的 TLS 指纹路由表及 Codex CLI 固定路由 | 新表和默认路由，不修改现有账号数据；账号开关默认关闭 |
 
-二开没有修改这两个迁移，也没有新增自己的迁移。生产升级前仍必须完成 PostgreSQL
-备份和实际恢复验证；应用启动后会自动执行这两个迁移。
+二开没有修改官方的 `192`、`193` 迁移。本次新增 `194` 迁移；生产升级前仍必须完成
+PostgreSQL 备份和实际恢复验证，应用启动后会自动执行尚未执行的迁移。
 
 ## 4. Vote AI 二开边界
 
@@ -178,6 +180,32 @@ frontend/src/style.css
 `cobe` 用于首页地球渲染。主题色影响公开页和控制台，因此每次升级都要同时进行桌面端、
 移动端、亮色和暗色视觉回归。
 
+## 6.1 OpenAI OAuth TLS 指纹
+
+本次同版本二开发布新增以下能力：
+
+- OpenAI OAuth 账号复用账号级 `enable_tls_fingerprint` 开关；
+- 内置 Codex CLI 固定 TLS 身份和默认 User-Agent 路由；
+- 可按入站 User-Agent 选择 TLS 指纹模板、上游 User-Agent 和 Originator；
+- 路由身份缺失、路由模板无效或未命中时回退到固定 Codex CLI 身份；
+- TLS 请求和 WebSocket 请求始终保留账号原有代理绑定，TLS 失败不会绕过代理直连；
+- TLS 未启用或无法解析模板时继续使用官方普通 HTTP 路径，保持原有行为；
+- 所有 OpenAI 上游入口统一经过 `doOpenAIUpstream`，AST 守卫测试防止后续同步新增直连旁路。
+
+主要接入文件：
+
+```text
+backend/internal/service/openai_gateway_service.go
+backend/internal/service/openai_ws_client.go
+backend/internal/service/tls_fingerprint_router_service.go
+backend/internal/service/openai_tls_router_test.go
+frontend/src/components/admin/TLSFingerprintRoutersModal.vue
+frontend/src/components/account/CreateAccountModal.vue
+frontend/src/components/account/EditAccountModal.vue
+```
+
+该能力以 OpenAI OAuth 账号开关为边界，OpenAI API Key 账号不启用 TLS 指纹模拟。
+
 ## 7. 发布工作流
 
 `.github/workflows/custom-image.yml` 在推送 `custom-v<版本>-<序号>` 标签时构建
@@ -219,6 +247,7 @@ go test -tags=integration ./...
 - 模型广场显示真实模型与分组价格；
 - 管理员账号、分组和利润控制页面；
 - 内容审核代理配置和“仅审计最新输入”；
+- TLS 指纹路由器默认 Codex CLI 路由和 OpenAI OAuth 账号 TLS 开关；
 - 桌面端、移动端、亮色和暗色布局；
 - 浏览器控制台无应用错误。
 
@@ -245,9 +274,11 @@ go test -tags=integration ./...
 - 前端二开专项测试：6 个测试文件、31 个测试全部通过；
 - 前端 lint、类型检查、生产构建和完整 Vitest 测试通过；
 - 后端 `go test -tags=unit ./...` 通过；
-- 构建并运行 `linux/amd64` 候选镜像，镜像内版本为 `0.1.170`；
+- 构建并运行 `linux/amd64` 候选镜像 `sub2api-custom:0.1.170-openai-tls-candidate`，镜像内版本为 `0.1.170`；
 - `/health` 返回 `{"status":"ok"}`；
-- 迁移 `192`、`193` 已应用，现有用户和分组数据仍可读取；
+- 迁移 `192`、`193`、`194` 已应用，现有用户和分组数据仍可读取；
+- TLS 路由器弹窗可读取默认 `OpenAI Codex CLI` 路由；OpenAI OAuth 创建表单显示 TLS 指纹开关；
+- OpenAI TLS 身份归一化、固定模板回退、代理保持、HTTP/WebSocket 统一入口及 AST 守卫测试通过；
 - 浏览器验证 Vote AI 首页、模型广场、`/pricing` 跳转、站内文档、后台仪表盘和分组管理正常；
 - 分组编辑界面显示“启用利润控制”；
 - 系统设置显示“启用风控中心”和内容审计配置入口；当前本地配置仍为关闭，因此风控页面按设计跳回系统设置；
