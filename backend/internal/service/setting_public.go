@@ -153,6 +153,16 @@ func (s *SettingService) GetFrontendURL(ctx context.Context) string {
 	return s.cfg.Server.FrontendURL
 }
 
+// GetAPIBaseURL returns the configured public API origin. Deployments that do
+// not set a separate API URL fall back to the frontend URL.
+func (s *SettingService) GetAPIBaseURL(ctx context.Context) string {
+	val, err := s.settingRepo.GetValue(ctx, SettingKeyAPIBaseURL)
+	if err == nil && strings.TrimSpace(val) != "" {
+		return strings.TrimSpace(val)
+	}
+	return s.GetFrontendURL(ctx)
+}
+
 // GetPublicSettings 获取公开设置（无需登录）
 func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings, error) {
 	keys := []string{

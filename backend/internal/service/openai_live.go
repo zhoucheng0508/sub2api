@@ -176,6 +176,12 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 		}
 
 		account := selection.Account
+		if identity.BeforeAccountForward != nil {
+			if admissionErr := identity.BeforeAccountForward(ctx, account); admissionErr != nil {
+				selection.ReleaseFunc()
+				return nil, admissionErr
+			}
+		}
 		leaseID := generateRequestID()
 		acquired, acquireErr := liveCache.AcquireLiveLease(
 			ctx,

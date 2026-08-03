@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,12 +11,17 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+const batchImageSecurityAuditDecisionContextKey = "sub2api.batch_image.security_audit_decision"
+
+var errBatchImageSecurityAuditBlocked = errors.New("batch image request blocked by security audit")
 
 type BatchImageHandler struct {
 	service  *service.BatchImagePublicService
@@ -47,6 +53,12 @@ func (h *BatchImageHandler) Submit(c *gin.Context) {
 	}
 	got, err := h.service.Submit(c.Request.Context(), owner, req, c.GetHeader("Idempotency-Key"))
 	if err != nil {
+		if value, exists := c.Get(batchImageSecurityAuditDecisionContextKey); exists {
+			if decision, ok := value.(*securityaudit.Decision); ok && decision != nil {
+				h.openAI.openAISecurityAuditError(c, decision)
+				return
+			}
+		}
 		batchImageError(c, err)
 		return
 	}
@@ -87,6 +99,14 @@ func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *
 	if decision != nil && !decision.AllowNextStage {
 		h.openAI.openAISecurityAuditError(c, decision)
 		return false
+	}
+	req.BeforeAccountForward = func(_ context.Context, account *service.Account) error {
+		decision := h.openAI.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIImages, req.Model, body)
+		if decision != nil && !decision.AllowNextStage {
+			c.Set(batchImageSecurityAuditDecisionContextKey, decision)
+			return errBatchImageSecurityAuditBlocked
+		}
+		return nil
 	}
 	return true
 }

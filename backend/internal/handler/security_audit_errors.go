@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,10 @@ import (
 
 func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
 	if decision == nil {
+		return
+	}
+	if securityAuditResponseCommitted(c) {
+		h.handleStreamingAwareErrorWithCode(c, securityAuditStatus(decision), securityAuditStreamErrorType(decision), securityAuditErrorCode(decision), securityAuditMessage(decision), true, false)
 		return
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
@@ -35,6 +40,10 @@ func (h *GatewayHandler) openAISecurityAuditError(c *gin.Context, decision *secu
 	if decision == nil {
 		return
 	}
+	if securityAuditResponseCommitted(c) {
+		h.handleStreamingAwareError(c, securityAuditStatus(decision), securityAuditStreamErrorType(decision), securityAuditMessage(decision), true)
+		return
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.chatCompletionsErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -52,6 +61,10 @@ func (h *GatewayHandler) responsesSecurityAuditError(c *gin.Context, decision *s
 	if decision == nil {
 		return
 	}
+	if securityAuditResponseCommitted(c) {
+		h.handleStreamingAwareError(c, securityAuditStatus(decision), securityAuditStreamErrorType(decision), securityAuditMessage(decision), true)
+		return
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.responsesErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -63,6 +76,10 @@ func (h *GatewayHandler) responsesSecurityAuditError(c *gin.Context, decision *s
 
 func (h *GatewayHandler) anthropicSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
 	if decision == nil {
+		return
+	}
+	if securityAuditResponseCommitted(c) {
+		h.handleStreamingAwareError(c, securityAuditStatus(decision), securityAuditStreamErrorType(decision), securityAuditMessage(decision), true)
 		return
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
@@ -82,6 +99,10 @@ func (h *OpenAIGatewayHandler) anthropicSecurityAuditError(c *gin.Context, decis
 	if decision == nil {
 		return
 	}
+	if securityAuditResponseCommitted(c) {
+		h.handleStreamingAwareErrorWithCode(c, securityAuditStatus(decision), securityAuditStreamErrorType(decision), securityAuditErrorCode(decision), securityAuditMessage(decision), true, false)
+		return
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
 		h.anthropicErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
@@ -95,8 +116,57 @@ func (h *OpenAIGatewayHandler) anthropicSecurityAuditError(c *gin.Context, decis
 	}})
 }
 
+func securityAuditStreamErrorType(decision *securityaudit.Decision) string {
+	if decision == nil {
+		return "api_error"
+	}
+	if decision.Legacy != nil && decision.Legacy.Blocked {
+		return securityAuditErrorCode(decision)
+	}
+	if decision.Kind == securityaudit.DecisionBlock {
+		return "permission_error"
+	}
+	return "api_error"
+}
+
+func securityAuditResponseCommitted(c *gin.Context) bool {
+	return c != nil && c.Writer != nil && (c.Writer.Written() || service.IsResponseCommitted(c))
+}
+
 func googleSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
 	if decision == nil {
+		return
+	}
+	if securityAuditResponseCommitted(c) {
+		status := securityAuditStatus(decision)
+		googleStatus := googleapi.HTTPStatusToGoogleStatus(status)
+		if status == http.StatusServiceUnavailable {
+			googleStatus = "UNAVAILABLE"
+		}
+		requestID := ""
+		if c.Request != nil {
+			requestID = contentModerationRequestID(c.Request.Context())
+		}
+		payload, err := json.Marshal(gin.H{"error": gin.H{
+			"code": status, "message": securityAuditMessage(decision), "status": googleStatus,
+			"details": []gin.H{{
+				"@type":  "type.googleapis.com/google.rpc.ErrorInfo",
+				"reason": securityAuditErrorCode(decision), "domain": "sub2api.securityaudit",
+				"metadata": gin.H{"request_id": requestID},
+			}},
+		}})
+		if err != nil {
+			_ = c.Error(err)
+			return
+		}
+		service.MarkOpsStreamError(c, securityAuditStreamErrorType(decision), securityAuditMessage(decision), status)
+		if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", payload); err != nil {
+			_ = c.Error(err)
+			return
+		}
+		if flusher, ok := c.Writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
 		return
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {

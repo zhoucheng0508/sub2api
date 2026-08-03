@@ -7,10 +7,21 @@ export type AIAuditThinkingMode = 'disabled' | 'enabled'
 export type AIAuditReasoningEffort = 'adaptive' | 'low' | 'high' | 'max'
 export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
+export type ContentModerationScopeFilterType = 'all' | 'include' | 'exclude'
 
 export interface ContentModerationModelFilter {
   type: ContentModerationModelFilterType
   models: string[]
+}
+
+export interface ContentModerationUserFilter {
+  type: ContentModerationScopeFilterType
+  user_ids: number[]
+}
+
+export interface ContentModerationAccountFilter {
+  type: ContentModerationScopeFilterType
+  account_ids: number[]
 }
 
 export interface ContentModerationProviderProfile {
@@ -77,6 +88,8 @@ export interface ContentModerationConfig {
   blocked_keywords: string[]
   keyword_blocking_mode: KeywordBlockingMode
   model_filter: ContentModerationModelFilter
+  user_filter: ContentModerationUserFilter
+  account_filter: ContentModerationAccountFilter
   cyber_policy_exclude_from_ban_count: boolean
 }
 
@@ -172,6 +185,8 @@ export interface UpdateContentModerationConfig {
   blocked_keywords?: string[]
   keyword_blocking_mode?: KeywordBlockingMode
   model_filter?: ContentModerationModelFilter
+  user_filter?: ContentModerationUserFilter
+  account_filter?: ContentModerationAccountFilter
   cyber_policy_exclude_from_ban_count?: boolean
   ai_confidence_threshold?: number
   ai_cache_enabled?: boolean

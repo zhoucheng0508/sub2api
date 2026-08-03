@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
@@ -17,6 +19,8 @@ import (
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
+
+var errLiveSecurityAuditBlocked = errors.New("live request blocked by security audit")
 
 func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -100,8 +104,21 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
 	defer userRelease()
 
 	identity := liveCallIdentity(c, apiKey, subject.UserID, subscription)
+	var securityAuditDecision *securityaudit.Decision
+	identity.BeforeAccountForward = func(_ context.Context, account *service.Account) error {
+		decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, model, request.Session)
+		if decision != nil && !decision.AllowNextStage {
+			securityAuditDecision = decision
+			return errLiveSecurityAuditBlocked
+		}
+		return nil
+	}
 	created, err := h.gatewayService.CreateLiveCall(c.Request.Context(), request, identity, subject.Concurrency)
 	if err != nil {
+		if securityAuditDecision != nil {
+			h.openAISecurityAuditError(c, securityAuditDecision)
+			return
+		}
 		h.writeLiveCreateError(c, err)
 		return
 	}

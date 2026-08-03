@@ -874,6 +874,73 @@
               </div>
             </div>
 
+            <!-- CUSTOM(VOTE-AI-RISK-SCOPE): explicit user/account moderation boundaries. -->
+            <div class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-900/20 dark:text-sky-200">
+              {{ t('admin.riskControl.internalProbeBypassNotice') }}
+            </div>
+
+            <div
+              v-for="section in scopeFilterSections"
+              :key="section.entity"
+              class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700"
+              :data-test="`${section.entity}-filter-section`"
+            >
+              <div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ section.title }}</h3>
+                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ section.hint }}</p>
+                </div>
+                <span class="inline-flex w-fit rounded-md bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                  {{ scopeFilterSummary(section.entity) }}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <button
+                  v-for="type in scopeFilterTypes"
+                  :key="type"
+                  type="button"
+                  class="rounded-lg border p-3 text-left transition-colors"
+                  :class="scopeFilterType(section.entity) === type
+                    ? 'border-primary-300 bg-primary-50 text-primary-900 shadow-sm dark:border-primary-700 dark:bg-primary-900/20 dark:text-primary-100'
+                    : 'border-gray-100 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-700/60'"
+                  :data-test="`${section.entity}-filter-${type}`"
+                  @click="setScopeFilterType(section.entity, type)"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-sm font-semibold">{{ scopeFilterTypeLabel(type) }}</span>
+                    <span
+                      class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
+                      :class="scopeFilterType(section.entity) === type
+                        ? 'border-primary-500 bg-primary-500 text-white'
+                        : 'border-gray-300 text-transparent dark:border-dark-500'"
+                    >
+                      <Icon name="check" size="xs" :stroke-width="2" />
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                    {{ scopeFilterTypeDescription(section.entity, type) }}
+                  </p>
+                </button>
+              </div>
+
+              <div v-if="scopeFilterType(section.entity) !== 'all'" class="space-y-2">
+                <label class="input-label">{{ section.selectorLabel }}</label>
+                <ScopeEntitySelector
+                  :entity="section.entity"
+                  :model-value="scopeFilterIds(section.entity)"
+                  @update:model-value="updateScopeFilterIds(section.entity, $event)"
+                />
+                <p
+                  v-if="scopeFilterType(section.entity) === 'include' && scopeFilterIds(section.entity).length === 0"
+                  class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+                  :data-test="`${section.entity}-filter-empty-warning`"
+                >
+                  {{ section.emptyIncludeWarning }}
+                </p>
+              </div>
+            </div>
+
             <div class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700">
               <div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -1250,6 +1317,8 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import ProxySelector from '@/components/common/ProxySelector.vue'
 // CUSTOM(VOTE-AI-AI-AUDIT): isolated audit-provider selector.
 import AuditProviderSelector from '@/custom/vote-ai/risk-control/AuditProviderSelector.vue'
+// CUSTOM(VOTE-AI-RISK-SCOPE): isolated searchable user/account scope selector.
+import ScopeEntitySelector from '@/custom/vote-ai/risk-control/ScopeEntitySelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
   ContentModerationAPIKeyLoad,
@@ -1260,6 +1329,9 @@ import type {
   ContentModerationLog,
   ContentModerationModelFilter,
   ContentModerationModelFilterType,
+  ContentModerationScopeFilterType,
+  ContentModerationUserFilter,
+  ContentModerationAccountFilter,
   ContentModerationRuntimeStatus,
   ContentModerationTestAuditResult,
   KeywordBlockingMode,
@@ -1277,6 +1349,7 @@ import { formatDateTime as formatDateTimeValue } from '@/utils/format'
 type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
 type WorkerSlotState = 'active' | 'idle' | 'disabled'
 type APIKeysWriteMode = 'append' | 'replace'
+type ScopeEntity = 'user' | 'account'
 type ProviderDraft = ContentModerationProviderProfile & {
   api_keys_text: string
   api_key_statuses: ContentModerationAPIKeyStatus[]
@@ -1452,6 +1525,10 @@ const configForm = reactive({
   keyword_blocking_mode: 'keyword_and_api' as KeywordBlockingMode,
   model_filter_type: 'all' as ContentModerationModelFilterType,
   model_filter_models: [] as string[],
+  user_filter_type: 'all' as ContentModerationScopeFilterType,
+  user_filter_ids: [] as number[],
+  account_filter_type: 'all' as ContentModerationScopeFilterType,
+  account_filter_ids: [] as number[],
 })
 
 const providerDrafts = reactive<Record<ContentModerationAuditProvider, ProviderDraft>>({
@@ -1622,6 +1699,30 @@ const keywordBlockingModeOptions = computed<Array<{ value: KeywordBlockingMode; 
     value: 'api_only',
     label: t('admin.riskControl.keywordModeApiOnly'),
     description: t('admin.riskControl.keywordModeApiOnlyDesc'),
+  },
+])
+
+const scopeFilterTypes: ContentModerationScopeFilterType[] = ['all', 'include', 'exclude']
+const scopeFilterSections = computed<Array<{
+  entity: ScopeEntity
+  title: string
+  hint: string
+  selectorLabel: string
+  emptyIncludeWarning: string
+}>>(() => [
+  {
+    entity: 'user',
+    title: t('admin.riskControl.userFilter'),
+    hint: t('admin.riskControl.userFilterHint'),
+    selectorLabel: t('admin.riskControl.userFilterUsers'),
+    emptyIncludeWarning: t('admin.riskControl.userFilterEmptyIncludeWarning'),
+  },
+  {
+    entity: 'account',
+    title: t('admin.riskControl.accountFilter'),
+    hint: t('admin.riskControl.accountFilterHint'),
+    selectorLabel: t('admin.riskControl.accountFilterAccounts'),
+    emptyIncludeWarning: t('admin.riskControl.accountFilterEmptyIncludeWarning'),
   },
 ])
 
@@ -2081,6 +2182,12 @@ function applyConfig(config: ContentModerationConfig) {
   const modelFilter = normalizeModelFilter(config.model_filter)
   configForm.model_filter_type = modelFilter.type
   configForm.model_filter_models = modelFilter.models
+  const userFilter = normalizeUserFilter(config.user_filter)
+  configForm.user_filter_type = userFilter.type
+  configForm.user_filter_ids = userFilter.user_ids
+  const accountFilter = normalizeAccountFilter(config.account_filter)
+  configForm.account_filter_type = accountFilter.type
+  configForm.account_filter_ids = accountFilter.account_ids
   savedConfigSnapshot.value = JSON.parse(JSON.stringify(config)) as ContentModerationConfig
 }
 
@@ -2183,6 +2290,8 @@ async function saveConfig() {
       blocked_keywords: blockedKeywordList.value,
       keyword_blocking_mode: configForm.keyword_blocking_mode,
       model_filter: modelFilterPayload,
+      user_filter: buildUserFilterPayload(),
+      account_filter: buildAccountFilterPayload(),
     }
     const keys = parseApiKeys(configForm.api_keys_text)
     if (!payload.clear_api_key && configForm.api_keys_mode === 'replace' && keys.length === 0) {
@@ -2351,6 +2460,50 @@ function setModelFilterType(type: ContentModerationModelFilterType) {
   if (type === 'all') {
     configForm.model_filter_models = []
   }
+}
+
+function scopeFilterType(entity: ScopeEntity): ContentModerationScopeFilterType {
+  return entity === 'user' ? configForm.user_filter_type : configForm.account_filter_type
+}
+
+function scopeFilterIds(entity: ScopeEntity): number[] {
+  return entity === 'user' ? configForm.user_filter_ids : configForm.account_filter_ids
+}
+
+function setScopeFilterType(entity: ScopeEntity, type: ContentModerationScopeFilterType): void {
+  if (entity === 'user') {
+    configForm.user_filter_type = type
+    if (type === 'all') configForm.user_filter_ids = []
+    return
+  }
+  configForm.account_filter_type = type
+  if (type === 'all') configForm.account_filter_ids = []
+}
+
+function updateScopeFilterIds(entity: ScopeEntity, ids: number[]): void {
+  const normalized = normalizePositiveIDs(ids)
+  if (entity === 'user') {
+    configForm.user_filter_ids = normalized
+  } else {
+    configForm.account_filter_ids = normalized
+  }
+}
+
+function scopeFilterTypeLabel(type: ContentModerationScopeFilterType): string {
+  return t(`admin.riskControl.scopeFilter${type === 'all' ? 'All' : type === 'include' ? 'Include' : 'Exclude'}`)
+}
+
+function scopeFilterTypeDescription(entity: ScopeEntity, type: ContentModerationScopeFilterType): string {
+  const suffix = type === 'all' ? 'AllDesc' : type === 'include' ? 'IncludeDesc' : 'ExcludeDesc'
+  return t(`admin.riskControl.${entity}Filter${suffix}`)
+}
+
+function scopeFilterSummary(entity: ScopeEntity): string {
+  const type = scopeFilterType(entity)
+  const count = scopeFilterIds(entity).length
+  if (type === 'include') return t('admin.riskControl.scopeFilterIncludeSummary', { count })
+  if (type === 'exclude') return t('admin.riskControl.scopeFilterExcludeSummary', { count })
+  return t('admin.riskControl.scopeFilterAllSummary')
 }
 
 async function testApiKeys(useInputKeys: boolean) {
@@ -2661,6 +2814,40 @@ function buildModelFilterPayload(): ContentModerationModelFilter {
     type,
     models: normalizeModelNames(configForm.model_filter_models),
   }
+}
+
+function normalizeScopeFilterType(value: unknown): ContentModerationScopeFilterType {
+  if (value === 'include' || value === 'exclude' || value === 'all') return value
+  return 'all'
+}
+
+function normalizePositiveIDs(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value.map(Number).filter((id) => Number.isInteger(id) && id > 0)))
+}
+
+function normalizeUserFilter(value: unknown): ContentModerationUserFilter {
+  if (!value || typeof value !== 'object') return { type: 'all', user_ids: [] }
+  const raw = value as Partial<ContentModerationUserFilter>
+  const type = normalizeScopeFilterType(raw.type)
+  return { type, user_ids: type === 'all' ? [] : normalizePositiveIDs(raw.user_ids) }
+}
+
+function normalizeAccountFilter(value: unknown): ContentModerationAccountFilter {
+  if (!value || typeof value !== 'object') return { type: 'all', account_ids: [] }
+  const raw = value as Partial<ContentModerationAccountFilter>
+  const type = normalizeScopeFilterType(raw.type)
+  return { type, account_ids: type === 'all' ? [] : normalizePositiveIDs(raw.account_ids) }
+}
+
+function buildUserFilterPayload(): ContentModerationUserFilter {
+  const type = normalizeScopeFilterType(configForm.user_filter_type)
+  return { type, user_ids: type === 'all' ? [] : normalizePositiveIDs(configForm.user_filter_ids) }
+}
+
+function buildAccountFilterPayload(): ContentModerationAccountFilter {
+  const type = normalizeScopeFilterType(configForm.account_filter_type)
+  return { type, account_ids: type === 'all' ? [] : normalizePositiveIDs(configForm.account_filter_ids) }
 }
 
 function riskThresholdsFromConfig(thresholds: Record<string, number> | null | undefined): Record<string, number> {

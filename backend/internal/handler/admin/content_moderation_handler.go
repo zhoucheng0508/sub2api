@@ -48,29 +48,31 @@ type contentModerationConfigRequest struct {
 	ViolationWindowHours *int                `json:"violation_window_hours"`
 	// cyber_policy 命中是否排除出自动封号计数；前端 RiskControlView 已发送该字段，
 	// service.UpdateContentModerationConfigInput 已支持，此前 handler 层缺透传导致开关静默失效。
-	CyberPolicyExcludeFromBanCount    *bool                                 `json:"cyber_policy_exclude_from_ban_count"`
-	RetryCount                        *int                                  `json:"retry_count"`
-	HitRetentionDays                  *int                                  `json:"hit_retention_days"`
-	NonHitRetentionDays               *int                                  `json:"non_hit_retention_days"`
-	PreHashCheckEnabled               *bool                                 `json:"pre_hash_check_enabled"`
-	BlockedKeywords                   *[]string                             `json:"blocked_keywords"`
-	KeywordBlockingMode               *string                               `json:"keyword_blocking_mode"`
-	ModelFilter                       *service.ContentModerationModelFilter `json:"model_filter"`
-	AIConfidenceThreshold             *float64                              `json:"ai_confidence_threshold"`
-	AICacheEnabled                    *bool                                 `json:"ai_cache_enabled"`
-	AICacheTTLSeconds                 *int                                  `json:"ai_cache_ttl_seconds"`
-	AISystemPrompt                    *string                               `json:"ai_system_prompt"`
-	AIFailurePolicy                   *string                               `json:"ai_failure_policy"`
-	AIMaxInputChars                   *int                                  `json:"ai_max_input_chars"`
-	AIThinkingMode                    *string                               `json:"ai_thinking_mode"`
-	AIReasoningEffort                 *string                               `json:"ai_reasoning_effort"`
-	AIRiskLevelsEnabled               *bool                                 `json:"ai_risk_levels_enabled"`
-	AIObserveThreshold                *float64                              `json:"ai_observe_threshold"`
-	AISessionRiskEnabled              *bool                                 `json:"ai_session_risk_enabled"`
-	AISessionRiskTTLMinutes           *int                                  `json:"ai_session_risk_ttl_minutes"`
-	AISessionRiskHalfLifeMinutes      *int                                  `json:"ai_session_risk_half_life_minutes"`
-	AISessionRiskBlockCooldownMinutes *int                                  `json:"ai_session_risk_block_cooldown_minutes"`
-	AIActorRiskEnabled                *bool                                 `json:"ai_actor_risk_enabled"`
+	CyberPolicyExcludeFromBanCount    *bool                                   `json:"cyber_policy_exclude_from_ban_count"`
+	RetryCount                        *int                                    `json:"retry_count"`
+	HitRetentionDays                  *int                                    `json:"hit_retention_days"`
+	NonHitRetentionDays               *int                                    `json:"non_hit_retention_days"`
+	PreHashCheckEnabled               *bool                                   `json:"pre_hash_check_enabled"`
+	BlockedKeywords                   *[]string                               `json:"blocked_keywords"`
+	KeywordBlockingMode               *string                                 `json:"keyword_blocking_mode"`
+	ModelFilter                       *service.ContentModerationModelFilter   `json:"model_filter"`
+	UserFilter                        *service.ContentModerationUserFilter    `json:"user_filter"`
+	AccountFilter                     *service.ContentModerationAccountFilter `json:"account_filter"`
+	AIConfidenceThreshold             *float64                                `json:"ai_confidence_threshold"`
+	AICacheEnabled                    *bool                                   `json:"ai_cache_enabled"`
+	AICacheTTLSeconds                 *int                                    `json:"ai_cache_ttl_seconds"`
+	AISystemPrompt                    *string                                 `json:"ai_system_prompt"`
+	AIFailurePolicy                   *string                                 `json:"ai_failure_policy"`
+	AIMaxInputChars                   *int                                    `json:"ai_max_input_chars"`
+	AIThinkingMode                    *string                                 `json:"ai_thinking_mode"`
+	AIReasoningEffort                 *string                                 `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled               *bool                                   `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold                *float64                                `json:"ai_observe_threshold"`
+	AISessionRiskEnabled              *bool                                   `json:"ai_session_risk_enabled"`
+	AISessionRiskTTLMinutes           *int                                    `json:"ai_session_risk_ttl_minutes"`
+	AISessionRiskHalfLifeMinutes      *int                                    `json:"ai_session_risk_half_life_minutes"`
+	AISessionRiskBlockCooldownMinutes *int                                    `json:"ai_session_risk_block_cooldown_minutes"`
+	AIActorRiskEnabled                *bool                                   `json:"ai_actor_risk_enabled"`
 }
 
 type contentModerationAPIKeyTestRequest struct {
@@ -142,6 +144,8 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		BlockedKeywords:                   req.BlockedKeywords,
 		KeywordBlockingMode:               req.KeywordBlockingMode,
 		ModelFilter:                       req.ModelFilter,
+		UserFilter:                        req.UserFilter,
+		AccountFilter:                     req.AccountFilter,
 		AIConfidenceThreshold:             req.AIConfidenceThreshold,
 		AICacheEnabled:                    req.AICacheEnabled,
 		AICacheTTLSeconds:                 req.AICacheTTLSeconds,

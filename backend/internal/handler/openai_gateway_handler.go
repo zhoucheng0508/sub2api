@@ -524,6 +524,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, reqModel, body); decision != nil && !decision.AllowNextStage {
+			releaseSecurityAuditSelection(selection)
+			h.openAISecurityAuditError(c, decision)
+			return
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
@@ -1081,6 +1086,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
+			releaseSecurityAuditSelection(selection)
+			h.anthropicSecurityAuditError(c, decision)
+			return
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
@@ -1720,10 +1730,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, true)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
 
-	if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn"); decision != nil && !decision.AllowNextStage {
-		writeSecurityAuditWSError(ctx, wsConn, decision)
-		closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
-		return
+	firstTurnAuditPassed := false
+	if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn"); decision != nil {
+		if !decision.AllowNextStage {
+			writeSecurityAuditWSError(ctx, wsConn, decision)
+			closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
+			return
+		}
+		firstTurnAuditPassed = true
 	}
 
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
@@ -1976,6 +1990,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			selection.Account = latest
 			accountReleaseFunc = fastReleaseFunc
 		}
+		if !firstTurnAuditPassed {
+			decision := h.checkSecurityAuditStageForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn")
+			if decision != nil {
+				if !decision.AllowNextStage {
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+					writeSecurityAuditWSError(ctx, wsConn, decision)
+					closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
+					return
+				}
+				firstTurnAuditPassed = true
+			}
+		}
 		// 准入完成：门并入连接 ctx，turn 级复核与 failover 重选共用。
 		ctx = admissionCtx
 		currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
@@ -2040,7 +2068,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if model == "" {
 					model = reqModel
 				}
-				if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, model, payload, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
+				if decision := h.checkSecurityAuditStageForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, model, payload, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
 					writeSecurityAuditWSError(ctx, wsConn, decision)
 					return service.NewOpenAIWSClientCloseError(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision), nil)
 				}

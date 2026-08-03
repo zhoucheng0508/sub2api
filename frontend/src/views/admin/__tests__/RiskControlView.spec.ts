@@ -13,6 +13,10 @@ const {
   listLogs,
   getGroups,
   getProxies,
+  listUsers,
+  getUserById,
+  listAccounts,
+  getAccountById,
   showError,
   showSuccess,
 } = vi.hoisted(() => ({
@@ -22,6 +26,10 @@ const {
   listLogs: vi.fn(),
   getGroups: vi.fn(),
   getProxies: vi.fn(),
+  listUsers: vi.fn(),
+  getUserById: vi.fn(),
+  listAccounts: vi.fn(),
+  getAccountById: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
 }))
@@ -43,6 +51,14 @@ vi.mock('@/api/admin', () => ({
     },
     proxies: {
       getAll: getProxies,
+    },
+    users: {
+      list: listUsers,
+      getById: getUserById,
+    },
+    accounts: {
+      list: listAccounts,
+      getById: getAccountById,
     },
   },
 }))
@@ -110,6 +126,14 @@ const baseConfig = (): ContentModerationConfig => ({
   model_filter: {
     type: 'all',
     models: [],
+  },
+  user_filter: {
+    type: 'all',
+    user_ids: [],
+  },
+  account_filter: {
+    type: 'all',
+    account_ids: [],
   },
 })
 
@@ -197,6 +221,11 @@ describe('admin RiskControlView', () => {
     getStatus.mockReset()
     listLogs.mockReset()
     getGroups.mockReset()
+    getProxies.mockReset()
+    listUsers.mockReset()
+    getUserById.mockReset()
+    listAccounts.mockReset()
+    getAccountById.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
 
@@ -205,6 +234,8 @@ describe('admin RiskControlView', () => {
     listLogs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
     getGroups.mockResolvedValue([])
     getProxies.mockResolvedValue([])
+    listUsers.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
+    listAccounts.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
       ...payload,
@@ -249,6 +280,122 @@ describe('admin RiskControlView', () => {
       },
     }))
     expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('loads and saves user and upstream account audit scopes', async () => {
+    getConfig.mockResolvedValue({
+      ...baseConfig(),
+      user_filter: { type: 'exclude', user_ids: [7] },
+      account_filter: { type: 'include', account_ids: [11] },
+    })
+    getUserById.mockResolvedValue({ id: 7, email: 'admin@example.com', username: 'admin', role: 'admin' })
+    getAccountById.mockResolvedValue({ id: 11, name: 'Protected Pro', platform: 'openai', type: 'oauth' })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="user-filter-exclude"]').classes()).toContain('border-primary-300')
+    expect(wrapper.get('[data-test="account-filter-include"]').classes()).toContain('border-primary-300')
+    expect(wrapper.text()).toContain('admin@example.com')
+    expect(wrapper.text()).toContain('Protected Pro')
+
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      user_filter: { type: 'exclude', user_ids: [7] },
+      account_filter: { type: 'include', account_ids: [11] },
+    }))
+  })
+
+  it('saves a selected Spark shadow as its parent account scope', async () => {
+    listAccounts.mockResolvedValue({
+      items: [{
+        id: 302,
+        name: 'Protected Pro Spark',
+        platform: 'openai',
+        type: 'oauth',
+        parent_account_id: 202,
+        quota_dimension: 'spark',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    await wrapper.get('[data-test="account-filter-include"]').trigger('click')
+    await wrapper.get('[data-test="account-scope-search"]').setValue('spark')
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    await flushPromises()
+    await wrapper.get('[data-test="account-scope-option-202"]').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      account_filter: { type: 'include', account_ids: [202] },
+    }))
+  })
+
+  it('warns when an include-only user or account scope is empty', async () => {
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    await wrapper.get('[data-test="user-filter-include"]').trigger('click')
+    await wrapper.get('[data-test="account-filter-include"]').trigger('click')
+
+    expect(wrapper.get('[data-test="user-filter-empty-warning"]').text()).toContain('admin.riskControl.userFilterEmptyIncludeWarning')
+    expect(wrapper.get('[data-test="account-filter-empty-warning"]').text()).toContain('admin.riskControl.accountFilterEmptyIncludeWarning')
   })
 
   it('submits edited risk control thresholds when saving moderation config', async () => {

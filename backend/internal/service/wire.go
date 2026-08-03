@@ -9,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/internalprobe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -780,7 +781,7 @@ var ProviderSet = wire.NewSet(
 	NewGroupCapacityService,
 	NewChannelService,
 	NewModelPricingResolver,
-	NewContentModerationService,
+	ProvideContentModerationService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
@@ -803,6 +804,32 @@ func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache
 // constructor parameter kept for backwards-compatible upstream callers.
 func ProvideOpenAIGatewayTLSFingerprintRouterServices(profile *TLSFingerprintProfileService, router *TLSFingerprintRouterService) []OpenAIGatewayTLSDependency {
 	return []OpenAIGatewayTLSDependency{profile, router}
+}
+
+// ProvideContentModerationService injects the production account repository
+// without widening the backwards-compatible constructor signature.
+func ProvideContentModerationService(
+	settingRepo SettingRepository,
+	repo ContentModerationRepository,
+	hashCache ContentModerationHashCache,
+	groupRepo GroupRepository,
+	userRepo UserRepository,
+	proxyRepo ProxyRepository,
+	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	emailService *EmailService,
+	accountRepo AccountRepository,
+) *ContentModerationService {
+	return newContentModerationService(
+		settingRepo,
+		repo,
+		hashCache,
+		groupRepo,
+		userRepo,
+		proxyRepo,
+		authCacheInvalidator,
+		emailService,
+		accountRepo,
+	)
 }
 
 // ProvidePaymentConfigService wraps NewPaymentConfigService to accept the named
@@ -838,8 +865,12 @@ func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache Lead
 func ProvideChannelMonitorService(
 	repo ChannelMonitorRepository,
 	encryptor SecretEncryptor,
+	settingService *SettingService,
+	cfg *config.Config,
 ) *ChannelMonitorService {
-	return NewChannelMonitorService(repo, encryptor)
+	svc := NewChannelMonitorService(repo, encryptor)
+	svc.setInternalProbeAuthenticator(internalprobe.NewAuthenticator(cfg.JWT.Secret), settingService)
+	return svc
 }
 
 // ProvideChannelMonitorRunner 创建并启动渠道监控调度器。

@@ -44,3 +44,17 @@ func TestContentModerationConfigRequestDecodesSessionRiskSettings(t *testing.T) 
 	require.Equal(t, 45, *req.AISessionRiskBlockCooldownMinutes)
 	require.Equal(t, true, *req.AIActorRiskEnabled)
 }
+
+func TestContentModerationConfigRequestDecodesScopeFilters(t *testing.T) {
+	var req contentModerationConfigRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"user_filter":{"type":"exclude","user_ids":[3,7]},
+		"account_filter":{"type":"include","account_ids":[11,13]}
+	}`), &req))
+	require.NotNil(t, req.UserFilter)
+	require.Equal(t, "exclude", req.UserFilter.Type)
+	require.Equal(t, []int64{3, 7}, req.UserFilter.UserIDs)
+	require.NotNil(t, req.AccountFilter)
+	require.Equal(t, "include", req.AccountFilter.Type)
+	require.Equal(t, []int64{11, 13}, req.AccountFilter.AccountIDs)
+}
