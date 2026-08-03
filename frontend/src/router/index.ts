@@ -40,18 +40,16 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    // Preserve legacy Vote AI pricing links while using Sub2API's dynamic model plaza.
     path: '/pricing',
-    name: 'Pricing',
-    component: () => import('@/views/PricingView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Model Pricing'
-    }
+    name: 'LegacyPricingRedirect',
+    redirect: '/model-plaza'
   },
   {
+    // CUSTOM(VOTE-AI-DOCS): isolated managed public documentation page.
     path: '/docs/:slug?',
     name: 'Docs',
-    component: () => import('@/views/DocsView.vue'),
+    component: () => import('@/custom/vote-ai/views/DocsView.vue'),
     meta: {
       requiresAuth: false,
       title: 'Documentation'

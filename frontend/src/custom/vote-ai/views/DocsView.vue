@@ -2,10 +2,10 @@
   <div class="docs-page" :class="{ 'theme-dark': isDark }">
     <header class="site-header">
       <nav class="site-nav" aria-label="文档页导航">
-        <router-link to="/home" class="brand"><span class="brand-logo"><img :src="siteLogo || '/logo.svg'" alt="" /></span><span>Vote AI</span></router-link>
+        <router-link to="/home" class="brand"><span class="brand-logo"><img :src="siteLogo || VOTE_AI_LOGO_URL" alt="" /></span><span>Vote AI</span></router-link>
         <div class="nav-links">
           <router-link to="/home">{{ copy.nav.home }}</router-link>
-          <router-link to="/pricing">{{ copy.nav.pricing }}</router-link>
+          <router-link to="/model-plaza">{{ copy.nav.pricing }}</router-link>
           <router-link to="/home#faq">{{ copy.nav.faq }}</router-link>
           <router-link to="/docs" class="active">{{ copy.nav.docs }}</router-link>
         </div>
@@ -18,7 +18,7 @@
         </div>
       </nav>
       <div v-if="mobileMenuOpen" class="mobile-menu">
-        <router-link to="/home" @click="mobileMenuOpen = false">{{ copy.nav.home }}</router-link><router-link to="/pricing" @click="mobileMenuOpen = false">{{ copy.nav.pricing }}</router-link><router-link to="/home#faq" @click="mobileMenuOpen = false">{{ copy.nav.faq }}</router-link><router-link to="/docs" class="active" @click="mobileMenuOpen = false">{{ copy.nav.docs }}</router-link>
+        <router-link to="/home" @click="mobileMenuOpen = false">{{ copy.nav.home }}</router-link><router-link to="/model-plaza" @click="mobileMenuOpen = false">{{ copy.nav.pricing }}</router-link><router-link to="/home#faq" @click="mobileMenuOpen = false">{{ copy.nav.faq }}</router-link><router-link to="/docs" class="active" @click="mobileMenuOpen = false">{{ copy.nav.docs }}</router-link>
         <div class="mobile-tools"><LocaleSwitcher /><button type="button" @click="toggleTheme"><Icon :name="isDark ? 'sun' : 'moon'" size="md" />{{ isDark ? copy.light : copy.dark }}</button></div>
         <router-link :to="isAuthenticated ? dashboardPath : '/login'" class="mobile-primary">{{ isAuthenticated ? copy.console : copy.login }}</router-link>
       </div>
@@ -74,7 +74,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore, useAuthStore } from '@/stores'
-import { getAdminDocs, getPublishedDocs, saveAdminDocs } from '@/api/docs'
+import { getAdminDocs, getPublishedDocs, saveAdminDocs } from '../api/docs'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Input from '@/components/common/Input.vue'
@@ -82,7 +82,8 @@ import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import TextArea from '@/components/common/TextArea.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
-import MarkdownContent from '@/components/docs/MarkdownContent.vue'
+import MarkdownContent from '../components/MarkdownContent.vue'
+import { VOTE_AI_LOGO_URL } from '../branding'
 import { sanitizeUrl } from '@/utils/url'
 
 type LocalizedText = { zh: string; en: string }

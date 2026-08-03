@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, RouterLinkStub } from '@vue/test-utils'
+import { ref } from 'vue'
 
 import HomeView from '../HomeView.vue'
 
@@ -25,20 +26,19 @@ vi.mock('@/stores', () => ({
   useAuthStore: () => authStore,
 }))
 
-vi.mock('@/components/home/InteractiveGlobe.vue', () => ({
+vi.mock('@/custom/vote-ai/components/InteractiveGlobe.vue', () => ({
   default: { template: '<div data-testid="interactive-globe" />' },
 }))
 
-vi.mock('vue-router', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('vue-router')>()
-  return { ...actual, useRouter: () => ({ push: vi.fn() }) }
-})
+vi.mock('@/custom/vote-ai/views/VoteAiHome.vue', () => ({
+  default: { template: '<div class="home-page"><span class="brand-name">Vote AI</span></div>' },
+}))
 
 vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key, locale: { value: 'en' } }),
+    useI18n: () => ({ t: (key: string) => key, locale: ref('zh-CN') }),
   }
 })
 
@@ -61,7 +61,8 @@ function mountHome(settings: Record<string, unknown> = {}) {
 }
 
 function compactDestination(wrapper: ReturnType<typeof mountHome>) {
-  return wrapper.get('[data-testid="compact-home"]').findComponent(RouterLinkStub).props('to')
+  const links = wrapper.get('[data-testid="compact-home"]').findAllComponents(RouterLinkStub)
+  return links.find((link) => link.props('to') !== '/docs')?.props('to')
 }
 
 describe('HomeView compact mode', () => {
@@ -107,6 +108,7 @@ describe('HomeView compact mode', () => {
 
     expect(wrapper.find('[data-testid="compact-home"]').exists()).toBe(false)
     expect(wrapper.find('.home-page').exists()).toBe(true)
+    expect(wrapper.get('.brand-name').text()).toBe('Vote AI')
   })
 
   it('links unauthenticated visitors to login', () => {

@@ -89,6 +89,7 @@ func buildContentModerationInput(c *gin.Context, apiKey *service.APIKey, subject
 		Model:     clientRequestedModel(c, model),
 		Protocol:  protocol,
 		Body:      body,
+		SessionID: service.ExtractClientSessionID(c),
 	}
 	if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
 		input.Provider = resolvedPlatform

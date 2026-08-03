@@ -34,8 +34,7 @@ func (h *SettingHandler) SetNotificationEmailService(notificationEmailService *s
 	h.notificationEmailService = notificationEmailService
 }
 
-// GetPublicSettings 获取公开设置
-// GET /api/v1/settings/public
+// CUSTOM(VOTE-AI-DOCS): serve published managed documentation.
 func (h *SettingHandler) GetDocs(c *gin.Context) {
 	docs, err := h.settingService.GetDocs(c.Request.Context(), true)
 	if err != nil {
@@ -45,6 +44,8 @@ func (h *SettingHandler) GetDocs(c *gin.Context) {
 	response.Success(c, docs)
 }
 
+// GetPublicSettings 获取公开设置
+// GET /api/v1/settings/public
 func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 	settings, err := h.settingService.GetPublicSettings(c.Request.Context())
 	if err != nil {

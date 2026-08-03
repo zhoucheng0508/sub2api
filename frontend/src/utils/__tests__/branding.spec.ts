@@ -13,6 +13,14 @@ describe('updateFavicon', () => {
     expect(link?.href).toBe('https://example.com/custom-logo.png')
   })
 
+  it('uses the PNG favicon MIME type for Vote AI branding', () => {
+    updateFavicon('/vote-ai-logo.png')
+
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    expect(link?.type).toBe('image/png')
+    expect(link?.getAttribute('href')).toBe('/vote-ai-logo.png')
+  })
+
   it('ignores unsafe logo URLs', () => {
     updateFavicon('javascript:alert(1)')
 
