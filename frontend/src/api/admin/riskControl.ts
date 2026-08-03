@@ -3,6 +3,8 @@ import { apiClient } from '../client'
 export type ModerationMode = 'off' | 'observe' | 'pre_block'
 export type ContentModerationAuditProvider = 'openai_moderations' | 'ai_chat'
 export type AIAuditFailurePolicy = 'allow' | 'block'
+export type AIAuditThinkingMode = 'disabled' | 'enabled'
+export type AIAuditReasoningEffort = 'adaptive' | 'low' | 'high' | 'max'
 export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
 
@@ -29,6 +31,15 @@ export interface ContentModerationAIChatProfile extends ContentModerationProvide
   system_prompt: string
   failure_policy: AIAuditFailurePolicy
   max_input_chars: number
+  thinking_mode: AIAuditThinkingMode
+  reasoning_effort: AIAuditReasoningEffort
+  risk_levels_enabled: boolean
+  observe_threshold: number
+  session_risk_enabled: boolean
+  session_risk_ttl_minutes: number
+  session_risk_half_life_minutes: number
+  session_risk_block_cooldown_minutes: number
+  actor_risk_enabled: boolean
 }
 
 export interface ContentModerationConfig {
@@ -100,6 +111,15 @@ export interface TestContentModerationAPIKeysPayload {
   ai_confidence_threshold?: number
   ai_system_prompt?: string
   ai_max_input_chars?: number
+  ai_thinking_mode?: AIAuditThinkingMode
+  ai_reasoning_effort?: AIAuditReasoningEffort
+  ai_risk_levels_enabled?: boolean
+  ai_observe_threshold?: number
+  ai_session_risk_enabled?: boolean
+  ai_session_risk_ttl_minutes?: number
+  ai_session_risk_half_life_minutes?: number
+  ai_session_risk_block_cooldown_minutes?: number
+  ai_actor_risk_enabled?: boolean
 }
 
 export interface TestContentModerationAPIKeysResponse {
@@ -159,6 +179,15 @@ export interface UpdateContentModerationConfig {
   ai_system_prompt?: string
   ai_failure_policy?: AIAuditFailurePolicy
   ai_max_input_chars?: number
+  ai_thinking_mode?: AIAuditThinkingMode
+  ai_reasoning_effort?: AIAuditReasoningEffort
+  ai_risk_levels_enabled?: boolean
+  ai_observe_threshold?: number
+  ai_session_risk_enabled?: boolean
+  ai_session_risk_ttl_minutes?: number
+  ai_session_risk_half_life_minutes?: number
+  ai_session_risk_block_cooldown_minutes?: number
+  ai_actor_risk_enabled?: boolean
 }
 
 export interface ContentModerationRuntimeStatus {

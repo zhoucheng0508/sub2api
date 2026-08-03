@@ -68,6 +68,7 @@ const (
 
 type Request struct {
 	RequestID  string
+	SessionID  string
 	UserID     int64
 	Username   string
 	UserEmail  string

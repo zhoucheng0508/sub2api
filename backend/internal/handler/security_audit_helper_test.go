@@ -20,6 +20,17 @@ func TestCachesSecurityAuditCompletionSkipsWebSocketStages(t *testing.T) {
 	require.False(t, cachesSecurityAuditCompletion("subsequent_turn"))
 }
 
+func TestBuildSecurityAuditRequestPreservesClientSessionID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("X-Session-Id", "conversation-123")
+
+	req := buildSecurityAuditRequest(c, nil, middleware2.AuthSubject{UserID: 7}, "openai_chat_completions", "gpt-test", []byte(`{}`), "http")
+	require.Equal(t, "conversation-123", req.SessionID)
+}
+
 func TestRunSecurityAuditDoesNotSkipSubsequentWebSocketTurns(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := &turnCountingEngine{mode: securityaudit.ModeAsync}
