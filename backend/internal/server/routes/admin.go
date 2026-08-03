@@ -98,6 +98,7 @@ func RegisterAdminRoutes(
 
 		// TLS 指纹模板管理
 		registerTLSFingerprintProfileRoutes(admin, h)
+		registerTLSFingerprintRouterRoutes(admin, h) // CUSTOM(VOTE-AI-OPENAI-TLS)
 
 		// API Key 管理
 		registerAdminAPIKeyRoutes(admin, h)
@@ -715,6 +716,18 @@ func registerTLSFingerprintProfileRoutes(admin *gin.RouterGroup, h *handler.Hand
 		profiles.POST("", h.Admin.TLSFingerprintProfile.Create)
 		profiles.PUT("/:id", h.Admin.TLSFingerprintProfile.Update)
 		profiles.DELETE("/:id", h.Admin.TLSFingerprintProfile.Delete)
+	}
+}
+
+// CUSTOM(VOTE-AI-OPENAI-TLS): admin CRUD for ordered User-Agent routing rules.
+func registerTLSFingerprintRouterRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	routers := admin.Group("/tls-fingerprint-routers")
+	{
+		routers.GET("", h.Admin.TLSFingerprintRouter.List)
+		routers.GET("/:id", h.Admin.TLSFingerprintRouter.GetByID)
+		routers.POST("", h.Admin.TLSFingerprintRouter.Create)
+		routers.PUT("/:id", h.Admin.TLSFingerprintRouter.Update)
+		routers.DELETE("/:id", h.Admin.TLSFingerprintRouter.Delete)
 	}
 }
 

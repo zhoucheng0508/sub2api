@@ -44,6 +44,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/setting"
 	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
 	"github.com/Wei-Shaw/sub2api/ent/tlsfingerprintprofile"
+	"github.com/Wei-Shaw/sub2api/ent/tlsfingerprintrouter"
 	"github.com/Wei-Shaw/sub2api/ent/usagecleanuptask"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -53,6 +54,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/model"
 )
 
 const (
@@ -95,6 +97,7 @@ const (
 	TypeSetting                       = "Setting"
 	TypeSubscriptionPlan              = "SubscriptionPlan"
 	TypeTLSFingerprintProfile         = "TLSFingerprintProfile"
+	TypeTLSFingerprintRouter          = "TLSFingerprintRouter"
 	TypeUsageCleanupTask              = "UsageCleanupTask"
 	TypeUsageLog                      = "UsageLog"
 	TypeUser                          = "User"
@@ -42261,6 +42264,660 @@ func (m *TLSFingerprintProfileMutation) ClearEdge(name string) error {
 // It returns an error if the edge is not defined in the schema.
 func (m *TLSFingerprintProfileMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown TLSFingerprintProfile edge %s", name)
+}
+
+// TLSFingerprintRouterMutation represents an operation that mutates the TLSFingerprintRouter nodes in the graph.
+type TLSFingerprintRouterMutation struct {
+	config
+	op            Op
+	typ           string
+	id            *int64
+	created_at    *time.Time
+	updated_at    *time.Time
+	name          *string
+	description   *string
+	enabled       *bool
+	rules         *[]model.TLSFingerprintRouterRule
+	appendrules   []model.TLSFingerprintRouterRule
+	clearedFields map[string]struct{}
+	done          bool
+	oldValue      func(context.Context) (*TLSFingerprintRouter, error)
+	predicates    []predicate.TLSFingerprintRouter
+}
+
+var _ ent.Mutation = (*TLSFingerprintRouterMutation)(nil)
+
+// tlsfingerprintrouterOption allows management of the mutation configuration using functional options.
+type tlsfingerprintrouterOption func(*TLSFingerprintRouterMutation)
+
+// newTLSFingerprintRouterMutation creates new mutation for the TLSFingerprintRouter entity.
+func newTLSFingerprintRouterMutation(c config, op Op, opts ...tlsfingerprintrouterOption) *TLSFingerprintRouterMutation {
+	m := &TLSFingerprintRouterMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeTLSFingerprintRouter,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withTLSFingerprintRouterID sets the ID field of the mutation.
+func withTLSFingerprintRouterID(id int64) tlsfingerprintrouterOption {
+	return func(m *TLSFingerprintRouterMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *TLSFingerprintRouter
+		)
+		m.oldValue = func(ctx context.Context) (*TLSFingerprintRouter, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().TLSFingerprintRouter.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withTLSFingerprintRouter sets the old TLSFingerprintRouter of the mutation.
+func withTLSFingerprintRouter(node *TLSFingerprintRouter) tlsfingerprintrouterOption {
+	return func(m *TLSFingerprintRouterMutation) {
+		m.oldValue = func(context.Context) (*TLSFingerprintRouter, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m TLSFingerprintRouterMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m TLSFingerprintRouterMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *TLSFingerprintRouterMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *TLSFingerprintRouterMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().TLSFingerprintRouter.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *TLSFingerprintRouterMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *TLSFingerprintRouterMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the TLSFingerprintRouter entity.
+// If the TLSFingerprintRouter object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TLSFingerprintRouterMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *TLSFingerprintRouterMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *TLSFingerprintRouterMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *TLSFingerprintRouterMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the TLSFingerprintRouter entity.
+// If the TLSFingerprintRouter object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TLSFingerprintRouterMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *TLSFingerprintRouterMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// SetName sets the "name" field.
+func (m *TLSFingerprintRouterMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *TLSFingerprintRouterMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the TLSFingerprintRouter entity.
+// If the TLSFingerprintRouter object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TLSFingerprintRouterMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *TLSFingerprintRouterMutation) ResetName() {
+	m.name = nil
+}
+
+// SetDescription sets the "description" field.
+func (m *TLSFingerprintRouterMutation) SetDescription(s string) {
+	m.description = &s
+}
+
+// Description returns the value of the "description" field in the mutation.
+func (m *TLSFingerprintRouterMutation) Description() (r string, exists bool) {
+	v := m.description
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDescription returns the old "description" field's value of the TLSFingerprintRouter entity.
+// If the TLSFingerprintRouter object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TLSFingerprintRouterMutation) OldDescription(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDescription is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDescription requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDescription: %w", err)
+	}
+	return oldValue.Description, nil
+}
+
+// ClearDescription clears the value of the "description" field.
+func (m *TLSFingerprintRouterMutation) ClearDescription() {
+	m.description = nil
+	m.clearedFields[tlsfingerprintrouter.FieldDescription] = struct{}{}
+}
+
+// DescriptionCleared returns if the "description" field was cleared in this mutation.
+func (m *TLSFingerprintRouterMutation) DescriptionCleared() bool {
+	_, ok := m.clearedFields[tlsfingerprintrouter.FieldDescription]
+	return ok
+}
+
+// ResetDescription resets all changes to the "description" field.
+func (m *TLSFingerprintRouterMutation) ResetDescription() {
+	m.description = nil
+	delete(m.clearedFields, tlsfingerprintrouter.FieldDescription)
+}
+
+// SetEnabled sets the "enabled" field.
+func (m *TLSFingerprintRouterMutation) SetEnabled(b bool) {
+	m.enabled = &b
+}
+
+// Enabled returns the value of the "enabled" field in the mutation.
+func (m *TLSFingerprintRouterMutation) Enabled() (r bool, exists bool) {
+	v := m.enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEnabled returns the old "enabled" field's value of the TLSFingerprintRouter entity.
+// If the TLSFingerprintRouter object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TLSFingerprintRouterMutation) OldEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEnabled: %w", err)
+	}
+	return oldValue.Enabled, nil
+}
+
+// ResetEnabled resets all changes to the "enabled" field.
+func (m *TLSFingerprintRouterMutation) ResetEnabled() {
+	m.enabled = nil
+}
+
+// SetRules sets the "rules" field.
+func (m *TLSFingerprintRouterMutation) SetRules(mfrr []model.TLSFingerprintRouterRule) {
+	m.rules = &mfrr
+	m.appendrules = nil
+}
+
+// Rules returns the value of the "rules" field in the mutation.
+func (m *TLSFingerprintRouterMutation) Rules() (r []model.TLSFingerprintRouterRule, exists bool) {
+	v := m.rules
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRules returns the old "rules" field's value of the TLSFingerprintRouter entity.
+// If the TLSFingerprintRouter object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TLSFingerprintRouterMutation) OldRules(ctx context.Context) (v []model.TLSFingerprintRouterRule, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRules is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRules requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRules: %w", err)
+	}
+	return oldValue.Rules, nil
+}
+
+// AppendRules adds mfrr to the "rules" field.
+func (m *TLSFingerprintRouterMutation) AppendRules(mfrr []model.TLSFingerprintRouterRule) {
+	m.appendrules = append(m.appendrules, mfrr...)
+}
+
+// AppendedRules returns the list of values that were appended to the "rules" field in this mutation.
+func (m *TLSFingerprintRouterMutation) AppendedRules() ([]model.TLSFingerprintRouterRule, bool) {
+	if len(m.appendrules) == 0 {
+		return nil, false
+	}
+	return m.appendrules, true
+}
+
+// ClearRules clears the value of the "rules" field.
+func (m *TLSFingerprintRouterMutation) ClearRules() {
+	m.rules = nil
+	m.appendrules = nil
+	m.clearedFields[tlsfingerprintrouter.FieldRules] = struct{}{}
+}
+
+// RulesCleared returns if the "rules" field was cleared in this mutation.
+func (m *TLSFingerprintRouterMutation) RulesCleared() bool {
+	_, ok := m.clearedFields[tlsfingerprintrouter.FieldRules]
+	return ok
+}
+
+// ResetRules resets all changes to the "rules" field.
+func (m *TLSFingerprintRouterMutation) ResetRules() {
+	m.rules = nil
+	m.appendrules = nil
+	delete(m.clearedFields, tlsfingerprintrouter.FieldRules)
+}
+
+// Where appends a list predicates to the TLSFingerprintRouterMutation builder.
+func (m *TLSFingerprintRouterMutation) Where(ps ...predicate.TLSFingerprintRouter) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the TLSFingerprintRouterMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *TLSFingerprintRouterMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.TLSFingerprintRouter, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *TLSFingerprintRouterMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *TLSFingerprintRouterMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (TLSFingerprintRouter).
+func (m *TLSFingerprintRouterMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *TLSFingerprintRouterMutation) Fields() []string {
+	fields := make([]string, 0, 6)
+	if m.created_at != nil {
+		fields = append(fields, tlsfingerprintrouter.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, tlsfingerprintrouter.FieldUpdatedAt)
+	}
+	if m.name != nil {
+		fields = append(fields, tlsfingerprintrouter.FieldName)
+	}
+	if m.description != nil {
+		fields = append(fields, tlsfingerprintrouter.FieldDescription)
+	}
+	if m.enabled != nil {
+		fields = append(fields, tlsfingerprintrouter.FieldEnabled)
+	}
+	if m.rules != nil {
+		fields = append(fields, tlsfingerprintrouter.FieldRules)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *TLSFingerprintRouterMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case tlsfingerprintrouter.FieldCreatedAt:
+		return m.CreatedAt()
+	case tlsfingerprintrouter.FieldUpdatedAt:
+		return m.UpdatedAt()
+	case tlsfingerprintrouter.FieldName:
+		return m.Name()
+	case tlsfingerprintrouter.FieldDescription:
+		return m.Description()
+	case tlsfingerprintrouter.FieldEnabled:
+		return m.Enabled()
+	case tlsfingerprintrouter.FieldRules:
+		return m.Rules()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *TLSFingerprintRouterMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case tlsfingerprintrouter.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case tlsfingerprintrouter.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	case tlsfingerprintrouter.FieldName:
+		return m.OldName(ctx)
+	case tlsfingerprintrouter.FieldDescription:
+		return m.OldDescription(ctx)
+	case tlsfingerprintrouter.FieldEnabled:
+		return m.OldEnabled(ctx)
+	case tlsfingerprintrouter.FieldRules:
+		return m.OldRules(ctx)
+	}
+	return nil, fmt.Errorf("unknown TLSFingerprintRouter field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *TLSFingerprintRouterMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case tlsfingerprintrouter.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case tlsfingerprintrouter.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	case tlsfingerprintrouter.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case tlsfingerprintrouter.FieldDescription:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDescription(v)
+		return nil
+	case tlsfingerprintrouter.FieldEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEnabled(v)
+		return nil
+	case tlsfingerprintrouter.FieldRules:
+		v, ok := value.([]model.TLSFingerprintRouterRule)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRules(v)
+		return nil
+	}
+	return fmt.Errorf("unknown TLSFingerprintRouter field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *TLSFingerprintRouterMutation) AddedFields() []string {
+	return nil
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *TLSFingerprintRouterMutation) AddedField(name string) (ent.Value, bool) {
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *TLSFingerprintRouterMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown TLSFingerprintRouter numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *TLSFingerprintRouterMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(tlsfingerprintrouter.FieldDescription) {
+		fields = append(fields, tlsfingerprintrouter.FieldDescription)
+	}
+	if m.FieldCleared(tlsfingerprintrouter.FieldRules) {
+		fields = append(fields, tlsfingerprintrouter.FieldRules)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *TLSFingerprintRouterMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *TLSFingerprintRouterMutation) ClearField(name string) error {
+	switch name {
+	case tlsfingerprintrouter.FieldDescription:
+		m.ClearDescription()
+		return nil
+	case tlsfingerprintrouter.FieldRules:
+		m.ClearRules()
+		return nil
+	}
+	return fmt.Errorf("unknown TLSFingerprintRouter nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *TLSFingerprintRouterMutation) ResetField(name string) error {
+	switch name {
+	case tlsfingerprintrouter.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case tlsfingerprintrouter.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	case tlsfingerprintrouter.FieldName:
+		m.ResetName()
+		return nil
+	case tlsfingerprintrouter.FieldDescription:
+		m.ResetDescription()
+		return nil
+	case tlsfingerprintrouter.FieldEnabled:
+		m.ResetEnabled()
+		return nil
+	case tlsfingerprintrouter.FieldRules:
+		m.ResetRules()
+		return nil
+	}
+	return fmt.Errorf("unknown TLSFingerprintRouter field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *TLSFingerprintRouterMutation) AddedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *TLSFingerprintRouterMutation) AddedIDs(name string) []ent.Value {
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *TLSFingerprintRouterMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *TLSFingerprintRouterMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *TLSFingerprintRouterMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *TLSFingerprintRouterMutation) EdgeCleared(name string) bool {
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *TLSFingerprintRouterMutation) ClearEdge(name string) error {
+	return fmt.Errorf("unknown TLSFingerprintRouter unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *TLSFingerprintRouterMutation) ResetEdge(name string) error {
+	return fmt.Errorf("unknown TLSFingerprintRouter edge %s", name)
 }
 
 // UsageCleanupTaskMutation represents an operation that mutates the UsageCleanupTask nodes in the graph.

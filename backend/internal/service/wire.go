@@ -769,6 +769,8 @@ var ProviderSet = wire.NewSet(
 	NewTotpService,
 	NewErrorPassthroughService,
 	NewTLSFingerprintProfileService,
+	NewTLSFingerprintRouterService, // CUSTOM(VOTE-AI-OPENAI-TLS)
+	ProvideOpenAIGatewayTLSFingerprintRouterServices,
 	NewDigestSessionStore,
 	ProvideIdempotencyCoordinator,
 	ProvideSystemOperationLockService,
@@ -795,6 +797,12 @@ func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache
 	svc := NewUserPlatformQuotaUsageFlusher(cfg, cache, quotaRepo, tw)
 	svc.Start()
 	return svc
+}
+
+// ProvideOpenAIGatewayTLSDependencies adapts Wire injection to the optional
+// constructor parameter kept for backwards-compatible upstream callers.
+func ProvideOpenAIGatewayTLSFingerprintRouterServices(profile *TLSFingerprintProfileService, router *TLSFingerprintRouterService) []OpenAIGatewayTLSDependency {
+	return []OpenAIGatewayTLSDependency{profile, router}
 }
 
 // ProvidePaymentConfigService wraps NewPaymentConfigService to accept the named
