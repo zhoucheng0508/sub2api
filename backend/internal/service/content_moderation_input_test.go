@@ -12,7 +12,7 @@ func TestExtractContentModerationInput_OpenAIChatKeepsLongConversation(t *testin
 	var messages strings.Builder
 	for i := 0; i < 20; i++ {
 		if i > 0 {
-			messages.WriteString(",")
+			_, _ = messages.WriteString(",")
 		}
 		role := "user"
 		if i%2 == 1 {
@@ -21,7 +21,7 @@ func TestExtractContentModerationInput_OpenAIChatKeepsLongConversation(t *testin
 		if i == 19 {
 			role = "user"
 		}
-		messages.WriteString(fmt.Sprintf(`{"role":%q,"content":%q}`, role, fmt.Sprintf("turn-%02d", i)))
+		_, _ = messages.WriteString(fmt.Sprintf(`{"role":%q,"content":%q}`, role, fmt.Sprintf("turn-%02d", i)))
 	}
 	body := []byte(`{"messages":[` + messages.String() + `]}`)
 

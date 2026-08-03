@@ -932,7 +932,7 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 			}
 		}
 		if input.APIKeys != nil {
-			updatedKeys := []string{}
+			var updatedKeys []string
 			if apiKeysMode == contentModerationAPIKeysModeReplace {
 				updatedKeys = normalizeModerationAPIKeys(*input.APIKeys)
 			} else {
