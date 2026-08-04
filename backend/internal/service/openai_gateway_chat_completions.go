@@ -344,7 +344,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			if err != nil {
 				return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 			}
-			responsesBody = cacheRetryBody
 			promptCacheKey = fallbackPromptCacheKey
 		} else {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
