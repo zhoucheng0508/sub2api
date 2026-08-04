@@ -172,15 +172,15 @@ func TestExtractContentModerationInput_DoesNotRemoveSemanticPathReferences(t *te
 
 func TestExtractContentModerationInput_RejectsExcessiveJSONDepth(t *testing.T) {
 	var body strings.Builder
-	body.WriteString(`{"input":`)
+	_, _ = body.WriteString(`{"input":`)
 	for range maxContentModerationExtractionJSONDepth {
-		body.WriteString(`{"content":`)
+		_, _ = body.WriteString(`{"content":`)
 	}
-	body.WriteString(`"latest intent"`)
+	_, _ = body.WriteString(`"latest intent"`)
 	for range maxContentModerationExtractionJSONDepth {
-		body.WriteByte('}')
+		_ = body.WriteByte('}')
 	}
-	body.WriteByte('}')
+	_ = body.WriteByte('}')
 
 	outcome := ExtractContentModerationInputOutcome(ContentModerationProtocolOpenAIResponses, []byte(body.String()))
 
@@ -199,15 +199,15 @@ func TestExtractContentModerationInput_PreScanRejectsDeepMalformedJSON(t *testin
 
 func TestExtractContentModerationInput_BoundsTurnsAndKeepsLatestUser(t *testing.T) {
 	var body strings.Builder
-	body.WriteString(`{"input":[`)
+	_, _ = body.WriteString(`{"input":[`)
 	turnCount := maxContentModerationExtractionTurns + 25
 	for idx := 0; idx < turnCount; idx++ {
 		if idx > 0 {
-			body.WriteByte(',')
+			_ = body.WriteByte(',')
 		}
-		body.WriteString(fmt.Sprintf(`{"type":"message","role":"user","content":"turn-%04d"}`, idx))
+		_, _ = body.WriteString(fmt.Sprintf(`{"type":"message","role":"user","content":"turn-%04d"}`, idx))
 	}
-	body.WriteString(`]}`)
+	_, _ = body.WriteString(`]}`)
 
 	outcome := ExtractContentModerationInputOutcome(ContentModerationProtocolOpenAIResponses, []byte(body.String()))
 
@@ -220,25 +220,25 @@ func TestExtractContentModerationInput_BoundsTurnsAndKeepsLatestUser(t *testing.
 
 func TestExtractContentModerationInput_VisitorExhaustionKeepsLatestInTextAndHash(t *testing.T) {
 	var body strings.Builder
-	body.WriteString(`{"input":[`)
+	_, _ = body.WriteString(`{"input":[`)
 	for turn := 0; turn < maxContentModerationExtractionTurns; turn++ {
 		if turn > 0 {
-			body.WriteByte(',')
+			_ = body.WriteByte(',')
 		}
-		body.WriteString(`{"type":"message","role":"user","content":[`)
+		_, _ = body.WriteString(`{"type":"message","role":"user","content":[`)
 		for item := 0; item < 130; item++ {
 			if item > 0 {
-				body.WriteByte(',')
+				_ = body.WriteByte(',')
 			}
 			text := "padding"
 			if turn == maxContentModerationExtractionTurns-1 && item == 129 {
 				text = "LATEST VISITOR EXHAUSTION REQUEST"
 			}
-			body.WriteString(fmt.Sprintf("%q", text))
+			_, _ = body.WriteString(fmt.Sprintf("%q", text))
 		}
-		body.WriteString(`]}`)
+		_, _ = body.WriteString(`]}`)
 	}
-	body.WriteString(`]}`)
+	_, _ = body.WriteString(`]}`)
 
 	outcome := ExtractContentModerationInputOutcome(ContentModerationProtocolOpenAIResponses, []byte(body.String()))
 

@@ -459,9 +459,7 @@ func classifyRequestError(ctx context.Context, err error) error {
 		if networkErr.Timeout() {
 			return fmt.Errorf("%w: %w", ErrAuditTimeout, err)
 		}
-		if networkErr.Temporary() {
-			return fmt.Errorf("%w: %w", ErrTemporary, err)
-		}
+		return fmt.Errorf("%w: %w", ErrTemporary, err)
 	}
 	return err
 }

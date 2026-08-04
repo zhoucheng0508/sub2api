@@ -670,10 +670,6 @@ func collectGeminiParts(content gjson.Result, parts *[]string, images *[]string,
 	}
 }
 
-func collectContentValue(value gjson.Result, parts *[]string, images *[]string) {
-	collectContentValueBounded(value, parts, images, &contentModerationExtractionBudget{}, 0)
-}
-
 func collectContentValueBounded(value gjson.Result, parts *[]string, images *[]string, budget *contentModerationExtractionBudget, depth int) {
 	if !value.Exists() || !budget.visit(depth) {
 		return
