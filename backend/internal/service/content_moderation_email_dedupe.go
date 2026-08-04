@@ -214,14 +214,6 @@ func (s *ContentModerationService) releaseContentModerationEmailReservation(ctx 
 	return err
 }
 
-func (s *ContentModerationService) clearContentModerationEmailDedupeForUser(ctx context.Context, userID int64) (int64, error) {
-	store, ok := contentModerationEmailDedupeStoreFromService(s)
-	if !ok {
-		return 0, errContentModerationEmailDedupeStoreUnavailable
-	}
-	return store.ClearContentModerationEmailDedupe(ctx, userID)
-}
-
 func contentModerationEmailDedupeStoreFromService(s *ContentModerationService) (ContentModerationEmailDedupeStore, bool) {
 	if s == nil || s.hashCache == nil {
 		return nil, false
