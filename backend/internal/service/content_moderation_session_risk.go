@@ -118,6 +118,11 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 		CurrentScore:    currentScore,
 		CumulativeScore: currentScore,
 	}
+	if contentModerationResultHasOnlyWeakSignals(result) {
+		out.Tier = voteairiskstate.TierLow
+		out.CumulativeScore = 0
+		return out
+	}
 	if s == nil || cfg == nil || !cfg.AIChat.SessionRiskEnabled {
 		return out
 	}
@@ -182,8 +187,11 @@ func updateContentModerationSessionRisk(
 }
 
 func shouldAccumulateContentModerationRisk(result *moderationAPIResult, score, blockThreshold float64) bool {
-	if result == nil || score >= blockThreshold {
-		return result != nil
+	if result == nil || contentModerationResultHasOnlyWeakSignals(result) {
+		return false
+	}
+	if score >= blockThreshold {
+		return true
 	}
 	if len(moderationResultCategories(result)) > 0 {
 		return true
@@ -198,4 +206,20 @@ func shouldAccumulateContentModerationRisk(result *moderationAPIResult, score, b
 		}
 	}
 	return !weakSignalSeen
+}
+
+func contentModerationResultHasOnlyWeakSignals(result *moderationAPIResult) bool {
+	if result == nil || result.Flagged || len(result.Signals) == 0 {
+		return false
+	}
+	hasWeakSignal := false
+	for _, signal := range result.Signals {
+		switch strings.TrimSpace(signal) {
+		case "defensive_context", "ownership_unverified":
+			hasWeakSignal = true
+		default:
+			return false
+		}
+	}
+	return hasWeakSignal
 }

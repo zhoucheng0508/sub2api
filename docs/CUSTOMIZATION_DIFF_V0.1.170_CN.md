@@ -31,7 +31,8 @@
 4. Vote AI 主题、构建接入和专项测试；
 5. `custom-v*` 标签触发的自定义镜像发布工作流；
 6. `/pricing` 到官方 `/model-plaza` 的兼容跳转；
-7. OpenAI OAuth 账号的 TLS 指纹、客户端身份路由和代理保持能力。
+7. OpenAI OAuth 账号的 TLS 指纹、客户端身份路由和代理保持能力；
+8. 可按用户和最终上游账号限定范围的 DeepSeek 语义审核、三级会话风险、通知和解禁闭环。
 
 二开没有重写官方账号调度、利润控制、计费、渠道、鉴权或网关转发核心。
 
@@ -48,15 +49,16 @@
 - 内容审核请求通过配置代理转发；
 - 提示词安全审计的“仅审计最新输入”范围。
 
-官方新增迁移：
+0.1.170 官方和本轮二开新增迁移：
 
-| 文件 | 作用 | 兼容性 |
-| --- | --- | --- |
-| `192_group_profit_control.sql` | 为 `groups` 增加利润控制开关、最低利润率和安全缓冲字段 | 字段均有默认值，功能默认关闭 |
-| `193_group_profit_control_auth_cache_invalidation.sql` | 扩展分组认证缓存失效函数 | `CREATE OR REPLACE`，不删除业务数据 |
-| `194_add_tls_fingerprint_routers.sql` | 新增按入站 User-Agent 匹配的 TLS 指纹路由表及 Codex CLI 固定路由 | 新表和默认路由，不修改现有账号数据；账号开关默认关闭 |
+| 文件 | 归属 | 作用 | 兼容性 |
+| --- | --- | --- | --- |
+| `192_group_profit_control.sql` | 官方 | 为 `groups` 增加利润控制开关、最低利润率和安全缓冲字段 | 字段均有默认值，功能默认关闭 |
+| `193_group_profit_control_auth_cache_invalidation.sql` | 官方 | 扩展分组认证缓存失效函数 | `CREATE OR REPLACE`，不删除业务数据 |
+| `194_add_tls_fingerprint_routers.sql` | Vote AI 二开 | 新增按入站 User-Agent 匹配的 TLS 指纹路由表及 Codex CLI 固定路由 | 新表和默认路由，不修改现有账号数据；账号开关默认关闭 |
+| `195_vote_ai_content_moderation_side_effect_state.sql` | Vote AI 二开 | 为审核日志增加审核、处置和通知状态，并记录用户风控封禁归属 | 新字段均有默认值；用于可靠邮件去重、失败重试和安全解禁 |
 
-二开没有修改官方的 `192`、`193` 迁移。本次新增 `194` 迁移；生产升级前仍必须完成
+二开没有修改官方的 `192`、`193` 迁移。本次新增 `194`、`195` 迁移；生产升级前仍必须完成
 PostgreSQL 备份和实际恢复验证，应用启动后会自动执行尚未执行的迁移。
 
 ## 4. Vote AI 二开边界
@@ -205,6 +207,35 @@ frontend/src/components/account/EditAccountModal.vue
 ```
 
 该能力以 OpenAI OAuth 账号开关为边界，OpenAI API Key 账号不启用 TLS 指纹模拟。
+
+## 6.2 内容审核 PR1-PR4
+
+本次同版本二开把内容审核按可独立审阅和回退的四个阶段实现：
+
+- PR1：用户和上游账号范围过滤；管理员测试用户可排除，账号范围以调度后最终账号为准，Spark 影子账号归一化到母账号；
+- PR2：默认 4800 ms 的同步审核预算、12000 字符快审、4000 字符超时降级和有界异步补审，限制对首字时间的影响；多 Key 时首 Key 默认约 3150 ms，并为备用 Key 保留约 1500 ms，避免故障 Key 吃完整体预算；
+- PR3：审核、处置、通知状态结构化；邮件按输入和会话去重；自动封禁、显式解禁和 Redis 风险状态清理可分别核对和重试；普通异步任务及上游 `cyber_policy` 事件均携带用户 epoch，解禁前的旧事件只保留不可计数的证据行，不再发信、累计、封禁或重建会话屏蔽；
+- PR4：后端统一维护推荐提示词和版本，管理员自定义提示词不会被静默覆盖；管理端可配置性能预算，并显示原始风险分、最终风险等级、分类、signals 和补审状态。
+
+DeepSeek 适配器使用普通 Chat Completions 模型输出约定 JSON。三级风险状态按
+`用户 ID + API Key + 客户端会话 ID` 隔离，并支持短期 actor 加分。仅有
+`defensive_context` 或 `ownership_unverified`、且没有强类别或强信号的结果不会累计或升级为高风险。
+
+推荐提示词版本 `2026-08-04.v1` 增加了元讨论、关键词配置、防御请求和官方账号恢复流程的误报规则。前端只消费后端返回的推荐内容，只有管理员显式点击“应用推荐版”才会替换当前提示词。
+
+当前 epoch 屏障由 Redis generation 和应用进程内分片读写锁共同保证，适用于现有单应用容器部署。若未来同时运行多个应用副本，进程锁不能跨实例覆盖“检查后执行”窗口，扩容前必须改成 Redis/数据库侧的分布式原子屏障。
+
+主要隔离目录和接入文件：
+
+```text
+backend/internal/custom/voteai/moderation/
+backend/internal/custom/voteai/riskstate/
+backend/internal/service/content_moderation*.go
+frontend/src/custom/vote-ai/risk-control/
+frontend/src/views/admin/RiskControlView.vue
+```
+
+完整专项测试矩阵见 `docs/RISK_CONTROL_PR2_PR4_TEST_PLAN_CN.md`。
 
 ## 7. 发布工作流
 

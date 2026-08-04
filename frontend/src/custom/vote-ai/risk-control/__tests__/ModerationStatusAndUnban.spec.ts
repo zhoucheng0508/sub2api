@@ -4,7 +4,11 @@ import { mount } from '@vue/test-utils'
 import ModerationAuditStatusBadge from '../ModerationAuditStatusBadge.vue'
 import ModerationSideEffectsStatus from '../ModerationSideEffectsStatus.vue'
 import ModerationUnbanDialog from '../ModerationUnbanDialog.vue'
-import type { ContentModerationLog } from '@/api/admin/riskControl'
+import type {
+  ContentModerationLog,
+  ContentModerationNotificationStatus,
+  ContentModerationSideEffectStatus,
+} from '@/api/admin/riskControl'
 
 vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
@@ -90,6 +94,33 @@ describe('ModerationSideEffectsStatus', () => {
     expect(wrapper.text()).toContain('admin.riskControl.sideEffectStatus.completed')
     expect(wrapper.text()).toContain('admin.riskControl.notificationStatus.deduplicated')
     expect(wrapper.text()).toContain('admin.riskControl.moderationBanActive')
+  })
+
+  it('normalizes empty legacy statuses to their non-applicable defaults', () => {
+    const wrapper = mount(ModerationSideEffectsStatus, {
+      props: {
+        sideEffectStatus: '' as ContentModerationSideEffectStatus,
+        notificationStatus: '' as ContentModerationNotificationStatus,
+      },
+    })
+
+    const badges = wrapper.findAll('span')
+    expect(badges[0].text()).toBe('admin.riskControl.sideEffectStatus.not_applicable')
+    expect(badges[1].text()).toBe('admin.riskControl.notificationStatus.not_required')
+  })
+
+  it('renders future unknown statuses neutrally instead of treating them as no-op', () => {
+    const wrapper = mount(ModerationSideEffectsStatus, {
+      props: {
+        sideEffectStatus: 'retrying' as ContentModerationSideEffectStatus,
+        notificationStatus: 'queued' as ContentModerationNotificationStatus,
+      },
+    })
+
+    const badges = wrapper.findAll('span')
+    expect(badges[0].text()).toBe('admin.riskControl.sideEffectStatus.unknown')
+    expect(badges[1].text()).toBe('admin.riskControl.notificationStatus.unknown')
+    expect(badges[0].classes()).toContain('bg-gray-100')
   })
 })
 

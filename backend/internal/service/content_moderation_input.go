@@ -18,6 +18,13 @@ const (
 	maxContentModerationExtractionTurns            = 512
 	maxContentModerationExtractionContentItems     = 2048
 	maxContentModerationExtractionVisitedValues    = 65536
+	contentModerationLiteralUserMarker             = "[LITERAL_USER_MARKER]"
+	contentModerationLiteralAssistantMarker        = "[LITERAL_ASSISTANT_MARKER]"
+)
+
+var untrustedModerationRoleMarkerReplacer = strings.NewReplacer(
+	"[USER]", contentModerationLiteralUserMarker,
+	"[ASSISTANT]", contentModerationLiteralAssistantMarker,
 )
 
 type ContentModerationExtractionStatus string
@@ -851,11 +858,15 @@ func limitContentModerationImages(images []string) []string {
 }
 
 func addModerationText(parts *[]string, text string) {
-	text = strings.TrimSpace(text)
+	text = escapeUntrustedModerationRoleMarkers(strings.TrimSpace(text))
 	if text == "" {
 		return
 	}
 	*parts = append(*parts, text)
+}
+
+func escapeUntrustedModerationRoleMarkers(text string) string {
+	return untrustedModerationRoleMarkerReplacer.Replace(text)
 }
 
 func moderationPartsText(parts []string) string {

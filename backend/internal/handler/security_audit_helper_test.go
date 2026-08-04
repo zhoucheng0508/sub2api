@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -29,9 +30,13 @@ func TestBuildSecurityAuditRequestPreservesClientSessionID(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	c.Request.Header.Set("X-Session-Id", "conversation-123")
+	service.SetOpsCyberPolicyEpochSnapshot(c, 9, true)
 
 	req := buildSecurityAuditRequest(c, nil, middleware2.AuthSubject{UserID: 7}, "openai_chat_completions", "gpt-test", []byte(`{}`), "http")
 	require.Equal(t, "conversation-123", req.SessionID)
+	legacy := buildContentModerationInput(c, nil, middleware2.AuthSubject{UserID: 7}, "openai_chat_completions", "gpt-test", []byte(`{}`))
+	require.True(t, legacy.ModerationEpochSet)
+	require.EqualValues(t, 9, legacy.ModerationEpoch)
 }
 
 func TestRunSecurityAuditDoesNotSkipSubsequentWebSocketTurns(t *testing.T) {
@@ -78,6 +83,8 @@ func TestRunSecurityAuditDefersUntilProtectedAccountAndCachesSuccessfulAudit(t *
 
 	decision := runSecurityAudit(c, nil, coordinator, svc, nil, subject, service.ContentModerationProtocolOpenAIResponses, "gpt-test", []byte(`{"input":"hello"}`), "http")
 	require.Nil(t, decision, "account-scoped audit must wait for routing")
+	_, _, epochCaptured := service.GetOpsCyberPolicyEpochSnapshot(c)
+	require.True(t, epochCaptured, "the user epoch must be captured before account routing reaches the upstream pool")
 	require.Zero(t, engine.evaluated)
 	_, completed := c.Get(securityAuditCompletedContextKey)
 	require.False(t, completed)
@@ -172,6 +179,52 @@ func TestRunSecurityAuditInternalProbeBypassesCoordinator(t *testing.T) {
 	require.Zero(t, engine.evaluated)
 	_, completed := c.Get(securityAuditCompletedContextKey)
 	require.False(t, completed)
+}
+
+func TestLegacySecurityAuditUnavailableUsesRetryableErrorAcrossProtocols(t *testing.T) {
+	legacy := &service.ContentModerationDecision{
+		Allowed:    false,
+		Blocked:    true,
+		Message:    "Content audit service is temporarily unavailable; please retry later",
+		StatusCode: http.StatusServiceUnavailable,
+		Action:     service.ContentModerationActionUnavailable,
+	}
+	decision := legacySecurityAuditDecision(legacy)
+	require.NotNil(t, decision)
+	require.Equal(t, securityaudit.DecisionUnavailable, decision.Kind)
+	require.Equal(t, service.ContentModerationErrorCodeUnavailable, decision.ErrorCode)
+	require.Equal(t, service.ContentModerationErrorCodeUnavailable, decision.Legacy.ErrorCode)
+	require.False(t, decision.AllowNextStage)
+
+	c, recorder := securityAuditErrorTestContext(t)
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), service.ContentModerationErrorCodeUnavailable)
+	require.NotContains(t, recorder.Body.String(), "content_policy_violation")
+
+	cSSE, recorderSSE := securityAuditErrorTestContext(t)
+	_, err := cSSE.Writer.Write([]byte("data: start\n\n"))
+	require.NoError(t, err)
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(cSSE, decision)
+	require.Contains(t, recorderSSE.Body.String(), service.ContentModerationErrorCodeUnavailable)
+	require.NotContains(t, recorderSSE.Body.String(), "content_policy_violation")
+
+	require.Equal(t, "api_error", securityAuditStreamErrorType(decision))
+	require.Equal(t, coderws.StatusTryAgainLater, securityAuditWSCloseStatus(decision))
+	require.Equal(t, service.ContentModerationErrorCodeUnavailable, securityAuditWSCloseReason(decision))
+}
+
+func TestLegacySecurityAuditBlockKeepsPolicyViolationErrorCode(t *testing.T) {
+	decision := legacySecurityAuditDecision(&service.ContentModerationDecision{
+		Allowed:    false,
+		Blocked:    true,
+		Message:    "blocked",
+		StatusCode: http.StatusForbidden,
+		Action:     service.ContentModerationActionBlock,
+	})
+	require.Equal(t, securityaudit.DecisionBlock, decision.Kind)
+	require.Equal(t, "content_policy_violation", decision.ErrorCode)
+	require.Equal(t, coderws.StatusPolicyViolation, securityAuditWSCloseStatus(decision))
 }
 
 func TestRunSecurityAuditBlockedProtectedAccountDoesNotComplete(t *testing.T) {

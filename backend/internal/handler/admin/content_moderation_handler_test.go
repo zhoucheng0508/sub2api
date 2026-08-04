@@ -19,9 +19,15 @@ func TestContentModerationRequestsDecodeAIThinkingSettings(t *testing.T) {
 
 	t.Run("api key test", func(t *testing.T) {
 		var req contentModerationAPIKeyTestRequest
-		require.NoError(t, json.Unmarshal([]byte(`{"ai_thinking_mode":"disabled","ai_reasoning_effort":"high"}`), &req))
+		require.NoError(t, json.Unmarshal([]byte(`{"ai_thinking_mode":"disabled","ai_reasoning_effort":"high","ai_synchronous_budget_ms":4500,"ai_fast_input_chars":16000,"ai_fallback_input_chars":6000,"ai_risk_levels_enabled":false,"ai_observe_threshold":0.42}`), &req))
 		require.Equal(t, "disabled", req.AIThinkingMode)
 		require.Equal(t, "high", req.AIReasoningEffort)
+		require.Equal(t, 4500, req.AISynchronousBudgetMS)
+		require.Equal(t, 16000, req.AIFastInputChars)
+		require.Equal(t, 6000, req.AIFallbackInputChars)
+		require.NotNil(t, req.AIRiskLevelsEnabled)
+		require.False(t, *req.AIRiskLevelsEnabled)
+		require.Equal(t, 0.42, req.AIObserveThreshold)
 	})
 }
 

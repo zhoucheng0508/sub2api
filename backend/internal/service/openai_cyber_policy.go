@@ -11,7 +11,15 @@ import (
 // opsCyberPolicyKey 在 gin context 中携带 cyber_policy 命中标记。
 // 由 gateway 服务层在检测到上游 error.code=="cyber_policy" 时设置，
 // handler 在 Forward 返回后读取以触发风控记录、邮件与 tokens=0 用量行。
-const opsCyberPolicyKey = "ops_cyber_policy"
+const (
+	opsCyberPolicyKey              = "ops_cyber_policy"
+	opsCyberPolicyEpochSnapshotKey = "ops_cyber_policy_epoch_snapshot"
+)
+
+type contentModerationEpochSnapshot struct {
+	Epoch int64
+	Set   bool
+}
 
 // errOpenAICyberPolicyForwarded 表示 cyber_policy 已按当前端点格式透传给客户端
 // （error 已写出/下发）。compat 路径 ForwardAsChatCompletions / ForwardAsAnthropic 出口
@@ -21,12 +29,50 @@ var errOpenAICyberPolicyForwarded = errors.New("openai cyber_policy forwarded to
 
 // CyberPolicyMark 记录一次 cyber_policy 硬阻断的上游证据。
 type CyberPolicyMark struct {
-	Code           string // 固定 "cyber_policy"
-	Message        string // 上游 error.message
-	Body           string // 上游 response.failed / 400 原始 body（已截断；未脱敏，ops_error 落库由 sanitizeErrorBodyForStorage、风控日志由 redactContentModerationSecrets 统一脱敏）
-	UpstreamStatus int    // 上游 HTTP 状态（流式=200，非流式=400）
-	UpstreamInTok  int    // 上游已报 input tokens（如有）
-	UpstreamOutTok int    // 上游已报 output tokens（如有）
+	Code            string // 固定 "cyber_policy"
+	Message         string // 上游 error.message
+	Body            string // 上游 response.failed / 400 原始 body（已截断；未脱敏，ops_error 落库由 sanitizeErrorBodyForStorage、风控日志由 redactContentModerationSecrets 统一脱敏）
+	UpstreamStatus  int    // 上游 HTTP 状态（流式=200，非流式=400）
+	UpstreamInTok   int    // 上游已报 input tokens（如有）
+	UpstreamOutTok  int    // 上游已报 output tokens（如有）
+	ModerationEpoch int64  // 请求或 WS turn 进入上游前拍摄的用户风控 epoch
+	EpochSet        bool   // true 表示必须用 ModerationEpoch 隔离解禁前的旧事件
+}
+
+// SetOpsCyberPolicyEpochSnapshot stores the moderation generation captured
+// before an HTTP request or WebSocket turn enters the upstream account pool.
+func SetOpsCyberPolicyEpochSnapshot(c *gin.Context, epoch int64, epochSet bool) {
+	if c == nil {
+		return
+	}
+	c.Set(opsCyberPolicyEpochSnapshotKey, contentModerationEpochSnapshot{Epoch: epoch, Set: epochSet})
+}
+
+// GetOpsCyberPolicyEpochSnapshot returns the snapshot and whether this request
+// or turn has already captured one. captured is distinct from epochSet so a
+// deployment without an epoch store does not repeat work on every stage.
+func GetOpsCyberPolicyEpochSnapshot(c *gin.Context) (epoch int64, epochSet bool, captured bool) {
+	if c == nil {
+		return 0, false, false
+	}
+	value, ok := c.Get(opsCyberPolicyEpochSnapshotKey)
+	if !ok {
+		return 0, false, false
+	}
+	snapshot, ok := value.(contentModerationEpochSnapshot)
+	if !ok {
+		return 0, false, false
+	}
+	return snapshot.Epoch, snapshot.Set, true
+}
+
+// ClearOpsCyberPolicyEpochSnapshot resets the per-turn snapshot for a shared
+// WebSocket gin context. HTTP request contexts are discarded automatically.
+func ClearOpsCyberPolicyEpochSnapshot(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(opsCyberPolicyEpochSnapshotKey, (*contentModerationEpochSnapshot)(nil))
 }
 
 // MarkOpsCyberPolicy 记录 cyber 标记；首个写入生效，后续忽略（同一 turn 只记一次）。
@@ -41,6 +87,10 @@ func MarkOpsCyberPolicy(c *gin.Context, mark CyberPolicyMark) {
 	mark.Code = "cyber_policy"
 	mark.Message = strings.TrimSpace(mark.Message)
 	mark.Body = strings.TrimSpace(mark.Body)
+	if epoch, epochSet, captured := GetOpsCyberPolicyEpochSnapshot(c); captured {
+		mark.ModerationEpoch = epoch
+		mark.EpochSet = epochSet
+	}
 	c.Set(opsCyberPolicyKey, &mark)
 }
 

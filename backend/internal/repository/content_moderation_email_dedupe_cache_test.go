@@ -213,6 +213,9 @@ func TestContentModerationUserStateClear_IsTargeted(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, userEightEmail)
 	require.NoError(t, cache.RecordFlaggedInputHash(ctx, "global-flagged-hash"))
+	epoch, err := cache.GetContentModerationUserEpoch(ctx, 7)
+	require.NoError(t, err)
+	require.Zero(t, epoch)
 
 	cleared, err := cache.ClearContentModerationUserState(ctx, 7)
 	require.NoError(t, err)
@@ -221,6 +224,12 @@ func TestContentModerationUserStateClear_IsTargeted(t *testing.T) {
 	require.False(t, server.Exists(contentModerationEmailDedupeIndexKey(7)))
 	require.True(t, server.Exists(contentModerationSessionRiskIndexKey(8)))
 	require.True(t, server.Exists(contentModerationEmailDedupeIndexKey(8)))
+	epoch, err = cache.GetContentModerationUserEpoch(ctx, 7)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, epoch)
+	otherEpoch, err := cache.GetContentModerationUserEpoch(ctx, 8)
+	require.NoError(t, err)
+	require.Zero(t, otherEpoch)
 
 	for _, key := range []string{"user-7-session", "user-7-actor"} {
 		_, found, getErr := cache.GetContentModerationSessionRisk(ctx, key)
@@ -239,6 +248,40 @@ func TestContentModerationUserStateClear_IsTargeted(t *testing.T) {
 	flagged, err := cache.HasFlaggedInputHash(ctx, "global-flagged-hash")
 	require.NoError(t, err)
 	require.True(t, flagged)
+}
+
+func TestContentModerationSessionRiskV2IgnoresLegacyV1State(t *testing.T) {
+	cache, server := newContentModerationDedupeTestCache(t)
+	ctx := context.Background()
+	const key = "legacy-session"
+	legacyKey := "content_moderation:session_risk:v1:" + key
+	require.NoError(t, server.Set(legacyKey, `{"score":0.99}`))
+
+	state, found, err := cache.GetContentModerationSessionRisk(ctx, key)
+
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Zero(t, state.Score)
+	require.True(t, server.Exists(legacyKey), "legacy state should expire naturally without being read")
+	require.Equal(t, "content_moderation:session_risk:v2:", contentModerationSessionRiskPrefix)
+	require.Equal(t, "content_moderation:session_risk_index:v2:", contentModerationSessionRiskIndexPrefix)
+}
+
+func TestContentModerationUserEpochAdvancesIndependently(t *testing.T) {
+	cache, _ := newContentModerationDedupeTestCache(t)
+	ctx := context.Background()
+
+	first, err := cache.AdvanceContentModerationUserEpoch(ctx, 7)
+	require.NoError(t, err)
+	second, err := cache.AdvanceContentModerationUserEpoch(ctx, 7)
+	require.NoError(t, err)
+	other, err := cache.GetContentModerationUserEpoch(ctx, 8)
+	require.NoError(t, err)
+
+	require.EqualValues(t, 1, first)
+	require.EqualValues(t, 2, second)
+	require.Zero(t, other)
+	require.Equal(t, fmt.Sprintf("%s{%d}", contentModerationUserEpochPrefix, 7), contentModerationUserEpochKey(7))
 }
 
 func TestContentModerationSessionRiskIndexTTLDoesNotShrink(t *testing.T) {

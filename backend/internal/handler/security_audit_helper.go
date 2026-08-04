@@ -79,6 +79,7 @@ func runSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, coordinator 
 	if c == nil || c.Request == nil {
 		return nil
 	}
+	captureCyberPolicyEpochBeforeUpstream(c, legacy, subject.UserID)
 	if reason, exists := c.Get(securityAuditBypassContextKey); exists && strings.TrimSpace(asSecurityAuditString(reason)) != "" {
 		return nil
 	}
@@ -138,19 +139,11 @@ func runSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, coordinator 
 		if legacyDecision == nil {
 			return nil
 		}
-		decision := securityaudit.Decision{Kind: securityaudit.DecisionAllow, HTTPStatus: http.StatusOK, AllowNextStage: true}
-		decision.Legacy = &securityaudit.LegacyDecision{
-			Allowed: legacyDecision.Allowed, Blocked: legacyDecision.Blocked, Flagged: legacyDecision.Flagged,
-			Message: legacyDecision.Message, StatusCode: legacyDecision.StatusCode,
-			ErrorCode: "content_policy_violation", Action: legacyDecision.Action,
-		}
-		if legacyDecision.Blocked {
-			decision.Kind, decision.HTTPStatus, decision.ErrorCode, decision.ClientMessage, decision.AllowNextStage = securityaudit.DecisionBlock, contentModerationStatus(legacyDecision), "content_policy_violation", legacyDecision.Message, false
-		}
+		decision := legacySecurityAuditDecision(legacyDecision)
 		if decision.AllowNextStage && cacheCompletion {
 			c.Set(securityAuditCompletedContextKey, true)
 		}
-		return &decision
+		return decision
 	}
 	request := buildSecurityAuditRequestForAccount(c, apiKey, subject, account, protocol, model, body, stage)
 	if reqLog != nil {
@@ -174,6 +167,42 @@ func runSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, coordinator 
 			zap.String("stage", request.Stage))
 	}
 	return &decision
+}
+
+func legacySecurityAuditDecision(legacyDecision *service.ContentModerationDecision) *securityaudit.Decision {
+	if legacyDecision == nil {
+		return nil
+	}
+	errorCode := contentModerationErrorCode(legacyDecision)
+	decision := &securityaudit.Decision{Kind: securityaudit.DecisionAllow, HTTPStatus: http.StatusOK, AllowNextStage: true}
+	decision.Legacy = &securityaudit.LegacyDecision{
+		Allowed: legacyDecision.Allowed, Blocked: legacyDecision.Blocked, Flagged: legacyDecision.Flagged,
+		Message: legacyDecision.Message, StatusCode: legacyDecision.StatusCode,
+		ErrorCode: errorCode, Action: legacyDecision.Action,
+	}
+	if !legacyDecision.Blocked {
+		return decision
+	}
+	decision.Kind = securityaudit.DecisionBlock
+	if legacyDecision.Action == service.ContentModerationActionUnavailable {
+		decision.Kind = securityaudit.DecisionUnavailable
+	}
+	decision.HTTPStatus = contentModerationStatus(legacyDecision)
+	decision.ErrorCode = errorCode
+	decision.ClientMessage = legacyDecision.Message
+	decision.AllowNextStage = false
+	return decision
+}
+
+func captureCyberPolicyEpochBeforeUpstream(c *gin.Context, svc *service.ContentModerationService, userID int64) {
+	if c == nil || c.Request == nil || svc == nil || userID <= 0 {
+		return
+	}
+	if _, _, captured := service.GetOpsCyberPolicyEpochSnapshot(c); captured {
+		return
+	}
+	epoch, epochSet := svc.SnapshotContentModerationUserEpoch(c.Request.Context(), userID)
+	service.SetOpsCyberPolicyEpochSnapshot(c, epoch, epochSet)
 }
 
 func buildSecurityAuditRequest(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) securityaudit.Request {

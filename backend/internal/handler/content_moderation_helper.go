@@ -20,6 +20,9 @@ func contentModerationStatus(decision *service.ContentModerationDecision) int {
 }
 
 func contentModerationErrorCode(decision *service.ContentModerationDecision) string {
+	if decision != nil && decision.Action == service.ContentModerationActionUnavailable {
+		return service.ContentModerationErrorCodeUnavailable
+	}
 	return "content_policy_violation"
 }
 
@@ -90,6 +93,10 @@ func buildContentModerationInput(c *gin.Context, apiKey *service.APIKey, subject
 		Protocol:  protocol,
 		Body:      body,
 		SessionID: service.ExtractClientSessionID(c),
+	}
+	if epoch, epochSet, captured := service.GetOpsCyberPolicyEpochSnapshot(c); captured {
+		input.ModerationEpoch = epoch
+		input.ModerationEpochSet = epochSet
 	}
 	if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
 		input.Provider = resolvedPlatform

@@ -87,6 +87,7 @@ func TestClearCyberPolicyTurnState(t *testing.T) {
 	c := newTestGinContext()
 	h := &OpenAIGatewayHandler{}
 
+	service.SetOpsCyberPolicyEpochSnapshot(c, 4, true)
 	service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "turn1", UpstreamStatus: 200})
 	h.recordCyberPolicyIfMarked(c, nil, nil, nil, "gpt-5", false, "", service.ChannelUsageFields{}, "")
 	require.True(t, c.GetBool(cyberPolicyRecordedKey))
@@ -94,12 +95,60 @@ func TestClearCyberPolicyTurnState(t *testing.T) {
 	clearCyberPolicyTurnState(c)
 	require.Nil(t, service.GetOpsCyberPolicy(c))
 	require.False(t, c.GetBool(cyberPolicyRecordedKey))
+	_, _, captured := service.GetOpsCyberPolicyEpochSnapshot(c)
+	require.False(t, captured, "the next WebSocket turn must capture a fresh moderation epoch")
 
 	// turn2: a fresh cyber hit must be recordable again.
 	service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "turn2", UpstreamStatus: 200})
 	h.recordCyberPolicyIfMarked(c, nil, nil, nil, "gpt-5", false, "", service.ChannelUsageFields{}, "")
 	require.True(t, c.GetBool(cyberPolicyRecordedKey))
 	require.Equal(t, "turn2", service.GetOpsCyberPolicy(c).Message)
+}
+
+func TestCyberPolicyConnectionBlockState_SameEpochRemainsBlocked(t *testing.T) {
+	var state cyberPolicyConnectionBlockState
+	state.block(&service.CyberPolicyMark{ModerationEpoch: 7, EpochSet: true})
+
+	require.True(t, state.reconcile(7, true))
+	require.True(t, state.blocked)
+	require.EqualValues(t, 7, state.epoch)
+	require.True(t, state.epochSet)
+}
+
+func TestCyberPolicyConnectionBlockState_AdvancedEpochClearsBlock(t *testing.T) {
+	var state cyberPolicyConnectionBlockState
+	state.block(&service.CyberPolicyMark{ModerationEpoch: 7, EpochSet: true})
+
+	require.False(t, state.reconcile(8, true))
+	require.Equal(t, cyberPolicyConnectionBlockState{}, state)
+	require.False(t, state.reconcile(8, true), "a cleared connection must stay unblocked")
+}
+
+func TestCyberPolicyConnectionBlockState_IndeterminateEpochRemainsBlocked(t *testing.T) {
+	tests := []struct {
+		name            string
+		blockedEpoch    int64
+		blockedEpochSet bool
+		currentEpoch    int64
+		currentEpochSet bool
+	}{
+		{name: "block_has_no_epoch", blockedEpochSet: false, currentEpoch: 8, currentEpochSet: true},
+		{name: "block_epoch_read_failed", blockedEpoch: -1, blockedEpochSet: true, currentEpoch: 8, currentEpochSet: true},
+		{name: "service_or_store_unavailable", blockedEpoch: 7, blockedEpochSet: true, currentEpochSet: false},
+		{name: "current_epoch_read_failed", blockedEpoch: 7, blockedEpochSet: true, currentEpoch: -1, currentEpochSet: true},
+		{name: "current_epoch_regressed", blockedEpoch: 7, blockedEpochSet: true, currentEpoch: 0, currentEpochSet: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := cyberPolicyConnectionBlockState{
+				blocked:  true,
+				epoch:    tc.blockedEpoch,
+				epochSet: tc.blockedEpochSet,
+			}
+			require.True(t, state.reconcile(tc.currentEpoch, tc.currentEpochSet))
+			require.True(t, state.blocked)
+		})
+	}
 }
 
 // TestBuildCyberSessionBlockedOpsEntry verifies the locally-rejected request is

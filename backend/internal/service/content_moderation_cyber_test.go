@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,6 +94,32 @@ func TestRecordCyberPolicyEvent_DisabledWhenRiskControlOff(t *testing.T) {
 	require.Empty(t, repo.snapshotLogs(), "CreateLog must NOT be called when risk_control_enabled is off")
 }
 
+func TestRecordCyberPolicyEvent_DisabledRiskControlStillRejectsStaleSessionEnforcement(t *testing.T) {
+	repo := &contentModerationTestRepo{}
+	cache := &contentModerationTestHashCache{epochs: map[int64]int64{7: 2}}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled: "false",
+		}},
+		repo,
+		cache,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	accepted := svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		UserID:          7,
+		ModerationEpoch: 1,
+		EpochSet:        true,
+	})
+
+	require.False(t, accepted, "turning risk control off must not bypass the unban epoch fence")
+	require.Empty(t, repo.snapshotLogs(), "risk control off still suppresses the moderation log")
+}
+
 func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 	repo := &contentModerationTestRepo{}
 	svc := NewContentModerationService(
@@ -154,6 +182,71 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 	// Error field should also contain the upstream body JSON
 	require.True(t, strings.Contains(log.Error, "cyber_policy") || strings.Contains(log.Error, "flagged"),
 		"Error should mention flagged or cyber_policy")
+}
+
+func TestRecordCyberPolicyEvent_UnbanEpochSkipsStaleEventAndAllowsFreshEvent(t *testing.T) {
+	repo := &contentModerationTestRepo{}
+	cache := &contentModerationTestHashCache{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}},
+		repo,
+		cache,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	ctx := context.Background()
+
+	staleEpoch, staleEpochSet := svc.SnapshotContentModerationUserEpoch(ctx, 7)
+	require.True(t, staleEpochSet)
+	require.Zero(t, staleEpoch)
+	gin.SetMode(gin.TestMode)
+	requestContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	SetOpsCyberPolicyEpochSnapshot(requestContext, staleEpoch, staleEpochSet)
+	MarkOpsCyberPolicy(requestContext, CyberPolicyMark{Message: "blocked"})
+	staleMark := GetOpsCyberPolicy(requestContext)
+	require.NotNil(t, staleMark)
+	_, err := cache.ClearContentModerationUserState(ctx, 7)
+	require.NoError(t, err)
+
+	accepted := svc.RecordCyberPolicyEvent(ctx, CyberPolicyRecordInput{
+		RequestID:       "stale-cyber-event",
+		UserID:          7,
+		UpstreamMessage: staleMark.Message,
+		ModerationEpoch: staleMark.ModerationEpoch,
+		EpochSet:        staleMark.EpochSet,
+	})
+	require.False(t, accepted, "a stale event must not recreate session enforcement")
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1, "the upstream evidence must remain visible to operators")
+	require.False(t, logs[0].Flagged, "a stale evidence row must not count toward a future ban")
+	require.Equal(t, ContentModerationAuditStatusSkipped, logs[0].AuditStatus)
+	require.Equal(t, contentModerationAuditCodeStaleCyberPolicy, logs[0].AuditCode)
+	require.Equal(t, ContentModerationSideEffectStatusNotApplicable, logs[0].SideEffectStatus)
+	require.Equal(t, ContentModerationNotificationStatusNotRequired, logs[0].NotificationStatus)
+	require.Zero(t, logs[0].ViolationCount)
+	require.False(t, logs[0].AutoBanned)
+	require.False(t, logs[0].EmailSent)
+
+	freshEpoch, freshEpochSet := svc.SnapshotContentModerationUserEpoch(ctx, 7)
+	require.True(t, freshEpochSet)
+	require.EqualValues(t, 1, freshEpoch)
+	accepted = svc.RecordCyberPolicyEvent(ctx, CyberPolicyRecordInput{
+		RequestID:       "fresh-cyber-event",
+		UserID:          7,
+		UpstreamMessage: "blocked again",
+		ModerationEpoch: freshEpoch,
+		EpochSet:        freshEpochSet,
+	})
+	require.True(t, accepted)
+	logs = repo.snapshotLogs()
+	require.Len(t, logs, 2, "a post-unban event must remain eligible")
+	require.True(t, logs[1].Flagged)
+	require.Equal(t, 1, logs[1].ViolationCount, "the retained stale row must not enter the violation count")
 }
 
 // TestRecordCyberPolicyEvent_CreateLogBeforeEmail verifies F7: the moderation

@@ -42,15 +42,16 @@ const (
 	contentModerationAPIKeysModeAppend  = "append"
 	contentModerationAPIKeysModeReplace = "replace"
 
-	ContentModerationActionAllow        = "allow"
-	ContentModerationActionObserve      = "observe"
-	ContentModerationActionBlock        = "block"
-	ContentModerationActionHashBlock    = "hash_block"
-	ContentModerationActionKeywordBlock = "keyword_block"
-	ContentModerationActionError        = "error"
-	ContentModerationActionSkip         = "skip"
-	ContentModerationActionUnavailable  = "audit_unavailable"
-	ContentModerationActionCyberPolicy  = "cyber_policy" // cyber_policy 硬阻断的风控日志 action（封号计数排除按此值过滤）
+	ContentModerationActionAllow          = "allow"
+	ContentModerationActionObserve        = "observe"
+	ContentModerationActionBlock          = "block"
+	ContentModerationActionHashBlock      = "hash_block"
+	ContentModerationActionKeywordBlock   = "keyword_block"
+	ContentModerationActionError          = "error"
+	ContentModerationActionSkip           = "skip"
+	ContentModerationActionUnavailable    = "audit_unavailable"
+	ContentModerationErrorCodeUnavailable = "content_moderation_unavailable"
+	ContentModerationActionCyberPolicy    = "cyber_policy" // cyber_policy 硬阻断的风控日志 action（封号计数排除按此值过滤）
 
 	ContentModerationAuditStatusSuccess    = "success"
 	ContentModerationAuditStatusSkipped    = "skipped"
@@ -77,7 +78,8 @@ const (
 	ContentModerationBanOutcomeAlreadyOwned = "already_owned"
 	ContentModerationBanOutcomeIneligible   = "ineligible"
 
-	contentModerationKeywordCategory = "keyword"
+	contentModerationKeywordCategory           = "keyword"
+	contentModerationAuditCodeStaleCyberPolicy = "cyber_policy_stale_after_risk_reset"
 
 	ContentModerationKeywordModeKeywordOnly   = "keyword_only"
 	ContentModerationKeywordModeKeywordAndAPI = "keyword_and_api"
@@ -139,12 +141,17 @@ const (
 	defaultAIChatModel                            = "deepseek-v4-flash"
 	defaultAIChatTimeoutMS                        = 15000
 	defaultAIChatSynchronousBudgetMS              = 4800
+	minAIChatSynchronousBudgetMS                  = 500
 	maxAIChatSynchronousBudgetMS                  = 5000
+	preferredAIChatNextAPIKeyBudget               = 1500 * time.Millisecond
+	minimumAIChatAPIKeyBudget                     = 500 * time.Millisecond
+	aiChatAPIKeyBudgetGuard                       = 50 * time.Millisecond
 	defaultAIChatFastInputChars                   = 12000
 	defaultAIChatFallbackInputChars               = 4000
 	defaultAIChatConfidenceThreshold              = 0.7
 	defaultAIChatCacheTTLSeconds                  = 300
 	defaultAIChatMaxInputChars                    = 200000
+	minAIChatMaxInputChars                        = 1000
 	defaultAIChatThinkingMode                     = "enabled"
 	defaultAIChatReasoningEffort                  = "adaptive"
 	defaultAIChatObserveThreshold                 = 0.35
@@ -332,6 +339,10 @@ type ContentModerationAIChatConfigView struct {
 	CacheEnabled                    bool    `json:"cache_enabled"`
 	CacheTTLSeconds                 int     `json:"cache_ttl_seconds"`
 	SystemPrompt                    string  `json:"system_prompt"`
+	RecommendedSystemPrompt         string  `json:"recommended_system_prompt"`
+	RecommendedPromptVersion        string  `json:"recommended_prompt_version"`
+	SystemPromptVersion             string  `json:"system_prompt_version"`
+	UsesRecommendedSystemPrompt     bool    `json:"uses_recommended_system_prompt"`
 	FailurePolicy                   string  `json:"failure_policy"`
 	MaxInputChars                   int     `json:"max_input_chars"`
 	SynchronousBudgetMS             int     `json:"synchronous_budget_ms"`
@@ -391,24 +402,43 @@ type TestContentModerationAPIKeysInput struct {
 	AIConfidenceThreshold float64  `json:"ai_confidence_threshold"`
 	AISystemPrompt        string   `json:"ai_system_prompt"`
 	AIMaxInputChars       int      `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS int      `json:"ai_synchronous_budget_ms"`
+	AIFastInputChars      int      `json:"ai_fast_input_chars"`
+	AIFallbackInputChars  int      `json:"ai_fallback_input_chars"`
 	AIThinkingMode        string   `json:"ai_thinking_mode"`
 	AIReasoningEffort     string   `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled   *bool    `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold    float64  `json:"ai_observe_threshold"`
 }
 
 type TestContentModerationAPIKeysResult struct {
 	Items       []ContentModerationAPIKeyStatus   `json:"items"`
 	AuditResult *ContentModerationTestAuditResult `json:"audit_result,omitempty"`
+	AuditError  *ContentModerationTestAuditError  `json:"audit_error,omitempty"`
 	ImageCount  int                               `json:"image_count"`
 }
 
+type ContentModerationTestAuditError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+}
+
 type ContentModerationTestAuditResult struct {
-	Flagged         bool               `json:"flagged"`
-	HighestCategory string             `json:"highest_category"`
-	HighestScore    float64            `json:"highest_score"`
-	CompositeScore  float64            `json:"composite_score"`
-	CategoryScores  map[string]float64 `json:"category_scores"`
-	Thresholds      map[string]float64 `json:"thresholds"`
-	Reason          string             `json:"reason,omitempty"`
+	Flagged          bool               `json:"flagged"`
+	RiskScore        float64            `json:"risk_score"`
+	RiskTier         string             `json:"risk_tier"`
+	Categories       []string           `json:"categories"`
+	Signals          []string           `json:"signals"`
+	HighestCategory  string             `json:"highest_category"`
+	HighestScore     float64            `json:"highest_score"`
+	CompositeScore   float64            `json:"composite_score"`
+	CategoryScores   map[string]float64 `json:"category_scores"`
+	Thresholds       map[string]float64 `json:"thresholds"`
+	Reason           string             `json:"reason,omitempty"`
+	ReviewIncomplete bool               `json:"review_incomplete"`
+	ReviewError      string             `json:"review_error,omitempty"`
+	Scope            string             `json:"scope"`
 }
 
 type UpdateContentModerationConfigInput struct {
@@ -497,6 +527,9 @@ type ContentModerationCheckInput struct {
 	Model      string
 	Protocol   string
 	Body       []byte
+
+	ModerationEpoch    int64
+	ModerationEpochSet bool
 }
 
 type ContentModerationInput struct {
@@ -745,6 +778,13 @@ type ContentModerationUserStateCleaner interface {
 	ClearContentModerationUserState(ctx context.Context, userID int64) (int64, error)
 }
 
+// ContentModerationUserStateEpochStore fences queued moderation work across an
+// administrator-initiated unban. Clearing user state advances the same epoch.
+type ContentModerationUserStateEpochStore interface {
+	GetContentModerationUserEpoch(ctx context.Context, userID int64) (int64, error)
+	AdvanceContentModerationUserEpoch(ctx context.Context, userID int64) (int64, error)
+}
+
 // ContentModerationAccountScopeRepository is the narrow account lookup used to
 // canonicalize Spark shadow IDs in persisted moderation scope filters.
 type ContentModerationAccountScopeRepository interface {
@@ -787,6 +827,7 @@ type ContentModerationService struct {
 	runtimeRefreshRetryAt    atomic.Int64
 	keyHealthMu              sync.Mutex
 	keyHealth                map[string]*contentModerationKeyHealth
+	moderationUserStateLocks [64]sync.RWMutex
 }
 
 type contentModerationRuntimeSnapshot struct {
@@ -1195,11 +1236,26 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 	if input.AIMaxInputChars > 0 {
 		cfg.AIChat.MaxInputChars = input.AIMaxInputChars
 	}
+	if input.AISynchronousBudgetMS > 0 {
+		cfg.AIChat.SynchronousBudgetMS = input.AISynchronousBudgetMS
+	}
+	if input.AIFastInputChars > 0 {
+		cfg.AIChat.FastInputChars = input.AIFastInputChars
+	}
+	if input.AIFallbackInputChars > 0 {
+		cfg.AIChat.FallbackInputChars = input.AIFallbackInputChars
+	}
 	if strings.TrimSpace(input.AIThinkingMode) != "" {
 		cfg.AIChat.ThinkingMode = strings.TrimSpace(input.AIThinkingMode)
 	}
 	if strings.TrimSpace(input.AIReasoningEffort) != "" {
 		cfg.AIChat.ReasoningEffort = strings.TrimSpace(input.AIReasoningEffort)
+	}
+	if input.AIRiskLevelsEnabled != nil {
+		cfg.AIChat.RiskLevelsEnabled = *input.AIRiskLevelsEnabled
+	}
+	if input.AIObserveThreshold > 0 {
+		cfg.AIChat.ObserveThreshold = input.AIObserveThreshold
 	}
 	cfg.normalize()
 	testInput, imageCount, err := buildModerationTestInput(input.Prompt, input.Images)
@@ -1212,35 +1268,70 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 		if !ok {
 			return &TestContentModerationAPIKeysResult{
 				Items:      s.apiKeyStatuses(keys),
+				AuditError: &ContentModerationTestAuditError{Code: "no_usable_api_key", Message: "no usable moderation API key is available"},
 				ImageCount: imageCount,
 			}, nil
 		}
 		keys = []string{key}
 	}
 	if len(keys) == 0 {
-		return &TestContentModerationAPIKeysResult{Items: []ContentModerationAPIKeyStatus{}, ImageCount: imageCount}, nil
+		result := &TestContentModerationAPIKeysResult{Items: []ContentModerationAPIKeyStatus{}, ImageCount: imageCount}
+		if auditOnly {
+			result.AuditError = &ContentModerationTestAuditError{Code: "no_api_key", Message: "no moderation API key is configured"}
+		}
+		return result, nil
 	}
 	items := make([]ContentModerationAPIKeyStatus, 0, len(keys))
 	var auditResult *ContentModerationTestAuditResult
+	var auditError *ContentModerationTestAuditError
 	for idx, key := range keys {
 		start := time.Now()
 		httpStatus := 0
-		result, err := s.callModerationOnceWithInput(ctx, cfg, key, testInput, &httpStatus)
+		requestCtx := ctx
+		cancelRequest := func() {}
+		if cfg.AuditProvider == ContentModerationProviderAIChat {
+			requestCtx, cancelRequest = context.WithTimeout(ctx, time.Duration(cfg.AIChat.SynchronousBudgetMS)*time.Millisecond)
+		}
+		result, err := s.callModerationOnceWithInput(requestCtx, cfg, key, testInput, &httpStatus)
+		cancelRequest()
 		latency := int(time.Since(start).Milliseconds())
 		keyHash := moderationAPIKeyHash(key)
 		if err != nil {
 			s.markAPIKeyError(key, err.Error(), latency, httpStatus)
+			if auditOnly && auditError == nil {
+				auditError = &ContentModerationTestAuditError{
+					Code:       "audit_request_failed",
+					Message:    err.Error(),
+					HTTPStatus: httpStatus,
+				}
+			}
 		} else {
 			s.markAPIKeySuccess(key, latency, httpStatus)
 			if auditResult == nil {
-				auditResult = buildContentModerationTestAuditResult(result, cfg.activeThresholds())
+				var riskThresholds []float64
+				if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.RiskLevelsEnabled {
+					riskThresholds = []float64{
+						cfg.AIChat.ObserveThreshold,
+						cfg.AIChat.ConfidenceThreshold,
+					}
+				}
+				auditResult = buildContentModerationTestAuditResult(
+					result,
+					cfg.activeThresholds(),
+					riskThresholds...,
+				)
 			}
 		}
 		status := s.apiKeyStatusForHash(idx, keyHash, maskSecretTail(key), configured)
 		status.LastTested = true
 		items = append(items, status)
 	}
-	return &TestContentModerationAPIKeysResult{Items: items, AuditResult: auditResult, ImageCount: imageCount}, nil
+	if auditResult != nil {
+		auditError = nil
+	} else if auditOnly && auditError == nil {
+		auditError = &ContentModerationTestAuditError{Code: "empty_audit_result", Message: "moderation provider returned no audit result"}
+	}
+	return &TestContentModerationAPIKeysResult{Items: items, AuditResult: auditResult, AuditError: auditError, ImageCount: imageCount}, nil
 }
 
 func (s *ContentModerationService) Check(ctx context.Context, input ContentModerationCheckInput) (*ContentModerationDecision, error) {
@@ -1343,6 +1434,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"configured_models", cfg.ModelFilter.Models)
 		return allow, nil
 	}
+	s.captureContentModerationEpoch(ctx, &input)
 	extraction := ExtractContentModerationInputOutcome(input.Protocol, input.Body)
 	if extraction.Err != nil {
 		action := ContentModerationActionError
@@ -1617,7 +1709,15 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			_ = s.repo.CreateLog(ctx, log)
 			return contentModerationUnavailableDecision()
 		}
-		s.enqueueAsync(input, cfg, content, hashText, true)
+		if !s.enqueueAsync(input, cfg, content, hashText, true) {
+			// The provisional result is intentionally side-effect free. If the
+			// supplemental queue cannot accept the final review, retain an explicit
+			// incomplete audit row so operators can distinguish lost capacity from
+			// a successfully completed allow decision.
+			droppedReviewError := reviewError + ": supplemental_queue_unavailable"
+			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, droppedReviewError)
+			s.persistContentModerationLog(ctx, cfg, log, "", false, false)
+		}
 		if trackPreBlock {
 			s.recordPreBlockSyncMetric(latency, ContentModerationActionError)
 		}
@@ -1777,9 +1877,9 @@ func (s *ContentModerationService) recordPreBlockSyncMetric(latencyMS int, actio
 	}
 }
 
-func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, supplemental bool) {
+func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, supplemental bool) bool {
 	if s == nil || s.asyncQueue == nil {
-		return
+		return false
 	}
 	queueSize := defaultContentModerationQueueSize
 	if cfg != nil && cfg.QueueSize > 0 {
@@ -1791,7 +1891,7 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 	if len(s.asyncQueue) >= queueSize {
 		slog.Warn("content_moderation.async_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint, "queue_size", queueSize)
 		s.asyncDropped.Add(1)
-		return
+		return false
 	}
 	reservedSupplemental := false
 	originalCacheKeyAlias := ""
@@ -1799,7 +1899,7 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 		if !s.reserveSupplementalSlot(int64(queueSize)) {
 			slog.Warn("content_moderation.supplemental_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint, "queue_size", queueSize)
 			s.asyncDropped.Add(1)
-			return
+			return false
 		}
 		reservedSupplemental = true
 		if cfg != nil {
@@ -1827,12 +1927,14 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 	select {
 	case s.asyncQueue <- task:
 		s.asyncEnqueued.Add(1)
+		return true
 	default:
 		if reservedSupplemental {
 			s.supplementalPending.Add(-1)
 		}
 		slog.Warn("content_moderation.async_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint)
 		s.asyncDropped.Add(1)
+		return false
 	}
 }
 
@@ -1904,6 +2006,17 @@ func (s *ContentModerationService) processAsyncTask(ctx context.Context, cfg *Co
 			slog.Error("content_moderation.worker_panic", "worker_id", workerID, "recover", r)
 		}
 	}()
+	unlockUser := s.lockContentModerationUserState(task.input.UserID, false)
+	defer unlockUser()
+	if !s.contentModerationTaskIsCurrent(ctx, task) {
+		s.asyncProcessed.Add(1)
+		slog.Info("content_moderation.stale_async_task_skipped",
+			"worker_id", workerID,
+			"user_id", task.input.UserID,
+			"request_id", task.input.RequestID,
+			"supplemental", task.supplemental)
+		return
+	}
 	if task.log != nil {
 		s.asyncActive.Add(1)
 		defer s.asyncActive.Add(-1)
@@ -1935,6 +2048,87 @@ func (s *ContentModerationService) processAsyncTask(ctx context.Context, cfg *Co
 	queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
 	_ = s.checkSync(ctx, task.input, taskCfg, task.content, task.inputHash, &queueDelay, false)
 	s.asyncProcessed.Add(1)
+}
+
+func (s *ContentModerationService) captureContentModerationEpoch(ctx context.Context, input *ContentModerationCheckInput) {
+	if s == nil || input == nil || input.UserID <= 0 {
+		return
+	}
+	if input.ModerationEpochSet {
+		return
+	}
+	store, ok := s.hashCache.(ContentModerationUserStateEpochStore)
+	if !ok {
+		return
+	}
+	input.ModerationEpochSet = true
+	epoch, err := store.GetContentModerationUserEpoch(ctx, input.UserID)
+	if err != nil {
+		input.ModerationEpoch = -1
+		slog.Warn("content_moderation.user_epoch_get_failed", "user_id", input.UserID, "error", err)
+		return
+	}
+	input.ModerationEpoch = epoch
+}
+
+// SnapshotContentModerationUserEpoch captures the user's moderation generation
+// before asynchronous work is detached from the request context.
+func (s *ContentModerationService) SnapshotContentModerationUserEpoch(ctx context.Context, userID int64) (int64, bool) {
+	input := ContentModerationCheckInput{UserID: userID}
+	s.captureContentModerationEpoch(ctx, &input)
+	return input.ModerationEpoch, input.ModerationEpochSet
+}
+
+// IsContentModerationUserEpochCurrent verifies a snapshot without applying any
+// side effects. Callers that protect an existing block must treat errors as
+// indeterminate and keep the block until a later successful check.
+func (s *ContentModerationService) IsContentModerationUserEpochCurrent(ctx context.Context, userID, epoch int64, epochSet bool) (bool, error) {
+	if !epochSet || userID <= 0 {
+		return true, nil
+	}
+	if s == nil {
+		return false, errors.New("content moderation service is unavailable")
+	}
+	store, ok := s.hashCache.(ContentModerationUserStateEpochStore)
+	if !ok {
+		return false, errors.New("content moderation user epoch store is unavailable")
+	}
+	currentEpoch, err := store.GetContentModerationUserEpoch(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	return currentEpoch == epoch, nil
+}
+
+func (s *ContentModerationService) contentModerationEpochIsCurrent(ctx context.Context, userID, epoch int64, epochSet bool) bool {
+	current, err := s.IsContentModerationUserEpochCurrent(ctx, userID, epoch, epochSet)
+	if err != nil {
+		slog.Warn("content_moderation.user_epoch_check_failed", "user_id", userID, "error", err)
+		return false
+	}
+	return current
+}
+
+func (s *ContentModerationService) contentModerationTaskIsCurrent(ctx context.Context, task contentModerationTask) bool {
+	return s.contentModerationEpochIsCurrent(
+		ctx,
+		task.input.UserID,
+		task.input.ModerationEpoch,
+		task.input.ModerationEpochSet,
+	)
+}
+
+func (s *ContentModerationService) lockContentModerationUserState(userID int64, exclusive bool) func() {
+	if s == nil || userID <= 0 {
+		return func() {}
+	}
+	lock := &s.moderationUserStateLocks[uint64(userID)%uint64(len(s.moderationUserStateLocks))]
+	if exclusive {
+		lock.Lock()
+		return lock.Unlock
+	}
+	lock.RLock()
+	return lock.RUnlock
 }
 
 func (s *ContentModerationService) reserveSupplementalSlot(limit int64) bool {
@@ -2021,6 +2215,8 @@ func (s *ContentModerationService) UnbanUser(ctx context.Context, userID int64, 
 	if userID <= 0 {
 		return nil, infraerrors.BadRequest("INVALID_USER_ID", "用户 ID 无效")
 	}
+	unlockUser := s.lockContentModerationUserState(userID, true)
+	defer unlockUser()
 	lifecycleRepo, ok := s.repo.(ContentModerationLifecycleRepository)
 	if !ok {
 		return nil, infraerrors.InternalServer("CONTENT_MODERATION_LIFECYCLE_REPOSITORY_UNAVAILABLE", "内容风控生命周期仓储不可用")
@@ -2103,6 +2299,11 @@ func (s *ContentModerationService) UnbanUser(ctx context.Context, userID int64, 
 			slog.Warn("content_moderation.unban_risk_state_clear_failed", "user_id", userID, "error", err)
 		} else {
 			result.RiskStateCleared = true
+		}
+	} else if epochStore, ok := s.hashCache.(ContentModerationUserStateEpochStore); ok {
+		if _, err := epochStore.AdvanceContentModerationUserEpoch(ctx, userID); err != nil {
+			result.Warning = "账号已恢复，但旧审核任务隔离失败，请检查 Redis"
+			slog.Warn("content_moderation.unban_epoch_advance_failed", "user_id", userID, "error", err)
 		}
 	}
 	// Invalidate authentication only after the Redis cleanup attempt. The
@@ -2512,6 +2713,8 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		attempts = maxContentModerationRetryCount + 1
 	}
 	trackLoad := len(trackKeyLoad) > 0 && trackKeyLoad[0]
+	aiChatAudit := cfg != nil && cfg.AuditProvider == ContentModerationProviderAIChat
+	triedKeyHashes := make(map[string]struct{}, min(attempts, len(cfg.apiKeys())))
 	cacheKey := ""
 	if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.CacheEnabled {
 		if content := aiChatTextFromModerationInput(input); content != "" {
@@ -2536,17 +2739,35 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 			}
 			return nil, err
 		}
-		key, ok := s.nextUsableAPIKey(cfg)
+		var key string
+		var ok bool
+		if aiChatAudit {
+			key, ok = s.nextUsableAPIKeyExcluding(cfg, triedKeyHashes)
+			if !ok {
+				// Preserve the configured retry semantics after every distinct usable
+				// key has received one attempt.
+				key, ok = s.nextUsableAPIKey(cfg)
+			}
+		} else {
+			key, ok = s.nextUsableAPIKey(cfg)
+		}
 		if !ok {
 			lastErr = errors.New("no moderation api key available")
 			break
+		}
+		if aiChatAudit {
+			triedKeyHashes[moderationAPIKeyHash(key)] = struct{}{}
 		}
 		if trackLoad {
 			s.beginModerationAPIKeyCall(key)
 		}
 		start := time.Now()
 		httpStatus := 0
-		result, err := s.callModerationOnceWithInput(ctx, cfg, key, input, &httpStatus)
+		nextWait := time.Duration(100*(attempt+1)) * time.Millisecond
+		hasNextUsableKey := aiChatAudit && attempt < attempts-1 && s.hasUsableAPIKeyExcluding(cfg, triedKeyHashes)
+		attemptCtx, cancelAttempt := aiChatModerationAttemptContext(ctx, nextWait, hasNextUsableKey)
+		result, err := s.callModerationOnceWithInput(attemptCtx, cfg, key, input, &httpStatus)
+		cancelAttempt()
 		latency := int(time.Since(start).Milliseconds())
 		if err == nil {
 			if trackLoad {
@@ -2576,13 +2797,16 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		}
 		s.markAPIKeyError(key, err.Error(), latency, httpStatus)
 		lastErr = err
-		if httpStatus == http.StatusBadRequest || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if httpStatus == http.StatusBadRequest || errors.Is(err, context.Canceled) {
+			break
+		}
+		if ctx.Err() != nil || (!aiChatAudit && errors.Is(err, context.DeadlineExceeded)) {
 			break
 		}
 		if attempt == attempts-1 {
 			break
 		}
-		wait := time.Duration(100*(attempt+1)) * time.Millisecond
+		wait := nextWait
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining := time.Until(deadline)
 			if remaining <= 250*time.Millisecond {
@@ -2599,6 +2823,41 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		}
 	}
 	return nil, lastErr
+}
+
+func aiChatModerationAttemptBudget(remaining time.Duration, nextBackoff time.Duration, hasNextUsableKey bool) time.Duration {
+	if remaining <= 0 {
+		return 0
+	}
+	if !hasNextUsableKey {
+		return remaining
+	}
+	if nextBackoff < 0 {
+		nextBackoff = 0
+	}
+	maxReserve := remaining - nextBackoff - aiChatAPIKeyBudgetGuard - minimumAIChatAPIKeyBudget
+	if maxReserve < minimumAIChatAPIKeyBudget {
+		return remaining
+	}
+	nextKeyReserve := min(preferredAIChatNextAPIKeyBudget, maxReserve)
+	return remaining - nextBackoff - aiChatAPIKeyBudgetGuard - nextKeyReserve
+}
+
+func aiChatModerationAttemptContext(ctx context.Context, nextBackoff time.Duration, hasNextUsableKey bool) (context.Context, context.CancelFunc) {
+	noop := func() {}
+	if ctx == nil || !hasNextUsableKey {
+		return ctx, noop
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, noop
+	}
+	remaining := time.Until(deadline)
+	budget := aiChatModerationAttemptBudget(remaining, nextBackoff, true)
+	if budget <= 0 || budget >= remaining {
+		return ctx, noop
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Context, cfg *ContentModerationConfig, apiKey string, input any, httpStatus *int) (*moderationAPIResult, error) {
@@ -2698,6 +2957,7 @@ func moderationAPIResultFromAIChat(result *voteaimoderation.Result) *moderationA
 	return &moderationAPIResult{
 		Flagged:          result.Flagged,
 		CategoryScores:   scores,
+		Categories:       append([]string{}, result.Categories...),
 		Signals:          result.Signals,
 		Reason:           result.Reason,
 		ReviewIncomplete: result.ReviewIncomplete,
@@ -3535,7 +3795,7 @@ func (cfg *ContentModerationConfig) normalizeAIChat() {
 	if cfg.AIChat.TimeoutMS > maxContentModerationTimeoutMS {
 		cfg.AIChat.TimeoutMS = maxContentModerationTimeoutMS
 	}
-	if cfg.AIChat.SynchronousBudgetMS <= 0 || cfg.AIChat.SynchronousBudgetMS > maxAIChatSynchronousBudgetMS {
+	if cfg.AIChat.SynchronousBudgetMS < minAIChatSynchronousBudgetMS || cfg.AIChat.SynchronousBudgetMS > maxAIChatSynchronousBudgetMS {
 		cfg.AIChat.SynchronousBudgetMS = defaultAIChatSynchronousBudgetMS
 	}
 	if cfg.AIChat.RetryCount < 0 {
@@ -3557,7 +3817,7 @@ func (cfg *ContentModerationConfig) normalizeAIChat() {
 	if cfg.AIChat.FailurePolicy != ContentModerationFailurePolicyBlock {
 		cfg.AIChat.FailurePolicy = ContentModerationFailurePolicyAllow
 	}
-	if cfg.AIChat.MaxInputChars <= 0 || cfg.AIChat.MaxInputChars > maxModerationInputRunes {
+	if cfg.AIChat.MaxInputChars < minAIChatMaxInputChars || cfg.AIChat.MaxInputChars > maxModerationInputRunes {
 		cfg.AIChat.MaxInputChars = defaultAIChatMaxInputChars
 	}
 	if cfg.AIChat.FastInputChars <= 0 || cfg.AIChat.FastInputChars > cfg.AIChat.MaxInputChars {
@@ -3657,6 +3917,38 @@ func (s *ContentModerationService) nextUsableAPIKey(cfg *ContentModerationConfig
 		}
 	}
 	return "", false
+}
+
+func (s *ContentModerationService) nextUsableAPIKeyExcluding(cfg *ContentModerationConfig, excludedHashes map[string]struct{}) (string, bool) {
+	keys := cfg.apiKeys()
+	if len(keys) == 0 {
+		return "", false
+	}
+	now := time.Now()
+	for i := 0; i < len(keys); i++ {
+		idx := int(s.apiKeyCursor.Add(1)-1) % len(keys)
+		key := keys[idx]
+		if _, excluded := excludedHashes[moderationAPIKeyHash(key)]; excluded {
+			continue
+		}
+		if !s.isAPIKeyFrozen(key, now) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+func (s *ContentModerationService) hasUsableAPIKeyExcluding(cfg *ContentModerationConfig, excludedHashes map[string]struct{}) bool {
+	now := time.Now()
+	for _, key := range cfg.apiKeys() {
+		if _, excluded := excludedHashes[moderationAPIKeyHash(key)]; excluded {
+			continue
+		}
+		if !s.isAPIKeyFrozen(key, now) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ContentModerationService) isAPIKeyFrozen(key string, now time.Time) bool {
@@ -3790,6 +4082,7 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 	aiChatProfile := contentModerationProviderProfileView(
 		cfg.AIChat.BaseURL, cfg.AIChat.Model, cfg.AIChat.ProxyID, cfg.AIChat.APIKeys, cfg.AIChat.TimeoutMS, cfg.AIChat.RetryCount,
 	)
+	systemPromptVersion, usesRecommendedSystemPrompt := voteaimoderation.ClassifySystemPrompt(cfg.AIChat.SystemPrompt)
 	return &ContentModerationConfigView{
 		Enabled:           cfg.Enabled,
 		Mode:              cfg.Mode,
@@ -3801,6 +4094,10 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 			CacheEnabled:                         cfg.AIChat.CacheEnabled,
 			CacheTTLSeconds:                      cfg.AIChat.CacheTTLSeconds,
 			SystemPrompt:                         cfg.AIChat.SystemPrompt,
+			RecommendedSystemPrompt:              voteaimoderation.RecommendedSystemPrompt,
+			RecommendedPromptVersion:             voteaimoderation.RecommendedSystemPromptVersion,
+			SystemPromptVersion:                  systemPromptVersion,
+			UsesRecommendedSystemPrompt:          usesRecommendedSystemPrompt,
 			FailurePolicy:                        cfg.AIChat.FailurePolicy,
 			MaxInputChars:                        cfg.AIChat.MaxInputChars,
 			SynchronousBudgetMS:                  cfg.AIChat.SynchronousBudgetMS,
@@ -4063,7 +4360,7 @@ func validateModerationTestImageDataURL(value string) error {
 	return nil
 }
 
-func buildContentModerationTestAuditResult(result *moderationAPIResult, thresholds map[string]float64) *ContentModerationTestAuditResult {
+func buildContentModerationTestAuditResult(result *moderationAPIResult, thresholds map[string]float64, riskThresholds ...float64) *ContentModerationTestAuditResult {
 	if result == nil {
 		return nil
 	}
@@ -4079,15 +4376,47 @@ func buildContentModerationTestAuditResult(result *moderationAPIResult, threshol
 	if _, aiAudit := thresholdSnapshot["ai_risk"]; aiAudit {
 		flagged = result.Flagged && flagged
 	}
+	riskScore := highestScore
+	if aiRiskScore, ok := scores["ai_risk"]; ok {
+		riskScore = aiRiskScore
+	}
+	observeThreshold := defaultAIChatObserveThreshold
+	highThreshold := defaultAIChatConfidenceThreshold
+	if len(riskThresholds) > 0 && riskThresholds[0] > 0 && riskThresholds[0] < 1 {
+		observeThreshold = riskThresholds[0]
+	}
+	if len(riskThresholds) > 1 && riskThresholds[1] > observeThreshold && riskThresholds[1] <= 1 {
+		highThreshold = riskThresholds[1]
+	}
+	riskTier := ""
+	if len(riskThresholds) >= 2 {
+		riskTier = "low"
+		if riskScore >= highThreshold {
+			riskTier = "high"
+		} else if riskScore >= observeThreshold {
+			riskTier = "observe"
+		}
+	}
+	if contentModerationResultHasOnlyWeakSignals(result) {
+		flagged = false
+		riskTier = "low"
+	}
 	compositeScore := highestScore
 	return &ContentModerationTestAuditResult{
-		Flagged:         flagged,
-		HighestCategory: highestCategory,
-		HighestScore:    highestScore,
-		CompositeScore:  compositeScore,
-		CategoryScores:  scores,
-		Thresholds:      thresholdSnapshot,
-		Reason:          result.Reason,
+		Flagged:          flagged,
+		RiskScore:        riskScore,
+		RiskTier:         riskTier,
+		Categories:       append([]string{}, result.Categories...),
+		Signals:          append([]string{}, result.Signals...),
+		HighestCategory:  highestCategory,
+		HighestScore:     highestScore,
+		CompositeScore:   compositeScore,
+		CategoryScores:   scores,
+		Thresholds:       thresholdSnapshot,
+		Reason:           result.Reason,
+		ReviewIncomplete: result.ReviewIncomplete,
+		ReviewError:      result.ReviewError,
+		Scope:            "request",
 	}
 }
 
@@ -4113,6 +4442,7 @@ type moderationAPIResponse struct {
 type moderationAPIResult struct {
 	Flagged          bool               `json:"flagged"`
 	CategoryScores   map[string]float64 `json:"category_scores"`
+	Categories       []string           `json:"ai_categories"`
 	Signals          []string           `json:"signals"`
 	Reason           string             `json:"reason,omitempty"`
 	ReviewIncomplete bool               `json:"-"`
@@ -4538,17 +4868,27 @@ type CyberPolicyRecordInput struct {
 	UpstreamStatus  int
 	UpstreamInTok   int
 	UpstreamOutTok  int
+	ModerationEpoch int64
+	EpochSet        bool
 }
 
 // RecordCyberPolicyEvent 把一次 cyber_policy 硬阻断写入风控中心日志、计入违规计数、
 // 并给用户发邮件。当前请求已由 gateway 透传给用户；本方法仅做事后记录/通知/计数。
 // 仅受 risk_control_enabled 总开关约束（不受内容审核 Enabled/Mode/scope/sample 约束）。
-func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, in CyberPolicyRecordInput) {
-	if s == nil || s.repo == nil {
-		return
+// The return value reports whether session-level cyber enforcement may be
+// applied. A false result means the event belongs to a pre-reset user epoch.
+func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, in CyberPolicyRecordInput) bool {
+	if s == nil {
+		return true
+	}
+	unlockUser := s.lockContentModerationUserState(in.UserID, false)
+	defer unlockUser()
+	epochCurrent := s.contentModerationEpochIsCurrent(ctx, in.UserID, in.ModerationEpoch, in.EpochSet)
+	if s.repo == nil {
+		return epochCurrent
 	}
 	if !s.isRiskControlEnabled(ctx) {
-		return
+		return epochCurrent
 	}
 	cfg, err := s.loadConfig(ctx)
 	if err != nil {
@@ -4596,6 +4936,24 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		NotificationStatus: ContentModerationNotificationStatusPending,
 		CreatedAt:          time.Now(),
 	}
+	if !epochCurrent {
+		// Retain the upstream evidence for operators, but keep the row out of
+		// future violation counts and suppress every enforcement side effect.
+		log.Flagged = false
+		log.AuditStatus = ContentModerationAuditStatusSkipped
+		log.AuditCode = contentModerationAuditCodeStaleCyberPolicy
+		log.SideEffectStatus = ContentModerationSideEffectStatusNotApplicable
+		log.NotificationStatus = ContentModerationNotificationStatusNotRequired
+		if err := s.repo.CreateLog(ctx, log); err != nil {
+			slog.Warn("content_moderation.stale_cyber_create_log_failed", "user_id", in.UserID, "error", err)
+		} else {
+			slog.Info("content_moderation.stale_cyber_policy_event_retained",
+				"log_id", log.ID,
+				"user_id", in.UserID,
+				"request_id", in.RequestID)
+		}
+		return false
+	}
 	lifecycleRepo, lifecycleAvailable := s.repo.(ContentModerationLifecycleRepository)
 	if !lifecycleAvailable {
 		log.SideEffectStatus = ContentModerationSideEffectStatusFailed
@@ -4606,11 +4964,11 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		} else {
 			slog.Error("content_moderation.cyber_lifecycle_repository_unavailable", "log_id", log.ID, "user_id", in.UserID)
 		}
-		return
+		return true
 	}
 	if err := s.repo.CreateLog(ctx, log); err != nil {
 		slog.Warn("content_moderation.cyber_create_log_failed", "user_id", in.UserID, "error", err)
-		return
+		return true
 	}
 	tracker := &contentModerationSideEffectTracker{}
 	// 开关开时 cyber_policy 不参与封号计数：当次不判定（此处跳过），
@@ -4678,6 +5036,7 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	}); err != nil {
 		slog.Warn("content_moderation.cyber_update_effects_failed", "log_id", log.ID, "error", err)
 	}
+	return true
 }
 
 func (s *ContentModerationService) sendCyberPolicyEmail(ctx context.Context, log *ContentModerationLog) error {

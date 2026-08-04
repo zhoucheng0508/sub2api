@@ -30,6 +30,13 @@ func (a *LegacyModerationAdapter) Check(ctx context.Context, req Request) (*Lega
 	return &LegacyDecision{
 		Allowed: decision.Allowed, Blocked: decision.Blocked, Flagged: decision.Flagged,
 		Message: decision.Message, StatusCode: decision.StatusCode,
-		ErrorCode: "content_policy_violation", Action: decision.Action,
+		ErrorCode: moderationErrorCode(decision), Action: decision.Action,
 	}, nil
+}
+
+func moderationErrorCode(decision *service.ContentModerationDecision) string {
+	if decision != nil && decision.Action == service.ContentModerationActionUnavailable {
+		return service.ContentModerationErrorCodeUnavailable
+	}
+	return "content_policy_violation"
 }
