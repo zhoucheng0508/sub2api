@@ -46,7 +46,7 @@ func TestExtractContentModerationInput_ConversationBodiesStayIsolated(t *testing
 // 当数组末尾不是用户消息时（典型场景：Agent 工具循环结束于 tool/assistant），
 // 应直接跳过审计——不再回溯查找历史中的某条用户消息。
 
-func TestExtractContentModerationInput_AnthropicAgentToolLoopSkipsAudit(t *testing.T) {
+func TestExtractContentModerationInput_AnthropicAgentToolLoopIsAudited(t *testing.T) {
 	body := []byte(`{
 		"messages": [
 			{"role":"user","content":"调用一下天气工具"},
@@ -57,7 +57,9 @@ func TestExtractContentModerationInput_AnthropicAgentToolLoopSkipsAudit(t *testi
 
 	input := ExtractContentModerationInput(ContentModerationProtocolAnthropicMessages, body)
 
-	require.Empty(t, input.Text)
+	require.Contains(t, input.Text, "weather")
+	require.Contains(t, input.Text, "晴 25 度")
+	require.Contains(t, input.CurrentText, "晴 25 度")
 	require.Empty(t, input.Images)
 }
 
@@ -105,7 +107,7 @@ func TestExtractContentModerationInput_AnthropicStreamResendExtractsResend(t *te
 	require.Equal(t, "重发", input.CurrentText)
 }
 
-func TestExtractContentModerationInput_OpenAIChatAgentToolLoopSkipsAudit(t *testing.T) {
+func TestExtractContentModerationInput_OpenAIChatAgentToolLoopIsAudited(t *testing.T) {
 	body := []byte(`{
 		"messages": [
 			{"role":"system","content":"sys"},
@@ -117,7 +119,10 @@ func TestExtractContentModerationInput_OpenAIChatAgentToolLoopSkipsAudit(t *test
 
 	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIChat, body)
 
-	require.Empty(t, input.Text)
+	require.Contains(t, input.Text, "列出我的订单")
+	require.Contains(t, input.Text, "orders")
+	require.Contains(t, input.Text, "[]")
+	require.Contains(t, input.CurrentText, "列出我的订单")
 	require.Empty(t, input.Images)
 }
 
@@ -136,7 +141,7 @@ func TestExtractContentModerationInput_OpenAIChatMultiTurnExtractsLatestUser(t *
 	require.Equal(t, "Q2", input.CurrentText)
 }
 
-func TestExtractContentModerationInput_GeminiAgentToolLoopSkipsAudit(t *testing.T) {
+func TestExtractContentModerationInput_GeminiAgentToolLoopIsAudited(t *testing.T) {
 	body := []byte(`{
 		"contents": [
 			{"role":"user","parts":[{"text":"查询天气"}]},
@@ -147,7 +152,9 @@ func TestExtractContentModerationInput_GeminiAgentToolLoopSkipsAudit(t *testing.
 
 	input := ExtractContentModerationInput(ContentModerationProtocolGemini, body)
 
-	require.Empty(t, input.Text)
+	require.Contains(t, input.Text, "查询天气")
+	require.Contains(t, input.Text, "weather")
+	require.NotEmpty(t, input.CurrentText)
 	require.Empty(t, input.Images)
 }
 
@@ -179,7 +186,7 @@ func TestExtractContentModerationInput_GeminiMultiTurnExtractsLatestUser(t *test
 	require.Equal(t, "Q2", input.CurrentText)
 }
 
-func TestExtractContentModerationInput_ResponsesAgentToolLoopSkipsAudit(t *testing.T) {
+func TestExtractContentModerationInput_ResponsesAgentToolLoopIncludesToolContext(t *testing.T) {
 	body := []byte(`{
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"运行测试"}]},
@@ -190,7 +197,12 @@ func TestExtractContentModerationInput_ResponsesAgentToolLoopSkipsAudit(t *testi
 
 	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
 
-	require.Empty(t, input.Text)
+	require.Contains(t, input.Text, "[USER]")
+	require.Contains(t, input.Text, "[TOOL_CALL]")
+	require.Contains(t, input.Text, "run_tests")
+	require.Contains(t, input.Text, "[TOOL]")
+	require.Contains(t, input.Text, "all passed")
+	require.NotEmpty(t, input.CurrentText)
 	require.Empty(t, input.Images)
 }
 
@@ -209,7 +221,7 @@ func TestExtractContentModerationInput_ResponsesLastUserMessageExtracted(t *test
 	require.Equal(t, "latest", input.CurrentText)
 }
 
-func TestExtractContentModerationInput_ResponsesLastIsAssistantSkipped(t *testing.T) {
+func TestExtractContentModerationInput_ResponsesLastAssistantIsAudited(t *testing.T) {
 	body := []byte(`{
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"q1"}]},
@@ -219,6 +231,8 @@ func TestExtractContentModerationInput_ResponsesLastIsAssistantSkipped(t *testin
 
 	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
 
-	require.Empty(t, input.Text)
+	require.Contains(t, input.Text, "q1")
+	require.Contains(t, input.Text, "a1")
+	require.Contains(t, input.CurrentText, "a1")
 	require.Empty(t, input.Images)
 }

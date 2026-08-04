@@ -42,6 +42,9 @@ export interface ContentModerationAIChatProfile extends ContentModerationProvide
   system_prompt: string
   failure_policy: AIAuditFailurePolicy
   max_input_chars: number
+  synchronous_budget_ms: number
+  fast_input_chars: number
+  fallback_input_chars: number
   thinking_mode: AIAuditThinkingMode
   reasoning_effort: AIAuditReasoningEffort
   risk_levels_enabled: boolean
@@ -124,6 +127,9 @@ export interface TestContentModerationAPIKeysPayload {
   ai_confidence_threshold?: number
   ai_system_prompt?: string
   ai_max_input_chars?: number
+  ai_synchronous_budget_ms?: number
+  ai_fast_input_chars?: number
+  ai_fallback_input_chars?: number
   ai_thinking_mode?: AIAuditThinkingMode
   ai_reasoning_effort?: AIAuditReasoningEffort
   ai_risk_levels_enabled?: boolean
@@ -194,6 +200,9 @@ export interface UpdateContentModerationConfig {
   ai_system_prompt?: string
   ai_failure_policy?: AIAuditFailurePolicy
   ai_max_input_chars?: number
+  ai_synchronous_budget_ms?: number
+  ai_fast_input_chars?: number
+  ai_fallback_input_chars?: number
   ai_thinking_mode?: AIAuditThinkingMode
   ai_reasoning_effort?: AIAuditReasoningEffort
   ai_risk_levels_enabled?: boolean
