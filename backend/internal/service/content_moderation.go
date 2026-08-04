@@ -83,51 +83,53 @@ const (
 	maxModerationInputRunes           = 1000000
 	maxModerationExcerptRunes         = 240
 
-	defaultContentModerationWorkerCount          = 4
-	maxContentModerationWorkerCount              = 32
-	defaultContentModerationQueueSize            = 32768
-	maxContentModerationQueueSize                = 100000
-	defaultContentModerationBanThreshold         = 10
-	defaultContentModerationViolationWindowHours = 720
-	defaultContentModerationBlockHTTPStatus      = http.StatusForbidden
-	defaultContentModerationBlockMessage         = "内容审计命中风险规则，请调整输入后重试"
-	defaultContentModerationRetryCount           = 2
-	maxContentModerationRetryCount               = 5
-	defaultContentModerationHitRetentionDays     = 180
-	defaultContentModerationNonHitRetentionDays  = 3
-	maxContentModerationRetentionDays            = 3650
-	maxContentModerationNonHitRetentionDays      = 3
-	contentModerationKeyRateLimitFreezeDuration  = time.Minute
-	contentModerationKeyAuthFreezeDuration       = 10 * time.Minute
-	contentModerationKeyHTTPErrorFreezeDuration  = 10 * time.Second
-	maxContentModerationInputImages              = 1
-	maxContentModerationTestImages               = maxContentModerationInputImages
-	maxContentModerationTestImageBytes           = 8 * 1024 * 1024
-	maxContentModerationTestImageDataURLBytes    = 12 * 1024 * 1024
-	maxContentModerationBlockedKeywords          = 10000
-	maxContentModerationBlockedKeywordRunes      = 200
-	maxContentModerationModelFilterModels        = 1000
-	maxContentModerationModelFilterRunes         = 200
-	defaultAIChatBaseURL                         = "https://api.deepseek.com"
-	defaultAIChatModel                           = "deepseek-v4-flash"
-	defaultAIChatTimeoutMS                       = 15000
-	defaultAIChatSynchronousBudgetMS             = 4800
-	maxAIChatSynchronousBudgetMS                 = 5000
-	defaultAIChatFastInputChars                  = 12000
-	defaultAIChatFallbackInputChars              = 4000
-	defaultAIChatConfidenceThreshold             = 0.7
-	defaultAIChatCacheTTLSeconds                 = 300
-	defaultAIChatMaxInputChars                   = 200000
-	defaultAIChatThinkingMode                    = "enabled"
-	defaultAIChatReasoningEffort                 = "adaptive"
-	defaultAIChatObserveThreshold                = 0.35
-	defaultAIChatSessionRiskTTLMinutes           = 120
-	defaultAIChatSessionRiskHalfLifeMinutes      = 30
-	defaultAIChatSessionRiskBlockCooldownMinutes = 30
-	maxAIChatCacheTTLSeconds                     = 86400
-	maxAIChatSessionRiskTTLMinutes               = 1440
-	maxAIChatSessionRiskHalfLifeMinutes          = 720
-	maxAIChatSessionRiskBlockCooldownMinutes     = 1440
+	defaultContentModerationWorkerCount           = 4
+	maxContentModerationWorkerCount               = 32
+	defaultContentModerationQueueSize             = 32768
+	maxContentModerationQueueSize                 = 100000
+	maxContentModerationSupplementalQueueSize     = 64
+	maxContentModerationSupplementalRetainedRunes = 12800000
+	defaultContentModerationBanThreshold          = 10
+	defaultContentModerationViolationWindowHours  = 720
+	defaultContentModerationBlockHTTPStatus       = http.StatusForbidden
+	defaultContentModerationBlockMessage          = "内容审计命中风险规则，请调整输入后重试"
+	defaultContentModerationRetryCount            = 2
+	maxContentModerationRetryCount                = 5
+	defaultContentModerationHitRetentionDays      = 180
+	defaultContentModerationNonHitRetentionDays   = 3
+	maxContentModerationRetentionDays             = 3650
+	maxContentModerationNonHitRetentionDays       = 3
+	contentModerationKeyRateLimitFreezeDuration   = time.Minute
+	contentModerationKeyAuthFreezeDuration        = 10 * time.Minute
+	contentModerationKeyHTTPErrorFreezeDuration   = 10 * time.Second
+	maxContentModerationInputImages               = 1
+	maxContentModerationTestImages                = maxContentModerationInputImages
+	maxContentModerationTestImageBytes            = 8 * 1024 * 1024
+	maxContentModerationTestImageDataURLBytes     = 12 * 1024 * 1024
+	maxContentModerationBlockedKeywords           = 10000
+	maxContentModerationBlockedKeywordRunes       = 200
+	maxContentModerationModelFilterModels         = 1000
+	maxContentModerationModelFilterRunes          = 200
+	defaultAIChatBaseURL                          = "https://api.deepseek.com"
+	defaultAIChatModel                            = "deepseek-v4-flash"
+	defaultAIChatTimeoutMS                        = 15000
+	defaultAIChatSynchronousBudgetMS              = 4800
+	maxAIChatSynchronousBudgetMS                  = 5000
+	defaultAIChatFastInputChars                   = 12000
+	defaultAIChatFallbackInputChars               = 4000
+	defaultAIChatConfidenceThreshold              = 0.7
+	defaultAIChatCacheTTLSeconds                  = 300
+	defaultAIChatMaxInputChars                    = 200000
+	defaultAIChatThinkingMode                     = "enabled"
+	defaultAIChatReasoningEffort                  = "adaptive"
+	defaultAIChatObserveThreshold                 = 0.35
+	defaultAIChatSessionRiskTTLMinutes            = 120
+	defaultAIChatSessionRiskHalfLifeMinutes       = 30
+	defaultAIChatSessionRiskBlockCooldownMinutes  = 30
+	maxAIChatCacheTTLSeconds                      = 86400
+	maxAIChatSessionRiskTTLMinutes                = 1440
+	maxAIChatSessionRiskHalfLifeMinutes           = 720
+	maxAIChatSessionRiskBlockCooldownMinutes      = 1440
 
 	contentModerationCleanupInterval = 24 * time.Hour
 	contentModerationCleanupTimeout  = 30 * time.Minute
@@ -702,6 +704,7 @@ type ContentModerationService struct {
 	asyncDropped             atomic.Int64
 	asyncProcessed           atomic.Int64
 	asyncErrors              atomic.Int64
+	supplementalPending      atomic.Int64
 	preBlockActive           atomic.Int64
 	preBlockChecked          atomic.Int64
 	preBlockAllowed          atomic.Int64
@@ -1715,15 +1718,33 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 	if cfg != nil && cfg.QueueSize > 0 {
 		queueSize = cfg.QueueSize
 	}
+	if supplemental {
+		queueSize = contentModerationSupplementalQueueLimit(cfg, queueSize)
+	}
 	if len(s.asyncQueue) >= queueSize {
 		slog.Warn("content_moderation.async_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint, "queue_size", queueSize)
 		s.asyncDropped.Add(1)
 		return
 	}
+	reservedSupplemental := false
+	originalCacheKeyAlias := ""
+	if supplemental {
+		if !s.reserveSupplementalSlot(int64(queueSize)) {
+			slog.Warn("content_moderation.supplemental_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint, "queue_size", queueSize)
+			s.asyncDropped.Add(1)
+			return
+		}
+		reservedSupplemental = true
+		if cfg != nil {
+			originalCacheKeyAlias = contentModerationAIResultCacheKey(cfg, content.AIChatModerationInput())
+		}
+		content = compactSupplementalModerationContent(content, cfg)
+	}
+	input.Body = nil
 	var taskCfg *ContentModerationConfig
 	if supplemental && cfg != nil {
 		taskCfg = cloneContentModerationConfig(cfg)
-		taskCfg.AIChat.cacheKeyAlias = contentModerationAIResultCacheKey(cfg, content.AIChatModerationInput())
+		taskCfg.AIChat.cacheKeyAlias = originalCacheKeyAlias
 		taskCfg.AIChat.ReasoningEffort = "high"
 		taskCfg.AIChat.existingRiskScore = 0
 		taskCfg.AIChat.supplementalReview = true
@@ -1740,6 +1761,9 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 	case s.asyncQueue <- task:
 		s.asyncEnqueued.Add(1)
 	default:
+		if reservedSupplemental {
+			s.supplementalPending.Add(-1)
+		}
 		slog.Warn("content_moderation.async_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint)
 		s.asyncDropped.Add(1)
 	}
@@ -1762,6 +1786,7 @@ func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInp
 		s.asyncDropped.Add(1)
 		return
 	}
+	input.Body = nil
 	task := contentModerationTask{
 		input:            input,
 		inputHash:        inputHash,
@@ -1798,46 +1823,92 @@ func (s *ContentModerationService) worker(id int) {
 			cancel()
 			continue
 		}
-		func() {
-			defer cancel()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("content_moderation.worker_panic", "worker_id", id, "recover", r)
-				}
-			}()
-			if task.log != nil {
-				s.asyncActive.Add(1)
-				defer s.asyncActive.Add(-1)
-				queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
-				task.log.QueueDelayMS = &queueDelay
-				taskCfg := task.config
-				if taskCfg == nil {
-					taskCfg = cfg
-				}
-				s.persistContentModerationLog(ctx, taskCfg, task.log, task.inputHash, task.recordHash, task.applySideEffects)
-				s.asyncProcessed.Add(1)
-				return
-			}
-			if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || len(cfg.apiKeys()) == 0 {
-				return
-			}
-			if !cfg.includesGroup(task.input.GroupID) {
-				return
-			}
-			if !cfg.includesModel(task.input.Model) {
-				return
-			}
-			taskCfg := cfg
-			if task.supplemental && task.config != nil {
-				taskCfg = task.config
-			}
-			s.asyncActive.Add(1)
-			defer s.asyncActive.Add(-1)
-			queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
-			_ = s.checkSync(ctx, task.input, taskCfg, task.content, task.inputHash, &queueDelay, false)
-			s.asyncProcessed.Add(1)
-		}()
+		s.processAsyncTask(ctx, cfg, id, task)
+		cancel()
 	}
+}
+
+func (s *ContentModerationService) processAsyncTask(ctx context.Context, cfg *ContentModerationConfig, workerID int, task contentModerationTask) {
+	if task.supplemental {
+		defer s.supplementalPending.Add(-1)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("content_moderation.worker_panic", "worker_id", workerID, "recover", r)
+		}
+	}()
+	if task.log != nil {
+		s.asyncActive.Add(1)
+		defer s.asyncActive.Add(-1)
+		queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
+		task.log.QueueDelayMS = &queueDelay
+		taskCfg := task.config
+		if taskCfg == nil {
+			taskCfg = cfg
+		}
+		s.persistContentModerationLog(ctx, taskCfg, task.log, task.inputHash, task.recordHash, task.applySideEffects)
+		s.asyncProcessed.Add(1)
+		return
+	}
+	if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || len(cfg.apiKeys()) == 0 {
+		return
+	}
+	if !cfg.includesGroup(task.input.GroupID) {
+		return
+	}
+	if !cfg.includesModel(task.input.Model) {
+		return
+	}
+	taskCfg := cfg
+	if task.supplemental && task.config != nil {
+		taskCfg = task.config
+	}
+	s.asyncActive.Add(1)
+	defer s.asyncActive.Add(-1)
+	queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
+	_ = s.checkSync(ctx, task.input, taskCfg, task.content, task.inputHash, &queueDelay, false)
+	s.asyncProcessed.Add(1)
+}
+
+func (s *ContentModerationService) reserveSupplementalSlot(limit int64) bool {
+	if s == nil || limit <= 0 {
+		return false
+	}
+	for {
+		pending := s.supplementalPending.Load()
+		if pending >= limit {
+			return false
+		}
+		if s.supplementalPending.CompareAndSwap(pending, pending+1) {
+			return true
+		}
+	}
+}
+
+func compactSupplementalModerationContent(content ContentModerationInput, cfg *ContentModerationConfig) ContentModerationInput {
+	maxRunes := defaultAIChatMaxInputChars
+	if cfg != nil && cfg.AIChat.MaxInputChars > 0 {
+		maxRunes = cfg.AIChat.MaxInputChars
+	}
+	if maxRunes > maxModerationInputRunes {
+		maxRunes = maxModerationInputRunes
+	}
+	content.Text = trimModerationContext(content.Text, maxRunes)
+	content.CurrentText = trimRunes(content.CurrentText, maxModerationExcerptRunes)
+	content.Images = nil
+	return content
+}
+
+func contentModerationSupplementalQueueLimit(cfg *ContentModerationConfig, configuredLimit int) int {
+	limit := min(configuredLimit, maxContentModerationSupplementalQueueSize)
+	maxInputRunes := defaultAIChatMaxInputChars
+	if cfg != nil && cfg.AIChat.MaxInputChars > 0 {
+		maxInputRunes = min(cfg.AIChat.MaxInputChars, maxModerationInputRunes)
+	}
+	if maxInputRunes > 0 {
+		limit = min(limit, max(1, maxContentModerationSupplementalRetainedRunes/maxInputRunes))
+	}
+	return max(1, limit)
 }
 
 func (s *ContentModerationService) dequeueAsyncTask(ctx context.Context, idleWait time.Duration) (contentModerationTask, bool) {

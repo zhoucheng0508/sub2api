@@ -935,6 +935,137 @@ func TestContentModerationCheckSync_AIChatIncompleteReviewDefersRiskAndSideEffec
 	require.Equal(t, int64(1), svc.preBlockErrors.Load())
 }
 
+func TestContentModerationEnqueueAsync_SupplementalTaskIsMemoryBounded(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.QueueSize = defaultContentModerationQueueSize
+	cfg.AIChat.MaxInputChars = 350000
+	cfg.normalize()
+
+	input := ContentModerationCheckInput{
+		RequestID: "large-supplemental",
+		UserID:    7,
+		APIKeyID:  9,
+		Endpoint:  "/v1/responses",
+		Body:      bytes.Repeat([]byte("x"), maxContentModerationExtractionBodyBytes),
+	}
+	content := ContentModerationInput{
+		Text:        strings.Repeat("a", cfg.AIChat.MaxInputChars+1000) + " LATEST USER INTENT",
+		CurrentText: strings.Repeat("b", maxModerationExcerptRunes+100),
+		Images:      []string{"data:image/png;base64," + strings.Repeat("A", 1<<20)},
+	}
+
+	svc.enqueueAsync(input, cfg, content, content.Hash(), true)
+
+	require.Len(t, svc.asyncQueue, 1)
+	task := <-svc.asyncQueue
+	require.True(t, task.supplemental)
+	require.Nil(t, task.input.Body, "queued work must not retain the original request body")
+	require.LessOrEqual(t, len([]rune(task.content.Text)), cfg.AIChat.MaxInputChars)
+	require.Contains(t, task.content.Text, "LATEST USER INTENT")
+	require.LessOrEqual(t, len([]rune(task.content.CurrentText)), maxModerationExcerptRunes)
+	require.Nil(t, task.content.Images, "AI chat supplemental review is text-only")
+	require.Equal(t, int64(1), svc.supplementalPending.Load())
+}
+
+func TestContentModerationEnqueueAsync_SupplementalBacklogHasHardLimit(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.QueueSize = defaultContentModerationQueueSize
+	cfg.normalize()
+	input := ContentModerationCheckInput{UserID: 7, APIKeyID: 9, Endpoint: "/v1/responses", Body: []byte(`{"input":"test"}`)}
+	content := ContentModerationInput{Text: "ordinary request", CurrentText: "ordinary request"}
+
+	for range maxContentModerationSupplementalQueueSize + 5 {
+		svc.enqueueAsync(input, cfg, content, content.Hash(), true)
+	}
+
+	require.Len(t, svc.asyncQueue, maxContentModerationSupplementalQueueSize)
+	require.Equal(t, int64(maxContentModerationSupplementalQueueSize), svc.supplementalPending.Load())
+	require.Equal(t, int64(5), svc.asyncDropped.Load())
+	for range maxContentModerationSupplementalQueueSize {
+		task := <-svc.asyncQueue
+		require.Nil(t, task.input.Body)
+	}
+}
+
+func TestContentModerationSupplementalQueueLimit_PreservesLongContextWithinTotalBudget(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	cfg.AIChat.MaxInputChars = defaultAIChatMaxInputChars
+	require.Equal(t, maxContentModerationSupplementalQueueSize, contentModerationSupplementalQueueLimit(cfg, defaultContentModerationQueueSize))
+
+	cfg.AIChat.MaxInputChars = maxModerationInputRunes
+	require.Equal(t, maxContentModerationSupplementalRetainedRunes/maxModerationInputRunes, contentModerationSupplementalQueueLimit(cfg, defaultContentModerationQueueSize))
+	require.Equal(t, 3, contentModerationSupplementalQueueLimit(cfg, 3))
+}
+
+func TestContentModerationEnqueueAsync_SupplementalCacheAliasUsesOriginalInput(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.CacheEnabled = true
+	cfg.AIChat.MaxInputChars = 1000
+	cfg.normalize()
+	content := ContentModerationInput{Text: strings.Repeat("a", 1500) + " LATEST", CurrentText: "LATEST"}
+	originalAlias := contentModerationAIResultCacheKey(cfg, content.AIChatModerationInput())
+	compactedAlias := contentModerationAIResultCacheKey(cfg, compactSupplementalModerationContent(content, cfg).AIChatModerationInput())
+	require.NotEqual(t, originalAlias, compactedAlias)
+
+	svc.enqueueAsync(ContentModerationCheckInput{UserID: 7}, cfg, content, content.Hash(), true)
+
+	task := <-svc.asyncQueue
+	require.Equal(t, originalAlias, task.config.AIChat.cacheKeyAlias)
+}
+
+func TestContentModerationEnqueueAsync_SupplementalSendFailureReleasesReservation(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.asyncQueue = make(chan contentModerationTask)
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.normalize()
+
+	svc.enqueueAsync(ContentModerationCheckInput{UserID: 7}, cfg, ContentModerationInput{Text: "test"}, "hash", true)
+
+	require.Zero(t, svc.supplementalPending.Load())
+	require.Equal(t, int64(1), svc.asyncDropped.Load())
+}
+
+func TestContentModerationEnqueueAsync_SupplementalConcurrentLimitIsStrict(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.normalize()
+	const attempts = maxContentModerationSupplementalQueueSize + 32
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for range attempts {
+		go func() {
+			defer wg.Done()
+			svc.enqueueAsync(ContentModerationCheckInput{UserID: 7}, cfg, ContentModerationInput{Text: "test"}, "hash", true)
+		}()
+	}
+	wg.Wait()
+
+	require.Len(t, svc.asyncQueue, maxContentModerationSupplementalQueueSize)
+	require.Equal(t, int64(maxContentModerationSupplementalQueueSize), svc.supplementalPending.Load())
+	require.Equal(t, int64(attempts-maxContentModerationSupplementalQueueSize), svc.asyncDropped.Load())
+}
+
+func TestContentModerationProcessAsyncTask_ReleasesSupplementalReservation(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	task := contentModerationTask{supplemental: true}
+
+	svc.supplementalPending.Store(1)
+	svc.processAsyncTask(context.Background(), defaultContentModerationConfig(), 1, task)
+	require.Zero(t, svc.supplementalPending.Load(), "early return must release the reservation")
+
+	svc.supplementalPending.Store(1)
+	svc.processAsyncTask(context.Background(), nil, 1, task)
+	require.Zero(t, svc.supplementalPending.Load(), "panic recovery must release the reservation")
+}
+
 func TestContentModerationAIResultCacheKey_IncludesMaxInputChars(t *testing.T) {
 	cfg := defaultContentModerationConfig()
 	cfg.AuditProvider = ContentModerationProviderAIChat
