@@ -75,6 +75,11 @@ func moderationResultCategories(result *moderationAPIResult) []string {
 }
 
 func (s *ContentModerationService) getBlockedSessionRisk(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig) (voteairiskstate.State, bool) {
+	state, found := s.getSessionRisk(ctx, input, cfg)
+	return state, found && voteairiskstate.IsBlocked(state, time.Now())
+}
+
+func (s *ContentModerationService) getSessionRisk(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig) (voteairiskstate.State, bool) {
 	if s == nil || cfg == nil || !cfg.AIChat.RiskLevelsEnabled || !cfg.AIChat.SessionRiskEnabled {
 		return voteairiskstate.State{}, false
 	}
@@ -92,7 +97,7 @@ func (s *ContentModerationService) getBlockedSessionRisk(ctx context.Context, in
 		slog.Warn("content_moderation.session_risk_get_failed", "error", err)
 		return voteairiskstate.State{}, false
 	}
-	return state, found && voteairiskstate.IsBlocked(state, time.Now())
+	return state, found
 }
 
 func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, result *moderationAPIResult) contentModerationTierResult {

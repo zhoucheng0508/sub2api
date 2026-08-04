@@ -64,6 +64,9 @@ type contentModerationConfigRequest struct {
 	AISystemPrompt                    *string                                 `json:"ai_system_prompt"`
 	AIFailurePolicy                   *string                                 `json:"ai_failure_policy"`
 	AIMaxInputChars                   *int                                    `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS             *int                                    `json:"ai_synchronous_budget_ms"`
+	AIFastInputChars                  *int                                    `json:"ai_fast_input_chars"`
+	AIFallbackInputChars              *int                                    `json:"ai_fallback_input_chars"`
 	AIThinkingMode                    *string                                 `json:"ai_thinking_mode"`
 	AIReasoningEffort                 *string                                 `json:"ai_reasoning_effort"`
 	AIRiskLevelsEnabled               *bool                                   `json:"ai_risk_levels_enabled"`
@@ -152,6 +155,9 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		AISystemPrompt:                    req.AISystemPrompt,
 		AIFailurePolicy:                   req.AIFailurePolicy,
 		AIMaxInputChars:                   req.AIMaxInputChars,
+		AISynchronousBudgetMS:             req.AISynchronousBudgetMS,
+		AIFastInputChars:                  req.AIFastInputChars,
+		AIFallbackInputChars:              req.AIFallbackInputChars,
 		AIThinkingMode:                    req.AIThinkingMode,
 		AIReasoningEffort:                 req.AIReasoningEffort,
 		AIRiskLevelsEnabled:               req.AIRiskLevelsEnabled,

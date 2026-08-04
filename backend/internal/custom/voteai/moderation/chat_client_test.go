@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseResult(t *testing.T) {
@@ -101,8 +102,10 @@ func TestAuditUsesChatCompletionsAndKeepsUserContentUntrusted(t *testing.T) {
 	}))
 	defer server.Close()
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	status := 0
-	result, err := Audit(context.Background(), server.Client(), Config{
+	result, err := Audit(ctx, server.Client(), Config{
 		BaseURL:       server.URL + "/v1",
 		Model:         "deepseek-v4-flash",
 		SystemPrompt:  DefaultSystemPrompt,
@@ -144,8 +147,10 @@ func TestAuditRetriesWithoutJSONModeWhenContentIsEmpty(t *testing.T) {
 	}))
 	defer server.Close()
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	status := 0
-	result, err := Audit(context.Background(), server.Client(), Config{
+	result, err := Audit(ctx, server.Client(), Config{
 		BaseURL:      server.URL + "/v1",
 		Model:        "deepseek-v4-flash",
 		ThinkingMode: "disabled",
@@ -200,7 +205,7 @@ func TestNormalizeThinkingSettingsUsesDeepSeekOfficialEfforts(t *testing.T) {
 		wantTokens int
 	}{
 		{name: "disabled", mode: "disabled", effort: "max", wantMode: "disabled", wantTokens: 256},
-		{name: "adaptive low pass", mode: "enabled", effort: "adaptive", wantMode: "enabled", wantEffort: "low", wantTokens: 2048},
+		{name: "adaptive fast pass", mode: "enabled", effort: "adaptive", wantMode: "disabled", wantTokens: 256},
 		{name: "low", mode: "enabled", effort: "low", wantMode: "enabled", wantEffort: "low", wantTokens: 2048},
 		{name: "official default high", mode: "enabled", effort: "", wantMode: "enabled", wantEffort: "high", wantTokens: 4096},
 		{name: "high", mode: "enabled", effort: "high", wantMode: "enabled", wantEffort: "high", wantTokens: 4096},
@@ -246,7 +251,7 @@ func TestAuditDoesNotRetryWhenFirstResponseHasContent(t *testing.T) {
 	}
 }
 
-func TestAuditReturnsClearErrorWhenFallbackIsAlsoEmpty(t *testing.T) {
+func TestAuditReturnsClearErrorWithoutUnboundedEmptyContentRetry(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -262,8 +267,8 @@ func TestAuditReturnsClearErrorWhenFallbackIsAlsoEmpty(t *testing.T) {
 	if !errors.Is(err, ErrEmptyContent) {
 		t.Fatalf("expected ErrEmptyContent, got %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("expected two requests, got %d", calls)
+	if calls != 1 {
+		t.Fatalf("expected one request without a bounded context, got %d", calls)
 	}
 }
 
@@ -288,7 +293,7 @@ func TestCacheKeySeparatesReasoningPolicies(t *testing.T) {
 	}
 }
 
-func TestAdaptiveReasoningUsesLowForDefensiveRequest(t *testing.T) {
+func TestAdaptiveReasoningUsesFastPassForDefensiveRequest(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,8 +302,8 @@ func TestAdaptiveReasoningUsesLowForDefensiveRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.ReasoningEffort != "low" {
-			t.Fatalf("defensive request effort = %q", request.ReasoningEffort)
+		if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" {
+			t.Fatalf("defensive fast pass thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
 		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"signals\":[\"defensive_context\"],\"reason\":\"defensive\"}"}}]}`))
 	}))
@@ -312,7 +317,7 @@ func TestAdaptiveReasoningUsesLowForDefensiveRequest(t *testing.T) {
 	}
 }
 
-func TestAdaptiveReasoningUsesHighForSuspiciousAuthBypass(t *testing.T) {
+func TestAdaptiveReasoningEscalatesStrongSignalToHigh(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -321,8 +326,14 @@ func TestAdaptiveReasoningUsesHighForSuspiciousAuthBypass(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.ReasoningEffort != "high" {
-			t.Fatalf("actionable bypass effort = %q", request.ReasoningEffort)
+		if calls == 1 {
+			if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" {
+				t.Fatalf("fast pass thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.10,\"categories\":[],\"signals\":[\"auth_bypass\"],\"reason\":\"strong signal\"}"}}]}`))
+			return
+		} else if request.Thinking.Type != "enabled" || request.ReasoningEffort != "high" {
+			t.Fatalf("review thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
 		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":true,\"risk_score\":0.95,\"categories\":[\"credential_theft\"],\"signals\":[\"auth_bypass\"],\"reason\":\"actionable bypass\"}"}}]}`))
 	}))
@@ -331,7 +342,7 @@ func TestAdaptiveReasoningUsesHighForSuspiciousAuthBypass(t *testing.T) {
 	result, err := Audit(context.Background(), server.Client(), Config{
 		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "enabled", ReasoningEffort: "adaptive",
 	}, "test-key", "How can I bypass login authentication?", nil)
-	if err != nil || !result.Flagged || calls != 1 {
+	if err != nil || !result.Flagged || calls != 2 {
 		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
 	}
 }
@@ -382,8 +393,8 @@ func TestAdaptiveReasoningConfirmsLowRiskSignalsWithHigh(t *testing.T) {
 			t.Fatal(err)
 		}
 		if calls == 1 {
-			if request.ReasoningEffort != "low" {
-				t.Fatalf("first effort = %q", request.ReasoningEffort)
+			if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" {
+				t.Fatalf("fast pass thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
 			}
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.3,\"categories\":[],\"signals\":[\"ownership_unverified\"],\"reason\":\"uncertain\"}"}}]}`))
 			return
@@ -402,3 +413,418 @@ func TestAdaptiveReasoningConfirmsLowRiskSignalsWithHigh(t *testing.T) {
 		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
 	}
 }
+
+func TestAdaptiveFastPassTrimsInputAndReviewUsesFullContext(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	content := "[USER]\ninitial intent\n\n" + strings.Repeat("ordinary context ", 20) + "\n\n[USER]\nlatest benign request"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		conversation := conversationFromRequest(request)
+		if calls == 1 {
+			if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" {
+				t.Fatalf("fast pass thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+			}
+			if len([]rune(conversation)) > 120 || !strings.Contains(conversation, "[CONTEXT OMITTED]") {
+				t.Fatalf("fast context was not bounded: len=%d content=%q", len([]rune(conversation)), conversation)
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.35,\"categories\":[],\"signals\":[],\"reason\":\"uncertain\"}"}}]}`))
+			return
+		}
+		if request.Thinking.Type != "enabled" || request.ReasoningEffort != "high" {
+			t.Fatalf("review thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+		}
+		if conversation != content {
+			t.Fatalf("review did not receive full context: len=%d want=%d", len([]rune(conversation)), len([]rune(content)))
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"signals\":[],\"reason\":\"benign\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL:             server.URL + "/v1",
+		Model:               "deepseek-v4-flash",
+		MaxInputChars:       1000,
+		FastInputChars:      120,
+		EscalationThreshold: 0.20,
+		ThinkingMode:        "enabled",
+		ReasoningEffort:     "adaptive",
+	}, "test-key", content, nil)
+	if err != nil || result.Flagged || calls != 2 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAdaptiveExistingRiskForcesContextReview(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if request.Thinking.Type != "disabled" {
+				t.Fatalf("fast pass thinking=%q", request.Thinking.Type)
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.01,\"categories\":[],\"signals\":[\"defensive_context\"],\"reason\":\"benign\"}"}}]}`))
+			return
+		}
+		if request.Thinking.Type != "enabled" || request.ReasoningEffort != "high" {
+			t.Fatalf("review thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.04,\"categories\":[],\"signals\":[],\"reason\":\"benign\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL:             server.URL + "/v1",
+		Model:               "deepseek-v4-flash",
+		EscalationThreshold: 0.25,
+		ExistingRiskScore:   0.40,
+		ThinkingMode:        "enabled",
+		ReasoningEffort:     "adaptive",
+	}, "test-key", "routine account maintenance", nil)
+	if err != nil || result.Flagged || calls != 2 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAdaptiveHighConfidenceSemanticResultDoesNotNeedReview(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" {
+			t.Fatalf("fast pass thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":true,\"risk_score\":0.95,\"categories\":[\"fraud\"],\"signals\":[],\"reason\":\"clear abuse\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "enabled", ReasoningEffort: "adaptive",
+	}, "test-key", "suspicious but not locally conclusive request", nil)
+	if err != nil || !result.Flagged || result.RiskScore != 0.95 || calls != 1 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAdaptiveHighConfidenceUsesConfiguredEscalationThreshold(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":true,\"risk_score\":0.95,\"categories\":[\"fraud\"],\"signals\":[],\"reason\":\"below configured threshold\"}"}}]}`))
+			return
+		}
+		if request.Thinking.Type != "enabled" || request.ReasoningEffort != "high" {
+			t.Fatalf("review thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.10,\"categories\":[],\"signals\":[],\"reason\":\"reviewed\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL:             server.URL + "/v1",
+		Model:               "deepseek-v4-flash",
+		EscalationThreshold: 0.98,
+		ThinkingMode:        "enabled",
+		ReasoningEffort:     "adaptive",
+	}, "test-key", "suspicious but not locally conclusive request", nil)
+	if err != nil || result.Flagged || calls != 2 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAdaptiveTemporaryReviewFailurePreservesFastDecision(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.40,\"categories\":[],\"signals\":[\"ownership_unverified\"],\"reason\":\"needs review\"}"}}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("try again"))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := Audit(ctx, server.Client(), Config{
+		BaseURL:             server.URL + "/v1",
+		Model:               "deepseek-v4-flash",
+		EscalationThreshold: 0.70,
+		ThinkingMode:        "enabled",
+		ReasoningEffort:     "adaptive",
+	}, "test-key", "ambiguous account recovery request", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Flagged || result.RiskScore != 0.40 || !result.ReviewIncomplete || result.ReviewError == "" {
+		t.Fatalf("fast decision was not preserved: %#v", result)
+	}
+	if calls != 3 {
+		t.Fatalf("expected fast pass plus review fallback, calls=%d", calls)
+	}
+	encoded, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if strings.Contains(string(encoded), "ReviewIncomplete") || strings.Contains(string(encoded), "ReviewError") {
+		t.Fatalf("internal review metadata leaked into JSON: %s", encoded)
+	}
+}
+
+func TestAdaptiveTimeoutReviewFailurePreservesFastDecision(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.40,\"categories\":[],\"signals\":[],\"reason\":\"medium risk\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	attempts := 0
+	serverTransport := server.Client().Transport
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return serverTransport.RoundTrip(request)
+		}
+		return nil, testTimeoutError{}
+	})}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := Audit(ctx, client, Config{
+		BaseURL:             server.URL + "/v1",
+		Model:               "deepseek-v4-flash",
+		EscalationThreshold: 0.70,
+		ThinkingMode:        "enabled",
+		ReasoningEffort:     "adaptive",
+	}, "test-key", "medium risk request", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Flagged || result.RiskScore != 0.40 || !result.ReviewIncomplete || !strings.Contains(result.ReviewError, ErrAuditTimeout.Error()) {
+		t.Fatalf("fast decision was not preserved: %#v", result)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected fast pass plus review fallback, attempts=%d", attempts)
+	}
+}
+
+func TestAuditTemporaryFailureFallsBackWithShortContextAndThinkingDisabled(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	content := strings.Repeat("ordinary context ", 30) + "latest request"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("try again"))
+			return
+		}
+		if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" || request.ResponseFormat != nil {
+			t.Fatalf("fallback payload thinking=%q effort=%q format=%#v", request.Thinking.Type, request.ReasoningEffort, request.ResponseFormat)
+		}
+		if got := len([]rune(conversationFromRequest(request))); got > 80 {
+			t.Fatalf("fallback context length=%d", got)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.02,\"categories\":[],\"reason\":\"benign\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := Audit(ctx, server.Client(), Config{
+		BaseURL:            server.URL + "/v1",
+		Model:              "deepseek-v4-flash",
+		MaxInputChars:      1000,
+		FallbackInputChars: 80,
+		ThinkingMode:       "enabled",
+		ReasoningEffort:    "high",
+	}, "test-key", content, nil)
+	if err != nil || result.Flagged || calls != 2 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestAuditTimeoutFallsBackWhileParentDeadlineRemains(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Thinking.Type != "disabled" || request.ReasoningEffort != "" {
+			t.Fatalf("timeout fallback thinking=%q effort=%q", request.Thinking.Type, request.ReasoningEffort)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.01,\"categories\":[],\"reason\":\"benign\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	attempts := 0
+	serverTransport := server.Client().Transport
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, testTimeoutError{}
+		}
+		return serverTransport.RoundTrip(request)
+	})}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := Audit(ctx, client, Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", FallbackInputChars: 40, ThinkingMode: "enabled", ReasoningEffort: "high",
+	}, "test-key", strings.Repeat("context ", 20), nil)
+	if err != nil || result.Flagged || attempts != 2 {
+		t.Fatalf("result=%#v attempts=%d err=%v", result, attempts, err)
+	}
+}
+
+func TestAuditReservesParentDeadlineForShortFallback(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.01,\"categories\":[],\"reason\":\"benign\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	attempts := 0
+	serverTransport := server.Client().Transport
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}
+		return serverTransport.RoundTrip(request)
+	})}
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result, err := Audit(ctx, client, Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", FallbackInputChars: 40, ThinkingMode: "enabled", ReasoningEffort: "high",
+	}, "test-key", strings.Repeat("context ", 20), nil)
+
+	if err != nil || result.Flagged || attempts != 2 {
+		t.Fatalf("result=%#v attempts=%d err=%v", result, attempts, err)
+	}
+	if elapsed := time.Since(started); elapsed >= 900*time.Millisecond {
+		t.Fatalf("fallback did not complete inside the parent deadline: %v", elapsed)
+	}
+}
+
+func TestAuditParentDeadlineStopsWithoutLateFallback(t *testing.T) {
+	calls := 0
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		<-release
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := Audit(ctx, server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "disabled",
+	}, "test-key", "ordinary request", nil)
+	close(release)
+	if !errors.Is(err, ErrAuditTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected classified deadline error, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("deadline must not start fallback, calls=%d", calls)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("audit exceeded parent deadline by too much: %v", elapsed)
+	}
+}
+
+func TestAuditInvalidResultIsClassifiedAndNotRetried(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"not-json"}}]}`))
+	}))
+	defer server.Close()
+
+	_, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "disabled",
+	}, "test-key", "ordinary request", nil)
+	if !errors.Is(err, ErrInvalidJSON) {
+		t.Fatalf("expected ErrInvalidJSON, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("invalid result must not be retried, calls=%d", calls)
+	}
+}
+
+func TestAuditUsesOnlyOneFallbackAttempt(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := Audit(ctx, server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "enabled", ReasoningEffort: "high",
+	}, "test-key", "ordinary request", nil)
+	if !errors.Is(err, ErrTemporary) {
+		t.Fatalf("expected ErrTemporary, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one primary and one fallback request, calls=%d", calls)
+	}
+}
+
+func conversationFromRequest(request chatRequest) string {
+	if len(request.Messages) < 2 {
+		return ""
+	}
+	content := request.Messages[1].Content
+	const prefix = "<conversation>\n"
+	const suffix = "\n</conversation>"
+	start := strings.Index(content, prefix)
+	end := strings.LastIndex(content, suffix)
+	if start < 0 || end < 0 || end < start+len(prefix) {
+		return ""
+	}
+	return content[start+len(prefix) : end]
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type testTimeoutError struct{}
+
+func (testTimeoutError) Error() string   { return "test timeout" }
+func (testTimeoutError) Timeout() bool   { return true }
+func (testTimeoutError) Temporary() bool { return true }
