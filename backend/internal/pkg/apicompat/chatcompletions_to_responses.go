@@ -27,13 +27,15 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 	}
 
 	out := &ResponsesRequest{
-		Model:             req.Model,
-		Instructions:      req.Instructions,
-		Input:             inputJSON,
-		Stream:            true, // upstream always streams
-		Include:           []string{"reasoning.encrypted_content"},
-		ServiceTier:       req.ServiceTier,
-		ParallelToolCalls: req.ParallelToolCalls,
+		Model:              req.Model,
+		Instructions:       req.Instructions,
+		Input:              inputJSON,
+		Stream:             true, // upstream always streams
+		Include:            []string{"reasoning.encrypted_content"},
+		ServiceTier:        req.ServiceTier,
+		ParallelToolCalls:  req.ParallelToolCalls,
+		PromptCacheKey:     req.PromptCacheKey,
+		PromptCacheOptions: append(json.RawMessage(nil), req.PromptCacheOptions...),
 	}
 
 	// Reasoning models (gpt-5.x) do not accept sampling parameters.
@@ -117,6 +119,8 @@ func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	switch m.Role {
 	case "system":
 		return chatSystemToResponses(m)
+	case "developer":
+		return chatSystemToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
 	case "assistant":
@@ -140,7 +144,7 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+	return []ResponsesInputItem{{Role: m.Role, Content: content}}, nil
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and
@@ -367,8 +371,9 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
 		case "text":
 			if p.Text != "" {
 				responseParts = append(responseParts, ResponsesContentPart{
-					Type: "input_text",
-					Text: p.Text,
+					Type:                  "input_text",
+					Text:                  p.Text,
+					PromptCacheBreakpoint: append(json.RawMessage(nil), p.PromptCacheBreakpoint...),
 				})
 			}
 		case "image_url":

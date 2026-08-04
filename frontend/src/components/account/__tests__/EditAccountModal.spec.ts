@@ -639,6 +639,44 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_responses_supported).toBe(false)
   })
 
+  it('loads and submits OpenAI APIKey GPT-5.6 prompt cache mode', async () => {
+    const account = buildAccount()
+    account.extra = {
+      openai_responses_mode: 'force_responses',
+      openai_responses_supported: true,
+      openai_prompt_cache_mode: 'gpt56_explicit'
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    const select = wrapper.get<HTMLSelectElement>('[data-testid="openai-prompt-cache-mode-select"]')
+    expect(select.element.value).toBe('gpt56_explicit')
+    await select.setValue('key_only')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_prompt_cache_mode).toBe('key_only')
+  })
+
+  it('removes prompt cache automation when Chat Completions is forced', async () => {
+    const account = buildAccount()
+    account.extra = {
+      openai_responses_mode: 'force_responses',
+      openai_prompt_cache_mode: 'gpt56_explicit'
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="openai-responses-mode-select"]').setValue('force_chat_completions')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty(
+      'openai_prompt_cache_mode'
+    )
+  })
+
   it('submits the account upstream billing auto-probe setting', async () => {
     const account = buildAccount()
     updateAccountMock.mockReset()

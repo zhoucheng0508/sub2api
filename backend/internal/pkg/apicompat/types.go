@@ -212,23 +212,25 @@ type AnthropicDelta struct {
 
 // ResponsesRequest is the request body for POST /v1/responses.
 type ResponsesRequest struct {
-	Model              string              `json:"model"`
-	Instructions       string              `json:"instructions,omitempty"`
-	Input              json.RawMessage     `json:"input"` // string or []ResponsesInputItem
-	MaxOutputTokens    *int                `json:"max_output_tokens,omitempty"`
-	Temperature        *float64            `json:"temperature,omitempty"`
-	TopP               *float64            `json:"top_p,omitempty"`
-	Stream             bool                `json:"stream,omitempty"`
-	Tools              []ResponsesTool     `json:"tools,omitempty"`
-	Include            []string            `json:"include,omitempty"`
-	Store              *bool               `json:"store,omitempty"`
-	ParallelToolCalls  *bool               `json:"parallel_tool_calls,omitempty"`
-	Reasoning          *ResponsesReasoning `json:"reasoning,omitempty"`
-	Text               *ResponsesText      `json:"text,omitempty"`
-	ToolChoice         json.RawMessage     `json:"tool_choice,omitempty"`
-	ServiceTier        string              `json:"service_tier,omitempty"`
-	PromptCacheKey     string              `json:"prompt_cache_key,omitempty"`
-	PreviousResponseID string              `json:"previous_response_id,omitempty"`
+	Model             string              `json:"model"`
+	Instructions      string              `json:"instructions,omitempty"`
+	Input             json.RawMessage     `json:"input"` // string or []ResponsesInputItem
+	MaxOutputTokens   *int                `json:"max_output_tokens,omitempty"`
+	Temperature       *float64            `json:"temperature,omitempty"`
+	TopP              *float64            `json:"top_p,omitempty"`
+	Stream            bool                `json:"stream,omitempty"`
+	Tools             []ResponsesTool     `json:"tools,omitempty"`
+	Include           []string            `json:"include,omitempty"`
+	Store             *bool               `json:"store,omitempty"`
+	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *ResponsesReasoning `json:"reasoning,omitempty"`
+	Text              *ResponsesText      `json:"text,omitempty"`
+	ToolChoice        json.RawMessage     `json:"tool_choice,omitempty"`
+	ServiceTier       string              `json:"service_tier,omitempty"`
+	PromptCacheKey    string              `json:"prompt_cache_key,omitempty"`
+	// CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): preserve GPT-5.6 cache policy during Chat -> Responses conversion.
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 }
 
 // ResponsesReasoning configures reasoning effort in the Responses API.
@@ -295,9 +297,10 @@ func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
 
 // ResponsesContentPart is a typed content part in a Responses message.
 type ResponsesContentPart struct {
-	Type     string `json:"type"` // "input_text" | "output_text" | "input_image"
-	Text     string `json:"text,omitempty"`
-	ImageURL string `json:"image_url,omitempty"` // data URI for input_image
+	Type                  string          `json:"type"` // "input_text" | "output_text" | "input_image"
+	Text                  string          `json:"text,omitempty"`
+	ImageURL              string          `json:"image_url,omitempty"` // data URI for input_image
+	PromptCacheBreakpoint json.RawMessage `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // ResponsesTool describes a tool in the Responses API.
@@ -633,8 +636,11 @@ type ChatCompletionsRequest struct {
 	ToolChoice          json.RawMessage    `json:"tool_choice,omitempty"`
 	ReasoningEffort     string             `json:"reasoning_effort,omitempty"` // "low" | "medium" | "high" | "xhigh"
 	ServiceTier         string             `json:"service_tier,omitempty"`
-	Stop                json.RawMessage    `json:"stop,omitempty"` // string or []string
-	ResponseFormat      json.RawMessage    `json:"response_format,omitempty"`
+	// CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): client-owned cache fields survive protocol conversion unchanged.
+	PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions json.RawMessage `json:"prompt_cache_options,omitempty"`
+	Stop               json.RawMessage `json:"stop,omitempty"` // string or []string
+	ResponseFormat     json.RawMessage `json:"response_format,omitempty"`
 
 	// Legacy function calling (deprecated but still supported)
 	Functions    []ChatFunction  `json:"functions,omitempty"`
@@ -661,9 +667,10 @@ type ChatMessage struct {
 
 // ChatContentPart is a typed content part in a multi-modal message.
 type ChatContentPart struct {
-	Type     string        `json:"type"` // "text" | "image_url"
-	Text     string        `json:"text,omitempty"`
-	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+	Type                  string          `json:"type"` // "text" | "image_url"
+	Text                  string          `json:"text,omitempty"`
+	ImageURL              *ChatImageURL   `json:"image_url,omitempty"`
+	PromptCacheBreakpoint json.RawMessage `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // ChatImageURL contains the URL for an image content part.

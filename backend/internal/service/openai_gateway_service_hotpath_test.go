@@ -236,6 +236,13 @@ func TestOpenAIGatewayService_Forward_NormalizesMaxTokensAndStripsPromptCacheOpt
 		require.Equal(t, int64(512), gjson.GetBytes(out, "max_output_tokens").Int())
 		require.False(t, gjson.GetBytes(out, "max_tokens").Exists())
 	})
+
+	t.Run("GPT-5.6 原生 Responses 保留客户端缓存字段", func(t *testing.T) {
+		out := runForward(t, []byte(`{"model":"gpt-5.6-terra","stream":false,"prompt_cache_key":"client-key","prompt_cache_options":{"mode":"explicit"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"stable","prompt_cache_breakpoint":{"mode":"explicit"}}]}]}`))
+		require.Equal(t, "client-key", gjson.GetBytes(out, "prompt_cache_key").String())
+		require.Equal(t, "explicit", gjson.GetBytes(out, "prompt_cache_options.mode").String())
+		require.Equal(t, "explicit", gjson.GetBytes(out, "input.0.content.0.prompt_cache_breakpoint.mode").String())
+	})
 }
 
 func TestOpenAIGatewayService_Forward_MappedImageModelUsesImageGate(t *testing.T) {

@@ -538,6 +538,14 @@ export default {
         responsesModeForceChatCompletions: 'Force Chat Completions',
         responsesModeTextDisabledHint:
           'Not applicable when the Responses / Chat Completions endpoint is not enabled.',
+        promptCacheMode: 'GPT-5.6 prompt cache optimization',
+        promptCacheModeDesc:
+          'Only for OpenAI API Key upstreams that support the Responses API. It does not affect OAuth accounts and is not Compact.',
+        promptCacheModeOff: 'Off',
+        promptCacheModeKeyOnly: 'Stable cache key only',
+        promptCacheModeGPT56Explicit: 'Stable key + explicit rolling breakpoints',
+        promptCacheModeWarning:
+          'Keep this off when a third-party compatible service does not support GPT-5.6 prompt_cache_options and cache breakpoints.',
         endpointCapabilities: 'Endpoint capabilities',
         endpointCapabilitiesDesc:
           'Used by account routing. The text endpoint follows the Responses API support setting above and is shown as Responses, Chat Completions, or auto mode; Embeddings independently controls /v1/embeddings.',

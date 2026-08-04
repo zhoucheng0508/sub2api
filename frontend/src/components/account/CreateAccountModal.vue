@@ -3082,6 +3082,26 @@
         >
           {{ t('admin.accounts.openai.responsesModeTextDisabledHint') }}
         </p>
+        <!-- CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): OpenAI API Key opt-in configuration. -->
+        <div class="flex items-center justify-between gap-4" data-testid="openai-prompt-cache-settings">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.promptCacheMode') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.promptCacheModeDesc') }}
+            </p>
+          </div>
+          <div class="w-64">
+            <Select
+              v-model="openAIPromptCacheMode"
+              :options="openAIPromptCacheModeOptions"
+              :disabled="!openAITextGenerationCapabilityEnabled || openAIResponsesMode === 'force_chat_completions'"
+              data-testid="openai-prompt-cache-mode-select"
+            />
+          </div>
+        </div>
+        <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+          {{ t('admin.accounts.openai.promptCacheModeWarning') }}
+        </p>
         <div>
           <label class="input-label mb-2 block">{{ t('admin.accounts.openai.endpointCapabilities') }}</label>
           <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -3587,6 +3607,7 @@ import type {
   CodexSessionImportMessage,
   OpenAICompactMode,
   OpenAIResponsesMode,
+  OpenAIPromptCacheMode,
   OpenAIEndpointCapability
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -3841,6 +3862,7 @@ const openAILongContextBillingEnabled = ref(false)
 const openAILongContextBillingTouched = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
+const openAIPromptCacheMode = ref<OpenAIPromptCacheMode>('off')
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -3912,6 +3934,11 @@ const openAIResponsesModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.responsesModeAuto') },
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
+])
+const openAIPromptCacheModeOptions = computed(() => [
+  { value: 'off', label: t('admin.accounts.openai.promptCacheModeOff') },
+  { value: 'key_only', label: t('admin.accounts.openai.promptCacheModeKeyOnly') },
+  { value: 'gpt56_explicit', label: t('admin.accounts.openai.promptCacheModeGPT56Explicit') }
 ])
 const openAITextEndpointCapabilityLabel = computed(() => {
   if (openAIResponsesMode.value === 'force_responses') {
@@ -4725,6 +4752,7 @@ const resetForm = () => {
   openAILongContextBillingTouched.value = false
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
+  openAIPromptCacheMode.value = 'off'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -4855,6 +4883,17 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     extra.openai_responses_mode = openAIResponsesMode.value
   } else {
     delete extra.openai_responses_mode
+  }
+
+  if (
+    accountCategory.value === 'apikey' &&
+    openAITextGenerationCapabilityEnabled.value &&
+    openAIResponsesMode.value !== 'force_chat_completions' &&
+    openAIPromptCacheMode.value !== 'off'
+  ) {
+    extra.openai_prompt_cache_mode = openAIPromptCacheMode.value
+  } else {
+    delete extra.openai_prompt_cache_mode
   }
 
   return Object.keys(extra).length > 0 ? extra : undefined
