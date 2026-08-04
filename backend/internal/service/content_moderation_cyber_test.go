@@ -242,10 +242,12 @@ func TestApplyFlaggedAccountSideEffects_PassesExcludeCyberFlag(t *testing.T) {
 
 	cfgExclude := defaultContentModerationConfig()
 	cfgExclude.CyberPolicyExcludeFromBanCount = true
-	svc.applyFlaggedAccountSideEffects(context.Background(), cfgExclude, &ContentModerationLog{Flagged: true, UserID: &userID})
+	_, err := svc.applyFlaggedAccountSideEffects(context.Background(), cfgExclude, &ContentModerationLog{Flagged: true, UserID: &userID})
+	require.NoError(t, err)
 
 	cfgDefault := defaultContentModerationConfig() // 默认 false
-	svc.applyFlaggedAccountSideEffects(context.Background(), cfgDefault, &ContentModerationLog{Flagged: true, UserID: &userID})
+	_, err = svc.applyFlaggedAccountSideEffects(context.Background(), cfgDefault, &ContentModerationLog{Flagged: true, UserID: &userID})
+	require.NoError(t, err)
 
 	require.Equal(t, []bool{true, false}, repo.snapshotCountCalls(),
 		"applyFlaggedAccountSideEffects 必须把 cfg.CyberPolicyExcludeFromBanCount 透传给 COUNT 查询")

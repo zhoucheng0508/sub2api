@@ -52,6 +52,31 @@ const (
 	ContentModerationActionUnavailable  = "audit_unavailable"
 	ContentModerationActionCyberPolicy  = "cyber_policy" // cyber_policy 硬阻断的风控日志 action（封号计数排除按此值过滤）
 
+	ContentModerationAuditStatusSuccess    = "success"
+	ContentModerationAuditStatusSkipped    = "skipped"
+	ContentModerationAuditStatusIncomplete = "incomplete"
+	ContentModerationAuditStatusError      = "error"
+
+	ContentModerationSideEffectStatusPending       = "pending"
+	ContentModerationSideEffectStatusCompleted     = "completed"
+	ContentModerationSideEffectStatusPartial       = "partial"
+	ContentModerationSideEffectStatusFailed        = "failed"
+	ContentModerationSideEffectStatusNotApplicable = "not_applicable"
+
+	ContentModerationNotificationStatusPending      = "pending"
+	ContentModerationNotificationStatusSent         = "sent"
+	ContentModerationNotificationStatusDeduplicated = "deduplicated"
+	ContentModerationNotificationStatusNotRequired  = "not_required"
+	ContentModerationNotificationStatusFailed       = "failed"
+
+	ContentModerationUnbanModeRestoreOnly         = "restore_only"
+	ContentModerationUnbanModeRestoreAndClearRisk = "restore_and_clear_risk"
+	ContentModerationUnbanModeClearRiskOnly       = "clear_risk_only"
+
+	ContentModerationBanOutcomeApplied      = "applied"
+	ContentModerationBanOutcomeAlreadyOwned = "already_owned"
+	ContentModerationBanOutcomeIneligible   = "ineligible"
+
 	contentModerationKeywordCategory = "keyword"
 
 	ContentModerationKeywordModeKeywordOnly   = "keyword_only"
@@ -556,34 +581,44 @@ type ContentModerationDecision struct {
 }
 
 type ContentModerationLog struct {
-	ID                int64              `json:"id"`
-	RequestID         string             `json:"request_id"`
-	UserID            *int64             `json:"user_id,omitempty"`
-	UserEmail         string             `json:"user_email"`
-	APIKeyID          *int64             `json:"api_key_id,omitempty"`
-	APIKeyName        string             `json:"api_key_name"`
-	GroupID           *int64             `json:"group_id,omitempty"`
-	GroupName         string             `json:"group_name"`
-	Endpoint          string             `json:"endpoint"`
-	Provider          string             `json:"provider"`
-	Model             string             `json:"model"`
-	Mode              string             `json:"mode"`
-	Action            string             `json:"action"`
-	Flagged           bool               `json:"flagged"`
-	HighestCategory   string             `json:"highest_category"`
-	HighestScore      float64            `json:"highest_score"`
-	MatchedKeyword    string             `json:"matched_keyword"`
-	CategoryScores    map[string]float64 `json:"category_scores"`
-	ThresholdSnapshot map[string]float64 `json:"threshold_snapshot"`
-	InputExcerpt      string             `json:"input_excerpt"`
-	UpstreamLatencyMS *int               `json:"upstream_latency_ms,omitempty"`
-	Error             string             `json:"error"`
-	ViolationCount    int                `json:"violation_count"`
-	AutoBanned        bool               `json:"auto_banned"`
-	EmailSent         bool               `json:"email_sent"`
-	UserStatus        string             `json:"user_status"`
-	QueueDelayMS      *int               `json:"queue_delay_ms,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
+	ID                  int64              `json:"id"`
+	RequestID           string             `json:"request_id"`
+	SessionID           string             `json:"-"`
+	InputHash           string             `json:"-"`
+	UserID              *int64             `json:"user_id,omitempty"`
+	UserEmail           string             `json:"user_email"`
+	APIKeyID            *int64             `json:"api_key_id,omitempty"`
+	APIKeyName          string             `json:"api_key_name"`
+	GroupID             *int64             `json:"group_id,omitempty"`
+	GroupName           string             `json:"group_name"`
+	Endpoint            string             `json:"endpoint"`
+	Provider            string             `json:"provider"`
+	Model               string             `json:"model"`
+	Mode                string             `json:"mode"`
+	Action              string             `json:"action"`
+	Flagged             bool               `json:"flagged"`
+	HighestCategory     string             `json:"highest_category"`
+	HighestScore        float64            `json:"highest_score"`
+	MatchedKeyword      string             `json:"matched_keyword"`
+	CategoryScores      map[string]float64 `json:"category_scores"`
+	ThresholdSnapshot   map[string]float64 `json:"threshold_snapshot"`
+	InputExcerpt        string             `json:"input_excerpt"`
+	UpstreamLatencyMS   *int               `json:"upstream_latency_ms,omitempty"`
+	Error               string             `json:"error"`
+	AuditStatus         string             `json:"audit_status"`
+	AuditCode           string             `json:"audit_code"`
+	AuditRetryable      bool               `json:"audit_retryable"`
+	ViolationCount      int                `json:"violation_count"`
+	AutoBanned          bool               `json:"auto_banned"`
+	EmailSent           bool               `json:"email_sent"`
+	SideEffectStatus    string             `json:"side_effect_status"`
+	NotificationStatus  string             `json:"notification_status"`
+	SideEffectError     string             `json:"side_effect_error"`
+	UserStatus          string             `json:"user_status"`
+	ModerationBanActive bool               `json:"moderation_ban_active"`
+	UnbanBlockReason    string             `json:"unban_block_reason,omitempty"`
+	QueueDelayMS        *int               `json:"queue_delay_ms,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
 }
 
 type ContentModerationLogFilter struct {
@@ -635,8 +670,29 @@ type ContentModerationRuntimeStatus struct {
 }
 
 type ContentModerationUnbanUserResult struct {
-	UserID int64  `json:"user_id"`
-	Status string `json:"status"`
+	UserID           int64  `json:"user_id"`
+	Status           string `json:"status"`
+	Mode             string `json:"mode"`
+	Restored         bool   `json:"restored"`
+	RiskStateCleared bool   `json:"risk_state_cleared"`
+	Warning          string `json:"warning,omitempty"`
+}
+
+type ContentModerationLogEffectsPatch struct {
+	ViolationCount     int
+	AutoBanned         bool
+	EmailSent          bool
+	SideEffectStatus   string
+	NotificationStatus string
+	SideEffectError    string
+}
+
+type ContentModerationUserState struct {
+	UserID                  int64
+	ModerationOwnedDisabled bool
+	DisabledLogID           *int64
+	DisabledAt              *time.Time
+	UpdatedAt               time.Time
 }
 
 type ContentModerationDeleteHashResult struct {
@@ -659,6 +715,13 @@ type ContentModerationRepository interface {
 	UpdateLogEmailSent(ctx context.Context, id int64, sent bool) error
 }
 
+type ContentModerationLifecycleRepository interface {
+	UpdateLogEffects(ctx context.Context, logID int64, patch ContentModerationLogEffectsPatch) error
+	GetModerationUserState(ctx context.Context, userID int64) (*ContentModerationUserState, error)
+	TryApplyModerationOwnedBan(ctx context.Context, userID, logID int64, disabledAt time.Time) (string, error)
+	RestoreModerationOwnedBan(ctx context.Context, userID int64) (bool, error)
+}
+
 type ContentModerationHashCache interface {
 	RecordFlaggedInputHash(ctx context.Context, inputHash string) error
 	HasFlaggedInputHash(ctx context.Context, inputHash string) (bool, error)
@@ -676,6 +739,10 @@ type ContentModerationResultCache interface {
 type ContentModerationSessionRiskStore interface {
 	GetContentModerationSessionRisk(ctx context.Context, key string) (voteairiskstate.State, bool, error)
 	UpdateContentModerationSessionRisk(ctx context.Context, key string, event voteairiskstate.Event, cfg voteairiskstate.Config) (voteairiskstate.State, error)
+}
+
+type ContentModerationUserStateCleaner interface {
+	ClearContentModerationUserState(ctx context.Context, userID int64) (int64, error)
 }
 
 // ContentModerationAccountScopeRepository is the narrow account lookup used to
@@ -1947,33 +2014,103 @@ func (s *ContentModerationService) ListLogs(ctx context.Context, filter ContentM
 	return s.repo.ListLogs(ctx, filter)
 }
 
-func (s *ContentModerationService) UnbanUser(ctx context.Context, userID int64) (*ContentModerationUnbanUserResult, error) {
-	if s == nil || s.userRepo == nil {
-		return nil, infraerrors.InternalServer("CONTENT_MODERATION_USER_REPOSITORY_UNAVAILABLE", "用户仓储不可用")
+func (s *ContentModerationService) UnbanUser(ctx context.Context, userID int64, requestedMode ...string) (*ContentModerationUnbanUserResult, error) {
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.InternalServer("CONTENT_MODERATION_REPOSITORY_UNAVAILABLE", "内容风控仓储不可用")
 	}
 	if userID <= 0 {
 		return nil, infraerrors.BadRequest("INVALID_USER_ID", "用户 ID 无效")
 	}
-	user, err := s.userRepo.GetByID(ctx, userID)
+	lifecycleRepo, ok := s.repo.(ContentModerationLifecycleRepository)
+	if !ok {
+		return nil, infraerrors.InternalServer("CONTENT_MODERATION_LIFECYCLE_REPOSITORY_UNAVAILABLE", "内容风控生命周期仓储不可用")
+	}
+	mode := ContentModerationUnbanModeRestoreAndClearRisk
+	if len(requestedMode) > 0 && strings.TrimSpace(requestedMode[0]) != "" {
+		mode = strings.TrimSpace(requestedMode[0])
+	}
+	if mode != ContentModerationUnbanModeRestoreOnly && mode != ContentModerationUnbanModeRestoreAndClearRisk && mode != ContentModerationUnbanModeClearRiskOnly {
+		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_UNBAN_MODE", "无效的内容风控解禁模式")
+	}
+	state, err := lifecycleRepo.GetModerationUserState(ctx, userID)
 	if err != nil {
-		if errors.Is(err, ErrUserNotFound) {
-			return nil, infraerrors.NotFound("USER_NOT_FOUND", "用户不存在")
-		}
-		return nil, fmt.Errorf("get content moderation unban user: %w", err)
+		return nil, fmt.Errorf("get content moderation user state: %w", err)
 	}
-	if user.Status != StatusActive {
-		user.Status = StatusActive
-		if err := s.userRepo.Update(ctx, user, UserUpdateFields{Status: true}); err != nil {
-			return nil, fmt.Errorf("update content moderation unban user: %w", err)
+	if state != nil && state.UserID != userID {
+		return nil, infraerrors.InternalServer("CONTENT_MODERATION_STATE_USER_MISMATCH", "风控用户状态与请求用户不匹配")
+	}
+	if mode == ContentModerationUnbanModeClearRiskOnly {
+		if state == nil {
+			return nil, infraerrors.Conflict("CONTENT_MODERATION_RISK_CLEAR_NOT_ELIGIBLE", "该用户没有可重试清理的风控生命周期记录")
+		}
+		if state.ModerationOwnedDisabled {
+			return nil, infraerrors.Conflict("CONTENT_MODERATION_BAN_STILL_ACTIVE", "该用户仍处于风控封禁状态，请使用恢复解禁模式")
+		}
+		currentStatus := ""
+		if s.userRepo != nil {
+			user, err := s.userRepo.GetByID(ctx, userID)
+			if err != nil {
+				return nil, fmt.Errorf("get user before content moderation risk cleanup: %w", err)
+			}
+			if user == nil || user.ID != userID {
+				return nil, infraerrors.InternalServer("CONTENT_MODERATION_USER_ID_MISMATCH", "风险清理用户与查询结果不匹配")
+			}
+			currentStatus = user.Status
+		}
+		cleaner, ok := s.hashCache.(ContentModerationUserStateCleaner)
+		if !ok {
+			return nil, infraerrors.InternalServer("CONTENT_MODERATION_STATE_CLEANER_UNAVAILABLE", "短期风控状态清理器不可用")
+		}
+		if _, err := cleaner.ClearContentModerationUserState(ctx, userID); err != nil {
+			return nil, fmt.Errorf("clear content moderation user state: %w", err)
+		}
+		return &ContentModerationUnbanUserResult{
+			UserID:           userID,
+			Status:           currentStatus,
+			Mode:             mode,
+			Restored:         false,
+			RiskStateCleared: true,
+		}, nil
+	}
+	if state == nil || !state.ModerationOwnedDisabled {
+		return nil, infraerrors.Conflict("CONTENT_MODERATION_BAN_NOT_OWNED", "该用户不是由内容风控自动封禁，不能在风控中心解禁")
+	}
+	var cleaner ContentModerationUserStateCleaner
+	if mode == ContentModerationUnbanModeRestoreAndClearRisk {
+		var ok bool
+		cleaner, ok = s.hashCache.(ContentModerationUserStateCleaner)
+		if !ok {
+			return nil, infraerrors.InternalServer("CONTENT_MODERATION_STATE_CLEANER_UNAVAILABLE", "短期风控状态清理器不可用")
 		}
 	}
+	restored, err := lifecycleRepo.RestoreModerationOwnedBan(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("restore moderation-owned user: %w", err)
+	}
+	if !restored {
+		return nil, infraerrors.Conflict("CONTENT_MODERATION_UNBAN_RACE", "风控封禁状态已变化，未执行解禁")
+	}
+	result := &ContentModerationUnbanUserResult{
+		UserID:           userID,
+		Status:           StatusActive,
+		Mode:             mode,
+		Restored:         true,
+		RiskStateCleared: false,
+	}
+	if cleaner != nil {
+		if _, err := cleaner.ClearContentModerationUserState(ctx, userID); err != nil {
+			result.Warning = "账号已恢复，但短期风控状态清理失败，请检查 Redis 后重试清理"
+			slog.Warn("content_moderation.unban_risk_state_clear_failed", "user_id", userID, "error", err)
+		} else {
+			result.RiskStateCleared = true
+		}
+	}
+	// Invalidate authentication only after the Redis cleanup attempt. The
+	// account is already restored, so cleanup failure is returned as a warning.
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
-	return &ContentModerationUnbanUserResult{
-		UserID: userID,
-		Status: StatusActive,
-	}, nil
+	return result, nil
 }
 
 func (s *ContentModerationService) DeleteFlaggedInputHash(ctx context.Context, inputHash string) (*ContentModerationDeleteHashResult, error) {
@@ -2689,116 +2826,281 @@ func (s *ContentModerationService) buildLog(input ContentModerationCheckInput, c
 	if input.APIKeyID > 0 {
 		apiKeyID = &input.APIKeyID
 	}
+	auditStatus, auditCode, auditRetryable := contentModerationAuditMetadata(action, errText)
 	return &ContentModerationLog{
-		RequestID:         input.RequestID,
-		UserID:            userID,
-		UserEmail:         input.UserEmail,
-		APIKeyID:          apiKeyID,
-		APIKeyName:        input.APIKeyName,
-		GroupID:           cloneInt64Ptr(input.GroupID),
-		GroupName:         input.GroupName,
-		Endpoint:          input.Endpoint,
-		Provider:          input.Provider,
-		Model:             input.Model,
-		Mode:              cfg.Mode,
-		Action:            action,
-		Flagged:           flagged,
-		HighestCategory:   highestCategory,
-		HighestScore:      highestScore,
-		CategoryScores:    cloneFloatMap(scores),
-		ThresholdSnapshot: cloneFloatMap(cfg.activeThresholds()),
-		InputExcerpt:      trimRunes(redactContentModerationSecrets(text), maxModerationExcerptRunes),
-		UpstreamLatencyMS: latency,
-		QueueDelayMS:      queueDelay,
-		Error:             errText,
+		RequestID:          input.RequestID,
+		SessionID:          strings.TrimSpace(input.SessionID),
+		UserID:             userID,
+		UserEmail:          input.UserEmail,
+		APIKeyID:           apiKeyID,
+		APIKeyName:         input.APIKeyName,
+		GroupID:            cloneInt64Ptr(input.GroupID),
+		GroupName:          input.GroupName,
+		Endpoint:           input.Endpoint,
+		Provider:           input.Provider,
+		Model:              input.Model,
+		Mode:               cfg.Mode,
+		Action:             action,
+		Flagged:            flagged,
+		HighestCategory:    highestCategory,
+		HighestScore:       highestScore,
+		CategoryScores:     cloneFloatMap(scores),
+		ThresholdSnapshot:  cloneFloatMap(cfg.activeThresholds()),
+		InputExcerpt:       trimRunes(redactContentModerationSecrets(text), maxModerationExcerptRunes),
+		UpstreamLatencyMS:  latency,
+		QueueDelayMS:       queueDelay,
+		Error:              errText,
+		AuditStatus:        auditStatus,
+		AuditCode:          auditCode,
+		AuditRetryable:     auditRetryable,
+		SideEffectStatus:   ContentModerationSideEffectStatusNotApplicable,
+		NotificationStatus: ContentModerationNotificationStatusNotRequired,
+	}
+}
+
+func contentModerationAuditMetadata(action, errText string) (status, code string, retryable bool) {
+	code = strings.TrimSpace(strings.SplitN(strings.TrimSpace(errText), ":", 2)[0])
+	if code == "" {
+		code = action
+	}
+	switch {
+	case action == ContentModerationActionSkip:
+		status = ContentModerationAuditStatusSkipped
+	case code == "audit_review_incomplete":
+		status = ContentModerationAuditStatusIncomplete
+	case action == ContentModerationActionError || action == ContentModerationActionUnavailable:
+		status = ContentModerationAuditStatusError
+	default:
+		status = ContentModerationAuditStatusSuccess
+	}
+	switch code {
+	case "audit_timeout", "audit_temporary_failure", "audit_review_incomplete":
+		retryable = true
+	}
+	return status, code, retryable
+}
+
+type contentModerationSideEffectTracker struct {
+	succeeded int
+	failed    int
+	errors    []string
+}
+
+func (t *contentModerationSideEffectTracker) success() {
+	if t != nil {
+		t.succeeded++
+	}
+}
+
+func (t *contentModerationSideEffectTracker) failure(label string, err error) {
+	if t == nil {
+		return
+	}
+	t.failed++
+	message := strings.TrimSpace(label)
+	if err != nil {
+		if message != "" {
+			message += ": "
+		}
+		message += err.Error()
+	}
+	if message != "" {
+		t.errors = append(t.errors, message)
+	}
+}
+
+func (t *contentModerationSideEffectTracker) notification(status string, sent bool, err error) {
+	if err != nil {
+		t.failure("notification", err)
+	}
+	if sent || status == ContentModerationNotificationStatusSent || status == ContentModerationNotificationStatusDeduplicated {
+		t.success()
+		return
+	}
+	if status == ContentModerationNotificationStatusFailed && err == nil {
+		t.failure("notification", errors.New("notification failed without an error"))
+	}
+}
+
+func (t *contentModerationSideEffectTracker) finalize(log *ContentModerationLog, applicable bool) {
+	if t == nil || log == nil {
+		return
+	}
+	log.SideEffectError = trimRunes(strings.Join(t.errors, "; "), 1000)
+	if !applicable {
+		log.SideEffectStatus = ContentModerationSideEffectStatusNotApplicable
+		return
+	}
+	switch {
+	case t.failed == 0:
+		log.SideEffectStatus = ContentModerationSideEffectStatusCompleted
+	case t.succeeded == 0:
+		log.SideEffectStatus = ContentModerationSideEffectStatusFailed
+	default:
+		log.SideEffectStatus = ContentModerationSideEffectStatusPartial
 	}
 }
 
 func (s *ContentModerationService) persistContentModerationLog(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog, hashText string, recordHash bool, applySideEffects bool) {
-	if s == nil || log == nil {
+	if s == nil || s.repo == nil || log == nil {
 		return
 	}
-	if recordHash && s.hashCache != nil {
-		if err := s.hashCache.RecordFlaggedInputHash(ctx, hashText); err != nil {
+	log.InputHash = strings.TrimSpace(hashText)
+	if applySideEffects {
+		log.SideEffectStatus = ContentModerationSideEffectStatusPending
+		log.NotificationStatus = ContentModerationNotificationStatusPending
+	} else {
+		log.SideEffectStatus = ContentModerationSideEffectStatusNotApplicable
+		log.NotificationStatus = ContentModerationNotificationStatusNotRequired
+	}
+	lifecycleRepo, lifecycleAvailable := s.repo.(ContentModerationLifecycleRepository)
+	if (applySideEffects || recordHash) && !lifecycleAvailable {
+		log.SideEffectStatus = ContentModerationSideEffectStatusFailed
+		log.NotificationStatus = ContentModerationNotificationStatusNotRequired
+		log.SideEffectError = "content moderation lifecycle repository is unavailable"
+		if err := s.repo.CreateLog(ctx, log); err != nil {
+			slog.Error("content_moderation.create_failed_lifecycle_log_failed", "user_id", contentModerationEmailUserID(log), "error", err)
+		} else {
+			slog.Error("content_moderation.lifecycle_repository_unavailable", "log_id", log.ID, "user_id", contentModerationEmailUserID(log))
+		}
+		return
+	}
+	if err := s.repo.CreateLog(ctx, log); err != nil {
+		slog.Warn("content_moderation.create_log_failed", "user_id", contentModerationEmailUserID(log), "endpoint", log.Endpoint, "action", log.Action, "error", err)
+		return
+	}
+
+	tracker := &contentModerationSideEffectTracker{}
+	if recordHash {
+		if s.hashCache == nil {
+			tracker.failure("record_hash", errors.New("content moderation hash cache is unavailable"))
+		} else if err := s.hashCache.RecordFlaggedInputHash(ctx, hashText); err != nil {
 			slog.Warn("content_moderation.record_hash_failed", "user_id", contentModerationEmailUserID(log), "endpoint", log.Endpoint, "error", err)
+			tracker.failure("record_hash", err)
+		} else {
+			tracker.success()
 		}
 	}
-	autoBanJustApplied := false
+	notificationStatus := ContentModerationNotificationStatusNotRequired
 	if applySideEffects {
-		autoBanJustApplied = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
-		s.sendFlaggedNotificationSideEffects(ctx, cfg, log, autoBanJustApplied)
+		banOutcome, err := s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		if err != nil {
+			tracker.failure("account", err)
+		} else {
+			tracker.success()
+		}
+		var notificationErr error
+		notificationStatus, log.EmailSent, notificationErr = s.sendFlaggedNotificationSideEffectsForBanOutcome(ctx, cfg, log, banOutcome)
+		tracker.notification(notificationStatus, log.EmailSent, notificationErr)
 	}
-	if s.repo != nil {
-		if err := s.repo.CreateLog(ctx, log); err != nil {
-			slog.Warn("content_moderation.create_log_failed", "user_id", contentModerationEmailUserID(log), "endpoint", log.Endpoint, "action", log.Action, "error", err)
-			return
+	log.NotificationStatus = notificationStatus
+	tracker.finalize(log, applySideEffects || recordHash)
+	patch := ContentModerationLogEffectsPatch{
+		ViolationCount:     log.ViolationCount,
+		AutoBanned:         log.AutoBanned,
+		EmailSent:          log.EmailSent,
+		SideEffectStatus:   log.SideEffectStatus,
+		NotificationStatus: log.NotificationStatus,
+		SideEffectError:    log.SideEffectError,
+	}
+	if lifecycleRepo != nil {
+		if err := lifecycleRepo.UpdateLogEffects(ctx, log.ID, patch); err != nil {
+			slog.Warn("content_moderation.update_log_effects_failed", "log_id", log.ID, "error", err)
 		}
 	}
 }
 
-func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) bool {
+func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) (string, error) {
 	if s == nil || cfg == nil || log == nil || !log.Flagged || log.UserID == nil || *log.UserID <= 0 {
-		return false
+		return ContentModerationBanOutcomeIneligible, nil
 	}
 	count := 1
 	if s.repo != nil && cfg.ViolationWindowHours > 0 {
 		since := time.Now().Add(-time.Duration(cfg.ViolationWindowHours) * time.Hour)
-		if n, err := s.repo.CountFlaggedByUserSince(ctx, *log.UserID, since, cfg.CyberPolicyExcludeFromBanCount); err == nil {
-			count = n + 1
+		n, err := s.repo.CountFlaggedByUserSince(ctx, *log.UserID, since, cfg.CyberPolicyExcludeFromBanCount)
+		if err != nil {
+			return ContentModerationBanOutcomeIneligible, fmt.Errorf("count violations: %w", err)
 		}
+		count = max(1, n)
 	}
 	log.ViolationCount = count
-	autoBanJustApplied := false
-	if cfg.AutoBanEnabled && cfg.BanThreshold > 0 && count >= cfg.BanThreshold && s.userRepo != nil {
-		user, err := s.userRepo.GetByID(ctx, *log.UserID)
-		if err != nil {
-			slog.Warn("content_moderation.ban_get_user_failed", "user_id", *log.UserID, "error", err)
-			return false
-		}
-		if user.IsAdmin() {
-			slog.Warn("content_moderation.autoban_skipped_admin", "user_id", *log.UserID, "role", user.Role, "count", count, "threshold", cfg.BanThreshold)
-			// TODO: Disable the triggering API key instead when API key mutation is available here.
-			return false
-		}
-		if user.Status != StatusDisabled {
-			user.Status = StatusDisabled
-			if err := s.userRepo.Update(ctx, user, UserUpdateFields{Status: true}); err != nil {
-				slog.Warn("content_moderation.ban_update_user_failed", "user_id", *log.UserID, "error", err)
-				return false
-			}
-			if s.authCacheInvalidator != nil {
-				s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, *log.UserID)
-			}
-			autoBanJustApplied = true
-		}
-		log.AutoBanned = true
+	if !cfg.AutoBanEnabled || cfg.BanThreshold <= 0 || count < cfg.BanThreshold || s.repo == nil {
+		return ContentModerationBanOutcomeIneligible, nil
 	}
-	return autoBanJustApplied
+	lifecycleRepo, ok := s.repo.(ContentModerationLifecycleRepository)
+	if !ok {
+		return ContentModerationBanOutcomeIneligible, errors.New("content moderation lifecycle repository is unavailable")
+	}
+	outcome, err := lifecycleRepo.TryApplyModerationOwnedBan(ctx, *log.UserID, log.ID, time.Now().UTC())
+	if err != nil {
+		return ContentModerationBanOutcomeIneligible, fmt.Errorf("apply moderation-owned ban: %w", err)
+	}
+	switch outcome {
+	case ContentModerationBanOutcomeApplied:
+		log.AutoBanned = true
+		log.ModerationBanActive = true
+		log.UserStatus = StatusDisabled
+		if s.authCacheInvalidator != nil {
+			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, *log.UserID)
+		}
+		return ContentModerationBanOutcomeApplied, nil
+	case ContentModerationBanOutcomeAlreadyOwned:
+		log.ModerationBanActive = true
+		log.UserStatus = StatusDisabled
+		return ContentModerationBanOutcomeAlreadyOwned, nil
+	case ContentModerationBanOutcomeIneligible:
+		return ContentModerationBanOutcomeIneligible, nil
+	default:
+		return ContentModerationBanOutcomeIneligible, fmt.Errorf("unknown moderation ban outcome %q", outcome)
+	}
 }
 
-func (s *ContentModerationService) sendFlaggedNotificationSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog, autoBanJustApplied bool) {
+func (s *ContentModerationService) sendFlaggedNotificationSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog, autoBanJustApplied bool) (string, bool, error) {
+	banOutcome := ContentModerationBanOutcomeIneligible
+	if autoBanJustApplied {
+		banOutcome = ContentModerationBanOutcomeApplied
+	}
+	return s.sendFlaggedNotificationSideEffectsForBanOutcome(ctx, cfg, log, banOutcome)
+}
+
+func (s *ContentModerationService) sendFlaggedNotificationSideEffectsForBanOutcome(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog, banOutcome string) (string, bool, error) {
 	if s == nil || cfg == nil || log == nil || !log.Flagged {
-		return
+		return ContentModerationNotificationStatusNotRequired, false, nil
+	}
+	if banOutcome == ContentModerationBanOutcomeAlreadyOwned {
+		return ContentModerationNotificationStatusNotRequired, false, nil
 	}
 	if s.emailService == nil || strings.TrimSpace(log.UserEmail) == "" {
-		return
+		return ContentModerationNotificationStatusNotRequired, false, nil
 	}
-	emailSent := false
-	if cfg.EmailOnHit {
-		if err := s.sendViolationEmail(ctx, cfg, log); err != nil {
-			slog.Warn("content_moderation.email_failed", "user_id", *log.UserID, "email", log.UserEmail, "error", err)
-		} else {
-			emailSent = true
-		}
-	}
-	if autoBanJustApplied {
+	if banOutcome == ContentModerationBanOutcomeApplied {
 		if err := s.sendAccountDisabledEmail(ctx, cfg, log); err != nil {
-			slog.Warn("content_moderation.ban_email_failed", "user_id", *log.UserID, "email", log.UserEmail, "error", err)
-		} else {
-			emailSent = true
+			slog.Warn("content_moderation.ban_email_failed", "user_id", contentModerationEmailUserID(log), "recipient_hash", notificationEmailHash(log.UserEmail), "error", err)
+			return ContentModerationNotificationStatusFailed, false, err
 		}
+		return ContentModerationNotificationStatusSent, true, nil
 	}
-	log.EmailSent = emailSent
+	if !cfg.EmailOnHit {
+		return ContentModerationNotificationStatusNotRequired, false, nil
+	}
+	decision := s.reserveContentModerationEmailForLog(ctx, log)
+	dedupeErr := contentModerationEmailDedupeDecisionError(decision)
+	if dedupeErr != nil {
+		slog.Warn("content_moderation.email_dedupe_failed_open", "user_id", contentModerationEmailUserID(log), "scope", decision.Scope, "error", decision.Error)
+	}
+	if !decision.ShouldSend {
+		return ContentModerationNotificationStatusDeduplicated, false, nil
+	}
+	if err := s.sendViolationEmail(ctx, cfg, log); err != nil {
+		slog.Warn("content_moderation.email_failed", "user_id", contentModerationEmailUserID(log), "recipient_hash", notificationEmailHash(log.UserEmail), "error", err)
+		releaseErr := s.releaseContentModerationEmailReservation(ctx, decision)
+		if releaseErr != nil {
+			releaseErr = fmt.Errorf("release content moderation email dedupe reservation: %w", releaseErr)
+			slog.Warn("content_moderation.email_dedupe_release_failed", "user_id", contentModerationEmailUserID(log), "scope", decision.Scope, "error", releaseErr)
+		}
+		return ContentModerationNotificationStatusFailed, false, errors.Join(dedupeErr, err, releaseErr)
+	}
+	return ContentModerationNotificationStatusSent, true, dedupeErr
 }
 
 func (s *ContentModerationService) sendViolationEmail(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) error {
@@ -4221,6 +4523,8 @@ func maskSecretTail(secret string) string {
 // CyberPolicyRecordInput 是一次 cyber_policy 硬阻断的风控记录入参。
 type CyberPolicyRecordInput struct {
 	RequestID       string
+	SessionID       string
+	InputHash       string
 	UserID          int64
 	UserEmail       string
 	APIKeyID        int64
@@ -4268,55 +4572,111 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		errBody = fmt.Sprintf("%s\nupstream_usage=in:%d,out:%d", errBody, in.UpstreamInTok, in.UpstreamOutTok)
 	}
 	log := &ContentModerationLog{
-		RequestID:       in.RequestID,
-		UserID:          userID,
-		UserEmail:       in.UserEmail,
-		APIKeyID:        apiKeyID,
-		APIKeyName:      in.APIKeyName,
-		GroupID:         cloneInt64Ptr(in.GroupID),
-		GroupName:       in.GroupName,
-		Endpoint:        in.Endpoint,
-		Provider:        "openai",
-		Model:           in.Model,
-		Mode:            "post_upstream",
-		Action:          ContentModerationActionCyberPolicy,
-		Flagged:         true,
-		HighestCategory: "cyber_policy",
-		HighestScore:    1.0,
-		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
-		CreatedAt:       time.Now(),
+		RequestID:          in.RequestID,
+		SessionID:          strings.TrimSpace(in.SessionID),
+		InputHash:          strings.TrimSpace(in.InputHash),
+		UserID:             userID,
+		UserEmail:          in.UserEmail,
+		APIKeyID:           apiKeyID,
+		APIKeyName:         in.APIKeyName,
+		GroupID:            cloneInt64Ptr(in.GroupID),
+		GroupName:          in.GroupName,
+		Endpoint:           in.Endpoint,
+		Provider:           "openai",
+		Model:              in.Model,
+		Mode:               "post_upstream",
+		Action:             ContentModerationActionCyberPolicy,
+		Flagged:            true,
+		HighestCategory:    "cyber_policy",
+		HighestScore:       1.0,
+		Error:              trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
+		AuditStatus:        ContentModerationAuditStatusSuccess,
+		AuditCode:          ContentModerationActionCyberPolicy,
+		SideEffectStatus:   ContentModerationSideEffectStatusPending,
+		NotificationStatus: ContentModerationNotificationStatusPending,
+		CreatedAt:          time.Now(),
 	}
+	lifecycleRepo, lifecycleAvailable := s.repo.(ContentModerationLifecycleRepository)
+	if !lifecycleAvailable {
+		log.SideEffectStatus = ContentModerationSideEffectStatusFailed
+		log.NotificationStatus = ContentModerationNotificationStatusNotRequired
+		log.SideEffectError = "content moderation lifecycle repository is unavailable"
+		if err := s.repo.CreateLog(ctx, log); err != nil {
+			slog.Error("content_moderation.cyber_create_failed_lifecycle_log_failed", "user_id", in.UserID, "error", err)
+		} else {
+			slog.Error("content_moderation.cyber_lifecycle_repository_unavailable", "log_id", log.ID, "user_id", in.UserID)
+		}
+		return
+	}
+	if err := s.repo.CreateLog(ctx, log); err != nil {
+		slog.Warn("content_moderation.cyber_create_log_failed", "user_id", in.UserID, "error", err)
+		return
+	}
+	tracker := &contentModerationSideEffectTracker{}
 	// 开关开时 cyber_policy 不参与封号计数：当次不判定（此处跳过），
 	// 历史行由 CountFlaggedByUserSince 的 excludeCyberPolicy 排除。
-	autoBanned := false
+	banOutcome := ContentModerationBanOutcomeIneligible
 	if !cfg.CyberPolicyExcludeFromBanCount {
-		autoBanned = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
-	}
-	log.EmailSent = false
-	logPersisted := true
-	if err := s.repo.CreateLog(ctx, log); err != nil {
-		logPersisted = false
-		slog.Warn("content_moderation.cyber_create_log_failed", "user_id", in.UserID, "error", err)
-	}
-	emailSent := false
-	if s.emailService != nil && strings.TrimSpace(log.UserEmail) != "" {
-		if err := s.sendCyberPolicyEmail(ctx, log); err != nil {
-			slog.Warn("content_moderation.cyber_email_failed", "user_id", in.UserID, "error", err)
+		var banErr error
+		banOutcome, banErr = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		if banErr != nil {
+			tracker.failure("account", banErr)
 		} else {
-			emailSent = true
+			tracker.success()
 		}
-		if autoBanned {
-			if err := s.sendAccountDisabledEmail(ctx, cfg, log); err != nil {
-				slog.Warn("content_moderation.cyber_ban_email_failed", "user_id", in.UserID, "error", err)
+	}
+	log.NotificationStatus = ContentModerationNotificationStatusNotRequired
+	if s.emailService != nil && strings.TrimSpace(log.UserEmail) != "" {
+		switch banOutcome {
+		case ContentModerationBanOutcomeApplied:
+			emailErr := s.sendAccountDisabledEmail(ctx, cfg, log)
+			if emailErr != nil {
+				log.NotificationStatus = ContentModerationNotificationStatusFailed
+				slog.Warn("content_moderation.cyber_ban_email_failed", "user_id", in.UserID, "error", emailErr)
 			} else {
-				emailSent = true
+				log.EmailSent = true
+				log.NotificationStatus = ContentModerationNotificationStatusSent
+			}
+			tracker.notification(log.NotificationStatus, log.EmailSent, emailErr)
+		case ContentModerationBanOutcomeAlreadyOwned:
+			// The dedicated disabled-account notification was handled by the
+			// event that originally acquired moderation ban ownership.
+		default:
+			decision := s.reserveContentModerationEmailForLog(ctx, log)
+			if dedupeErr := contentModerationEmailDedupeDecisionError(decision); dedupeErr != nil {
+				tracker.failure("email_dedupe", dedupeErr)
+				slog.Warn("content_moderation.cyber_email_dedupe_failed_open", "user_id", in.UserID, "scope", decision.Scope, "error", decision.Error)
+			}
+			if !decision.ShouldSend {
+				log.NotificationStatus = ContentModerationNotificationStatusDeduplicated
+				tracker.notification(log.NotificationStatus, false, nil)
+			} else {
+				emailErr := s.sendCyberPolicyEmail(ctx, log)
+				if emailErr != nil {
+					log.NotificationStatus = ContentModerationNotificationStatusFailed
+					slog.Warn("content_moderation.cyber_email_failed", "user_id", in.UserID, "error", emailErr)
+					if releaseErr := s.releaseContentModerationEmailReservation(ctx, decision); releaseErr != nil {
+						tracker.failure("email_dedupe_release", releaseErr)
+						slog.Warn("content_moderation.cyber_email_dedupe_release_failed", "user_id", in.UserID, "scope", decision.Scope, "error", releaseErr)
+					}
+				} else {
+					log.EmailSent = true
+					log.NotificationStatus = ContentModerationNotificationStatusSent
+				}
+				tracker.notification(log.NotificationStatus, log.EmailSent, emailErr)
 			}
 		}
 	}
-	if logPersisted && emailSent {
-		if err := s.repo.UpdateLogEmailSent(ctx, log.ID, true); err != nil {
-			slog.Warn("content_moderation.cyber_update_email_sent_failed", "log_id", log.ID, "error", err)
-		}
+	tracker.finalize(log, true)
+	if err := lifecycleRepo.UpdateLogEffects(ctx, log.ID, ContentModerationLogEffectsPatch{
+		ViolationCount:     log.ViolationCount,
+		AutoBanned:         log.AutoBanned,
+		EmailSent:          log.EmailSent,
+		SideEffectStatus:   log.SideEffectStatus,
+		NotificationStatus: log.NotificationStatus,
+		SideEffectError:    log.SideEffectError,
+	}); err != nil {
+		slog.Warn("content_moderation.cyber_update_effects_failed", "log_id", log.ID, "error", err)
 	}
 }
 

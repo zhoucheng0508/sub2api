@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,12 +15,15 @@ import (
 const contentModerationFlaggedHashSetKey = "content_moderation:flagged_hashes"
 const contentModerationResultCachePrefix = "content_moderation:result:v1:"
 const contentModerationSessionRiskPrefix = "content_moderation:session_risk:v1:"
+const contentModerationSessionRiskIndexPrefix = "content_moderation:session_risk_index:v1:"
 
 type contentModerationHashCache struct {
 	rdb *redis.Client
 }
 
 var _ service.ContentModerationSessionRiskStore = (*contentModerationHashCache)(nil)
+var _ service.ContentModerationIndexedSessionRiskStore = (*contentModerationHashCache)(nil)
+var _ service.ContentModerationUserStateCleaner = (*contentModerationHashCache)(nil)
 
 func NewContentModerationHashCache(rdb *redis.Client) service.ContentModerationHashCache {
 	return &contentModerationHashCache{rdb: rdb}
@@ -122,11 +126,24 @@ func (c *contentModerationHashCache) GetContentModerationSessionRisk(ctx context
 }
 
 func (c *contentModerationHashCache) UpdateContentModerationSessionRisk(ctx context.Context, key string, event riskstate.Event, cfg riskstate.Config) (riskstate.State, error) {
+	return c.updateContentModerationSessionRisk(ctx, 0, key, event, cfg)
+}
+
+func (c *contentModerationHashCache) UpdateContentModerationSessionRiskForUser(ctx context.Context, userID int64, key string, event riskstate.Event, cfg riskstate.Config) (riskstate.State, error) {
+	return c.updateContentModerationSessionRisk(ctx, userID, key, event, cfg)
+}
+
+func (c *contentModerationHashCache) updateContentModerationSessionRisk(ctx context.Context, userID int64, key string, event riskstate.Event, cfg riskstate.Config) (riskstate.State, error) {
 	key = strings.TrimSpace(key)
 	if c == nil || c.rdb == nil || key == "" {
 		return riskstate.Apply(riskstate.State{}, event, cfg), nil
 	}
 	redisKey := contentModerationSessionRiskPrefix + key
+	indexKey := ""
+	if userID > 0 {
+		indexKey = contentModerationSessionRiskIndexKey(userID)
+	}
+	normalizedTTL := riskstate.NormalizeConfig(cfg).TTL
 	var updated riskstate.State
 	for attempt := 0; attempt < 5; attempt++ {
 		err := c.rdb.Watch(ctx, func(tx *redis.Tx) error {
@@ -145,12 +162,25 @@ func (c *contentModerationHashCache) UpdateContentModerationSessionRisk(ctx cont
 			if err != nil {
 				return err
 			}
+			var indexTTL time.Duration
+			if indexKey != "" {
+				indexTTL, err = tx.PTTL(ctx, indexKey).Result()
+				if err != nil {
+					return err
+				}
+			}
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, redisKey, encoded, riskstate.NormalizeConfig(cfg).TTL)
+				pipe.Set(ctx, redisKey, encoded, normalizedTTL)
+				if indexKey != "" {
+					pipe.SAdd(ctx, indexKey, redisKey)
+					if indexTTL < 0 || indexTTL < normalizedTTL {
+						pipe.Expire(ctx, indexKey, normalizedTTL)
+					}
+				}
 				return nil
 			})
 			return err
-		}, redisKey)
+		}, contentModerationSessionRiskWatchKeys(redisKey, indexKey)...)
 		if err == nil {
 			return updated, nil
 		}
@@ -159,4 +189,15 @@ func (c *contentModerationHashCache) UpdateContentModerationSessionRisk(ctx cont
 		}
 	}
 	return riskstate.State{}, redis.TxFailedErr
+}
+
+func contentModerationSessionRiskIndexKey(userID int64) string {
+	return fmt.Sprintf("%s{%d}", contentModerationSessionRiskIndexPrefix, userID)
+}
+
+func contentModerationSessionRiskWatchKeys(redisKey, indexKey string) []string {
+	if indexKey == "" {
+		return []string{redisKey}
+	}
+	return []string{redisKey, indexKey}
 }

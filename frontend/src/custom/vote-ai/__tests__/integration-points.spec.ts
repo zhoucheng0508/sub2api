@@ -61,4 +61,13 @@ describe('Vote AI upstream integration points', () => {
     expect(riskControlSource).toContain('user_filter: buildUserFilterPayload()')
     expect(riskControlSource).toContain('account_filter: buildAccountFilterPayload()')
   })
+
+  it('keeps structured moderation status and guarded unban UI isolated', () => {
+    expect(riskControlSource).toContain('CUSTOM(VOTE-AI-RISK-SIDE-EFFECTS)')
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/ModerationAuditStatusBadge.vue")
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/ModerationSideEffectsStatus.vue")
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/ModerationUnbanDialog.vue")
+    expect(riskControlSource).toContain("result.risk_state_cleared")
+    expect(riskControlSource).toContain('result.warning')
+  })
 })

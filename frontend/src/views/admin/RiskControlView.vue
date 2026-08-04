@@ -310,9 +310,14 @@
                       <div class="text-xs text-gray-400">{{ row.provider || '-' }} / {{ row.model || '-' }}</div>
                     </td>
                     <td class="whitespace-nowrap px-5 py-4">
-                      <span class="inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(row)">
-                        {{ resultLabel(row) }}
-                      </span>
+                      <!-- CUSTOM(VOTE-AI-RISK-SIDE-EFFECTS): structured audit state; error text is diagnostic only. -->
+                      <ModerationAuditStatusBadge
+                        :status="row.audit_status"
+                        :action="row.action"
+                        :flagged="row.flagged"
+                        :code="row.audit_code"
+                        :retryable="row.audit_retryable"
+                      />
                     </td>
                     <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                       <div>{{ row.highest_category || '-' }}</div>
@@ -323,20 +328,31 @@
                     </td>
                     <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                       <div>{{ violationCountText(row) }}</div>
-                      <div class="text-xs text-gray-400">
-                        {{ row.email_sent ? t('admin.riskControl.emailSent') : t('admin.riskControl.emailNotSent') }}
-                        <span v-if="row.auto_banned"> / {{ t('admin.riskControl.autoBanned') }}</span>
-                      </div>
+                      <ModerationSideEffectsStatus
+                        :side-effect-status="row.side_effect_status"
+                        :notification-status="row.notification_status"
+                        :error="row.side_effect_error"
+                        :moderation-ban-active="row.moderation_ban_active"
+                      />
                       <button
                         v-if="canUnbanRow(row)"
                         type="button"
                         class="mt-2 inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
                         :disabled="unbanningUserID === row.user_id"
-                        @click="unbanUser(row)"
+                        data-test="open-moderation-unban"
+                        @click="openUnbanDialog(row)"
                       >
                         <Icon name="checkCircle" size="xs" :class="unbanningUserID === row.user_id ? 'animate-spin' : ''" />
                         {{ unbanningUserID === row.user_id ? t('common.processing') : t('admin.riskControl.unbanUser') }}
                       </button>
+                      <p
+                        v-else-if="unbanUnavailableReason(row)"
+                        class="mt-2 max-w-56 whitespace-normal text-xs leading-4 text-amber-600 dark:text-amber-300"
+                        :title="unbanUnavailableReason(row)"
+                        data-test="unban-unavailable-reason"
+                      >
+                        {{ unbanUnavailableReason(row) }}
+                      </p>
                     </td>
                     <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                       <div>{{ latencyText(row.upstream_latency_ms) }}</div>
@@ -1262,9 +1278,14 @@
             </div>
             <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
               <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.result') }}</p>
-              <span class="mt-1 inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(inputDetailRow)">
-                {{ resultLabel(inputDetailRow) }}
-              </span>
+              <ModerationAuditStatusBadge
+                class="mt-1"
+                :status="inputDetailRow.audit_status"
+                :action="inputDetailRow.action"
+                :flagged="inputDetailRow.flagged"
+                :code="inputDetailRow.audit_code"
+                :retryable="inputDetailRow.audit_retryable"
+              />
             </div>
             <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
               <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.highest') }}</p>
@@ -1300,6 +1321,16 @@
           </div>
         </template>
       </BaseDialog>
+
+      <!-- CUSTOM(VOTE-AI-RISK-SIDE-EFFECTS): moderation-owned unban confirmation and risk-state cleanup mode. -->
+      <ModerationUnbanDialog
+        :show="unbanDialogRow !== null"
+        :row="unbanDialogRow"
+        :loading="unbanningUserID !== null"
+        :warning="unbanWarning"
+        @close="closeUnbanDialog"
+        @confirm="confirmUnbanUser"
+      />
     </div>
   </AppLayout>
 </template>
@@ -1319,6 +1350,10 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import AuditProviderSelector from '@/custom/vote-ai/risk-control/AuditProviderSelector.vue'
 // CUSTOM(VOTE-AI-RISK-SCOPE): isolated searchable user/account scope selector.
 import ScopeEntitySelector from '@/custom/vote-ai/risk-control/ScopeEntitySelector.vue'
+// CUSTOM(VOTE-AI-RISK-SIDE-EFFECTS): structured audit/effect status and guarded unban flow.
+import ModerationAuditStatusBadge from '@/custom/vote-ai/risk-control/ModerationAuditStatusBadge.vue'
+import ModerationSideEffectsStatus from '@/custom/vote-ai/risk-control/ModerationSideEffectsStatus.vue'
+import ModerationUnbanDialog from '@/custom/vote-ai/risk-control/ModerationUnbanDialog.vue'
 import { adminAPI } from '@/api/admin'
 import type {
   ContentModerationAPIKeyLoad,
@@ -1334,6 +1369,7 @@ import type {
   ContentModerationAccountFilter,
   ContentModerationRuntimeStatus,
   ContentModerationTestAuditResult,
+  ContentModerationUnbanMode,
   KeywordBlockingMode,
   ModerationMode,
   UpdateContentModerationConfig,
@@ -1454,6 +1490,8 @@ const statusLoading = ref(false)
 const apiKeyTesting = ref(false)
 const hashActionLoading = ref(false)
 const unbanningUserID = ref<number | null>(null)
+const unbanDialogRow = ref<ContentModerationLog | null>(null)
+const unbanWarning = ref('')
 const settingsOpen = ref(false)
 const activeSettingsTab = ref<SettingsTab>('basic')
 const groupSearch = ref('')
@@ -2346,7 +2384,12 @@ async function loadLogs() {
 }
 
 function canUnbanRow(row: ContentModerationLog): boolean {
-  return Boolean(row.auto_banned && row.user_id && row.user_status === 'disabled')
+  return Boolean(row.moderation_ban_active && row.user_id && row.user_status === 'disabled')
+}
+
+function unbanUnavailableReason(row: ContentModerationLog): string {
+  if (row.user_status !== 'disabled' || row.moderation_ban_active) return ''
+  return row.unban_block_reason || t('admin.riskControl.unbanNotModerationOwned')
 }
 
 function inputSummaryText(row: ContentModerationLog): string {
@@ -2361,18 +2404,63 @@ function closeInputDetail() {
   inputDetailRow.value = null
 }
 
-async function unbanUser(row: ContentModerationLog) {
-  if (!row.user_id || unbanningUserID.value !== null) return
+function openUnbanDialog(row: ContentModerationLog) {
+  if (!canUnbanRow(row) || unbanningUserID.value !== null) return
+  unbanWarning.value = ''
+  unbanDialogRow.value = row
+}
+
+function closeUnbanDialog() {
+  if (unbanningUserID.value !== null) return
+  unbanDialogRow.value = null
+  unbanWarning.value = ''
+}
+
+async function confirmUnbanUser(mode: ContentModerationUnbanMode) {
+  const row = unbanDialogRow.value
+  if (!row?.user_id || unbanningUserID.value !== null) return
+  const retryingRiskCleanup = mode === 'clear_risk_only'
+  if (retryingRiskCleanup ? !unbanWarning.value : !canUnbanRow(row)) return
   unbanningUserID.value = row.user_id
   try {
-    const result = await adminAPI.riskControl.unbanUser(row.user_id)
+    const result = await adminAPI.riskControl.unbanUser(row.user_id, { mode })
+    const restoredRow: ContentModerationLog = {
+      ...row,
+      user_status: result.status,
+      moderation_ban_active: false,
+      unban_block_reason: '',
+    }
     logs.value = logs.value.map((item) => {
       if (item.user_id !== row.user_id) return item
-      return { ...item, user_status: result.status }
+      return {
+        ...item,
+        user_status: result.status,
+        moderation_ban_active: false,
+        unban_block_reason: '',
+      }
     })
-    appStore.showSuccess(t('admin.riskControl.unbanSuccess'))
+    if (result.warning) {
+      unbanDialogRow.value = restoredRow
+      unbanWarning.value = result.warning
+      appStore.showWarning(t('admin.riskControl.unbanPartialSuccess', { warning: result.warning }))
+    } else {
+      unbanDialogRow.value = null
+      unbanWarning.value = ''
+      appStore.showSuccess(t(
+        retryingRiskCleanup
+          ? 'admin.riskControl.riskStateCleanupRetrySuccess'
+          : result.risk_state_cleared
+          ? 'admin.riskControl.unbanSuccessCleared'
+          : 'admin.riskControl.unbanSuccessRestored'
+      ))
+    }
   } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.unbanFailed')))
+    appStore.showError(extractApiErrorMessage(
+      err,
+      t(retryingRiskCleanup
+        ? 'admin.riskControl.riskStateCleanupRetryFailed'
+        : 'admin.riskControl.unbanFailed')
+    ))
   } finally {
     unbanningUserID.value = null
   }
@@ -2655,24 +2743,6 @@ function modeDescription(mode: ModerationMode): string {
     off: t('admin.riskControl.modeOffDesc'),
   }
   return descriptions[mode] ?? ''
-}
-
-function resultLabel(row: ContentModerationLog): string {
-  if (row.action === 'cyber_policy') return t('admin.riskControl.action.cyberPolicy')
-  if (row.action === 'keyword_block') return t('admin.riskControl.action.keywordBlock')
-  if (row.action === 'block') return t('admin.riskControl.action.block')
-  if (row.action === 'observe') return t('admin.riskControl.action.observe')
-  if (row.action === 'error' || row.error) return t('admin.riskControl.action.error')
-  if (row.flagged) return t('admin.riskControl.result.hit')
-  return t('admin.riskControl.result.pass')
-}
-
-function resultBadgeClass(row: ContentModerationLog): string {
-  if (row.action === 'block' || row.action === 'keyword_block' || row.action === 'cyber_policy') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
-  if (row.action === 'error' || row.error) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
-  if (row.action === 'observe') return 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
-  if (row.flagged) return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300'
-  return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
 }
 
 function workerSlotClass(state: WorkerSlotState): string {
