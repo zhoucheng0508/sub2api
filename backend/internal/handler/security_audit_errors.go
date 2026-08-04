@@ -121,6 +121,9 @@ func securityAuditStreamErrorType(decision *securityaudit.Decision) string {
 		return "api_error"
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
+		if decision.Legacy.Action == service.ContentModerationActionUnavailable || decision.Legacy.ErrorCode == service.ContentModerationErrorCodeUnavailable {
+			return "api_error"
+		}
 		return securityAuditErrorCode(decision)
 	}
 	if decision.Kind == securityaudit.DecisionBlock {
@@ -230,6 +233,9 @@ func securityAuditWSCloseStatus(decision *securityaudit.Decision) coderws.Status
 		return coderws.StatusInternalError
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
+		if decision.Legacy.Action == service.ContentModerationActionUnavailable || decision.Legacy.ErrorCode == service.ContentModerationErrorCodeUnavailable {
+			return coderws.StatusTryAgainLater
+		}
 		return coderws.StatusPolicyViolation
 	}
 	if decision.Kind == securityaudit.DecisionBlock {
@@ -243,6 +249,9 @@ func securityAuditWSCloseReason(decision *securityaudit.Decision) string {
 		return securityaudit.ErrorCodeUnavailable
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
+		if decision.Legacy.Action == service.ContentModerationActionUnavailable || decision.Legacy.ErrorCode == service.ContentModerationErrorCodeUnavailable {
+			return service.ContentModerationErrorCodeUnavailable
+		}
 		message := strings.TrimSpace(decision.Legacy.Message)
 		if message != "" {
 			return message

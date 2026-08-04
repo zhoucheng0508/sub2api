@@ -91,6 +91,7 @@ for _, key in ipairs(email_members) do
   redis.call('DEL', key)
 end
 redis.call('DEL', KEYS[1], KEYS[2])
+redis.call('INCR', KEYS[3])
 return #risk_members + #email_members
 `)
 )
@@ -225,6 +226,7 @@ func (c *contentModerationHashCache) ClearContentModerationUserState(ctx context
 	keys := []string{
 		contentModerationSessionRiskIndexKey(userID),
 		contentModerationEmailDedupeIndexKey(userID),
+		contentModerationUserEpochKey(userID),
 	}
 	return contentModerationUserStateClearScript.Run(ctx, c.rdb, keys).Int64()
 }

@@ -42,22 +42,50 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 
-const sideEffectLabel = computed(() => t(`admin.riskControl.sideEffectStatus.${props.sideEffectStatus}`))
-const notificationLabel = computed(() => t(`admin.riskControl.notificationStatus.${props.notificationStatus}`))
+const rawSideEffectStatus = computed(() => String(props.sideEffectStatus || '').trim())
+const normalizedSideEffectStatus = computed<ContentModerationSideEffectStatus | null>(() => {
+  const status = rawSideEffectStatus.value
+  if (!status) return 'not_applicable'
+  if (status === 'pending' || status === 'completed' || status === 'partial' || status === 'failed' || status === 'not_applicable') return status
+  return null
+})
 
-const sideEffectClass = computed(() => ({
-  pending: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
-  completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-  partial: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
-  not_applicable: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400',
-}[props.sideEffectStatus]))
+const rawNotificationStatus = computed(() => String(props.notificationStatus || '').trim())
+const normalizedNotificationStatus = computed<ContentModerationNotificationStatus | null>(() => {
+  const status = rawNotificationStatus.value
+  if (!status) return 'not_required'
+  if (status === 'pending' || status === 'sent' || status === 'deduplicated' || status === 'failed' || status === 'not_required') return status
+  return null
+})
 
-const notificationClass = computed(() => ({
-  pending: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
-  sent: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-  deduplicated: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
-  not_required: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
-}[props.notificationStatus]))
+const sideEffectLabel = computed(() => normalizedSideEffectStatus.value
+  ? t(`admin.riskControl.sideEffectStatus.${normalizedSideEffectStatus.value}`)
+  : t('admin.riskControl.sideEffectStatus.unknown', { status: rawSideEffectStatus.value }))
+const notificationLabel = computed(() => normalizedNotificationStatus.value
+  ? t(`admin.riskControl.notificationStatus.${normalizedNotificationStatus.value}`)
+  : t('admin.riskControl.notificationStatus.unknown', { status: rawNotificationStatus.value }))
+
+const sideEffectClass = computed(() => {
+  const status = normalizedSideEffectStatus.value
+  if (!status) return 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-200'
+  return {
+    pending: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
+    completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+    partial: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+    failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+    not_applicable: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400',
+  }[status]
+})
+
+const notificationClass = computed(() => {
+  const status = normalizedNotificationStatus.value
+  if (!status) return 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-200'
+  return {
+    pending: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
+    sent: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+    deduplicated: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
+    not_required: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400',
+    failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+  }[status]
+})
 </script>

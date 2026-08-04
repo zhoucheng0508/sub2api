@@ -92,8 +92,13 @@ type contentModerationAPIKeyTestRequest struct {
 	AIConfidenceThreshold float64  `json:"ai_confidence_threshold"`
 	AISystemPrompt        string   `json:"ai_system_prompt"`
 	AIMaxInputChars       int      `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS int      `json:"ai_synchronous_budget_ms"`
+	AIFastInputChars      int      `json:"ai_fast_input_chars"`
+	AIFallbackInputChars  int      `json:"ai_fallback_input_chars"`
 	AIThinkingMode        string   `json:"ai_thinking_mode"`
 	AIReasoningEffort     string   `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled   *bool    `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold    float64  `json:"ai_observe_threshold"`
 }
 
 type contentModerationHashRequest struct {
@@ -199,8 +204,13 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		AIConfidenceThreshold: req.AIConfidenceThreshold,
 		AISystemPrompt:        req.AISystemPrompt,
 		AIMaxInputChars:       req.AIMaxInputChars,
+		AISynchronousBudgetMS: req.AISynchronousBudgetMS,
+		AIFastInputChars:      req.AIFastInputChars,
+		AIFallbackInputChars:  req.AIFallbackInputChars,
 		AIThinkingMode:        req.AIThinkingMode,
 		AIReasoningEffort:     req.AIReasoningEffort,
+		AIRiskLevelsEnabled:   req.AIRiskLevelsEnabled,
+		AIObserveThreshold:    req.AIObserveThreshold,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

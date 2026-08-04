@@ -44,6 +44,10 @@ export interface ContentModerationAIChatProfile extends ContentModerationProvide
   cache_enabled: boolean
   cache_ttl_seconds: number
   system_prompt: string
+  recommended_system_prompt: string
+  recommended_prompt_version: string
+  system_prompt_version: string
+  uses_recommended_system_prompt: boolean
   failure_policy: AIAuditFailurePolicy
   max_input_chars: number
   synchronous_budget_ms: number
@@ -148,17 +152,31 @@ export interface TestContentModerationAPIKeysPayload {
 export interface TestContentModerationAPIKeysResponse {
   items: ContentModerationAPIKeyStatus[]
   audit_result?: ContentModerationTestAuditResult
+  audit_error?: ContentModerationTestAuditError
   image_count: number
+}
+
+export interface ContentModerationTestAuditError {
+  code: string
+  message: string
+  http_status?: number
 }
 
 export interface ContentModerationTestAuditResult {
   flagged: boolean
+  risk_score: number
+  risk_tier: string
+  categories: string[]
+  signals: string[]
   highest_category: string
   highest_score: number
   composite_score: number
   category_scores: Record<string, number>
   thresholds: Record<string, number>
   reason?: string
+  review_incomplete: boolean
+  review_error?: string
+  scope?: 'request'
 }
 
 export interface UpdateContentModerationConfig {

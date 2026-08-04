@@ -5,6 +5,7 @@ import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 
 import RiskControlView from '../RiskControlView.vue'
 import type {
+  ContentModerationAIChatProfile,
   ContentModerationConfig,
   ContentModerationLog,
   UpdateContentModerationConfig,
@@ -21,6 +22,7 @@ const {
   getUserById,
   listAccounts,
   getAccountById,
+  testAPIKeys,
   unbanUser,
   showError,
   showSuccess,
@@ -36,6 +38,7 @@ const {
   getUserById: vi.fn(),
   listAccounts: vi.fn(),
   getAccountById: vi.fn(),
+  testAPIKeys: vi.fn(),
   unbanUser: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -49,7 +52,7 @@ vi.mock('@/api/admin', () => ({
       updateConfig,
       getStatus,
       listLogs,
-      testAPIKeys: vi.fn(),
+      testAPIKeys,
       deleteFlaggedHash: vi.fn(),
       clearFlaggedHashes: vi.fn(),
       unbanUser,
@@ -94,6 +97,9 @@ vi.mock('vue-i18n', async () => {
         }
         if (key === 'admin.riskControl.unbanPartialSuccess') {
           return `partial success: ${params?.warning}`
+        }
+        if (key === 'admin.riskControl.aiPromptCurrentVersion' || key === 'admin.riskControl.aiPromptRecommendedVersion') {
+          return `${key}:${params?.version}`
         }
         return key.replace(/\{(\w+)\}/g, (_, token) => String(params?.[token] ?? `{${token}}`))
       },
@@ -146,6 +152,46 @@ const baseConfig = (): ContentModerationConfig => ({
   account_filter: {
     type: 'all',
     account_ids: [],
+  },
+})
+
+const aiChatConfig = (
+  overrides: Partial<ContentModerationAIChatProfile> = {}
+): ContentModerationConfig => ({
+  ...baseConfig(),
+  audit_provider: 'ai_chat',
+  ai_chat: {
+    base_url: 'https://api.deepseek.com',
+    model: 'deepseek-v4-flash',
+    proxy_id: null,
+    api_key_configured: true,
+    api_key_count: 1,
+    api_key_masks: ['********test'],
+    timeout_ms: 15000,
+    retry_count: 1,
+    confidence_threshold: 0.7,
+    cache_enabled: true,
+    cache_ttl_seconds: 300,
+    system_prompt: 'custom prompt',
+    recommended_system_prompt: 'backend recommended prompt',
+    recommended_prompt_version: 'vote-ai-2026-08-04',
+    system_prompt_version: 'custom',
+    uses_recommended_system_prompt: false,
+    failure_policy: 'allow',
+    max_input_chars: 200000,
+    synchronous_budget_ms: 4800,
+    fast_input_chars: 12000,
+    fallback_input_chars: 4000,
+    thinking_mode: 'enabled',
+    reasoning_effort: 'adaptive',
+    risk_levels_enabled: true,
+    observe_threshold: 0.35,
+    session_risk_enabled: true,
+    session_risk_ttl_minutes: 120,
+    session_risk_half_life_minutes: 30,
+    session_risk_block_cooldown_minutes: 30,
+    actor_risk_enabled: true,
+    ...overrides,
   },
 })
 
@@ -277,6 +323,7 @@ describe('admin RiskControlView', () => {
     getUserById.mockReset()
     listAccounts.mockReset()
     getAccountById.mockReset()
+    testAPIKeys.mockReset()
     unbanUser.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
@@ -340,6 +387,203 @@ describe('admin RiskControlView', () => {
       },
     }))
     expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('keeps a custom audit prompt until the backend recommendation is explicitly applied', async () => {
+    getConfig.mockResolvedValue(aiChatConfig())
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+
+    const prompt = wrapper.get<HTMLTextAreaElement>('[data-test="ai-system-prompt"]')
+    expect(prompt.element.value).toBe('custom prompt')
+    expect(wrapper.get('[data-test="active-prompt-version"]').text()).toContain('custom')
+    expect(wrapper.get('[data-test="recommended-prompt-version"]').text()).toContain('vote-ai-2026-08-04')
+
+    await wrapper.get('[data-test="apply-recommended-prompt"]').trigger('click')
+    await flushPromises()
+    expect(prompt.element.value).toBe('backend recommended prompt')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      ai_system_prompt: 'backend recommended prompt',
+    }))
+  })
+
+  it('marks an edited legacy prompt as custom immediately', async () => {
+    getConfig.mockResolvedValue(aiChatConfig({
+      system_prompt: 'legacy prompt',
+      system_prompt_version: 'legacy',
+    }))
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="active-prompt-version"]').text()).toContain('legacy')
+    await wrapper.get('[data-test="ai-system-prompt"]').setValue('manually edited prompt')
+    expect(wrapper.get('[data-test="active-prompt-version"]').text()).toContain('custom')
+  })
+
+  it('saves bounded synchronous audit performance settings and rejects invalid fallback sizing', async () => {
+    getConfig.mockResolvedValue(aiChatConfig())
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-test="ai-synchronous-budget-ms"]').setValue('4500')
+    await wrapper.get('[data-test="ai-fast-input-chars"]').setValue('16000')
+    await wrapper.get('[data-test="ai-fallback-input-chars"]').setValue('17000')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('admin.riskControl.aiPerformanceFallbackInvalid')
+
+    await wrapper.get('[data-test="ai-fallback-input-chars"]').setValue('6000')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      ai_synchronous_budget_ms: 4500,
+      ai_fast_input_chars: 16000,
+      ai_fallback_input_chars: 6000,
+    }))
+  })
+
+  it('renders structured trial risk fields and submits the active performance profile', async () => {
+    getConfig.mockResolvedValue(aiChatConfig())
+    testAPIKeys.mockResolvedValue({
+      items: [],
+      image_count: 0,
+      audit_result: {
+        flagged: true,
+        risk_score: 0.82,
+        risk_tier: 'high',
+        categories: ['credential_theft'],
+        signals: ['ownership_unverified', 'progressive_escalation'],
+        highest_category: 'credential_theft',
+        highest_score: 0.82,
+        composite_score: 0.82,
+        category_scores: { credential_theft: 0.82 },
+        thresholds: { credential_theft: 0.7 },
+        reason: '所有权无法核实',
+        review_incomplete: true,
+        review_error: 'supplemental review timeout',
+        scope: 'request',
+      },
+    })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea[placeholder="admin.riskControl.auditTestPromptPlaceholder"]').setValue('test prompt')
+    await findButtonByText(wrapper, 'admin.riskControl.testContentWithStoredApiKey').trigger('click')
+    await flushPromises()
+
+    expect(testAPIKeys).toHaveBeenCalledWith(expect.objectContaining({
+      ai_synchronous_budget_ms: 4800,
+      ai_fast_input_chars: 12000,
+      ai_fallback_input_chars: 4000,
+      ai_risk_levels_enabled: true,
+      ai_observe_threshold: 0.35,
+    }))
+    expect(wrapper.get('[data-test="audit-test-risk-tier"]').text()).toContain('auditRiskTier.high')
+    expect(wrapper.get('[data-test="audit-test-signals"]').text()).toContain('progressive_escalation')
+    expect(wrapper.get('[data-test="audit-review-incomplete"]').text()).toContain('supplemental review timeout')
+    expect(wrapper.get('[data-test="audit-test-scope"]').text()).toContain('auditTestScopeRequest')
+    expect(wrapper.text()).toContain('82.0% / 70.0%')
+  })
+
+  it('reports a structured trial error instead of showing success without an audit result', async () => {
+    getConfig.mockResolvedValue(aiChatConfig())
+    testAPIKeys.mockResolvedValue({
+      items: [],
+      image_count: 0,
+      audit_error: {
+        code: 'audit_request_failed',
+        message: 'AI audit API returned invalid JSON',
+        http_status: 200,
+      },
+    })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea[placeholder="admin.riskControl.auditTestPromptPlaceholder"]').setValue('test prompt')
+    await findButtonByText(wrapper, 'admin.riskControl.testContentWithStoredApiKey').trigger('click')
+    await flushPromises()
+
+    expect(showError).toHaveBeenCalledWith('AI audit API returned invalid JSON')
+    expect(showSuccess).not.toHaveBeenCalled()
   })
 
   it('loads and saves user and upstream account audit scopes', async () => {

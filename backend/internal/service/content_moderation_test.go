@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	voteaimoderation "github.com/Wei-Shaw/sub2api/internal/custom/voteai/moderation"
 	voteairiskstate "github.com/Wei-Shaw/sub2api/internal/custom/voteai/riskstate"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
@@ -20,6 +22,48 @@ import (
 
 type contentModerationTestSettingRepo struct {
 	values map[string]string
+}
+
+func TestContentModerationWeakSignalsDoNotAccumulateOrEscalateByScoreAlone(t *testing.T) {
+	weak := &moderationAPIResult{
+		Flagged:        false,
+		CategoryScores: map[string]float64{"ai_risk": 0.95},
+		Signals:        []string{"defensive_context", "ownership_unverified"},
+	}
+	require.False(t, shouldAccumulateContentModerationRisk(weak, 0.95, 0.7))
+
+	cfg := defaultContentModerationConfig()
+	cfg.AIChat.SessionRiskEnabled = true
+	cfg.AIChat.ActorRiskEnabled = true
+	result := (&ContentModerationService{hashCache: &contentModerationTestHashCache{}}).applyAIChatRiskState(
+		context.Background(),
+		ContentModerationCheckInput{UserID: 10, APIKeyID: 20, SessionID: "weak-only"},
+		cfg,
+		weak,
+	)
+	require.Equal(t, voteairiskstate.TierLow, result.Tier)
+	require.Equal(t, 0.95, result.CurrentScore)
+	require.Zero(t, result.CumulativeScore)
+
+	withCategory := &moderationAPIResult{
+		Flagged:        false,
+		CategoryScores: map[string]float64{"ai_risk": 0.95, "credential_theft": 0.95},
+		Signals:        []string{"ownership_unverified"},
+	}
+	require.False(t, shouldAccumulateContentModerationRisk(withCategory, 0.95, 0.7))
+
+	flaggedWithCategory := &moderationAPIResult{
+		Flagged:        true,
+		CategoryScores: map[string]float64{"ai_risk": 0.95, "credential_theft": 0.95},
+		Signals:        []string{"defensive_context"},
+	}
+	require.True(t, shouldAccumulateContentModerationRisk(flaggedWithCategory, 0.95, 0.7))
+
+	withStrongSignal := &moderationAPIResult{
+		CategoryScores: map[string]float64{"ai_risk": 0.95},
+		Signals:        []string{"ownership_unverified", "auth_bypass"},
+	}
+	require.True(t, shouldAccumulateContentModerationRisk(withStrongSignal, 0.95, 0.7))
 }
 
 func TestContentModerationSessionRiskAccumulatesAndIsolatesIdentity(t *testing.T) {
@@ -35,7 +79,7 @@ func TestContentModerationSessionRiskAccumulatesAndIsolatesIdentity(t *testing.T
 	input := ContentModerationCheckInput{UserID: 10, APIKeyID: 20, SessionID: "conversation-a"}
 	result := &moderationAPIResult{
 		CategoryScores: map[string]float64{"ai_risk": 0.45, "credential_theft": 0.45},
-		Signals:        []string{"ownership_unverified"},
+		Signals:        []string{"ownership_unverified", "auth_bypass"},
 	}
 	var got contentModerationTierResult
 	for i := 0; i < 4; i++ {
@@ -64,7 +108,8 @@ func TestContentModerationSessionRisk_DoesNotAccumulateWeakDefensiveSignals(t *t
 	cfg.normalize()
 	input := ContentModerationCheckInput{RequestID: "weak-1", UserID: 10, APIKeyID: 20, SessionID: "conversation-a"}
 	weak := &moderationAPIResult{
-		CategoryScores: map[string]float64{"ai_risk": 0.45},
+		Flagged:        false,
+		CategoryScores: map[string]float64{"ai_risk": 0.45, "credential_theft": 0.45},
 		Signals:        []string{"defensive_context", "ownership_unverified"},
 	}
 
@@ -103,6 +148,14 @@ func TestContentModerationAuditMetadata_IsStructured(t *testing.T) {
 			require.Equal(t, tt.retryable, retryable)
 		})
 	}
+}
+
+func TestContentModerationAuditErrorTextPrefersTimeoutFromJoinedError(t *testing.T) {
+	err := errors.Join(
+		fmt.Errorf("wrapped transport failure: %w", voteaimoderation.ErrTemporary),
+		fmt.Errorf("wrapped deadline: %w", context.DeadlineExceeded),
+	)
+	require.Equal(t, "audit_timeout: "+err.Error(), contentModerationAuditErrorText(err))
 }
 
 func TestContentModerationSessionRiskPrecheckHonorsCooldown(t *testing.T) {
@@ -348,6 +401,7 @@ type contentModerationTestHashCache struct {
 	clearedUsers  []int64
 	clearErr      error
 	onClear       func(int64)
+	epochs        map[int64]int64
 }
 
 type contentModerationTestUserRepo struct {
@@ -617,9 +671,29 @@ func (c *contentModerationTestHashCache) ClearContentModerationUserState(ctx con
 	if c.clearErr != nil {
 		return 0, c.clearErr
 	}
+	if c.epochs == nil {
+		c.epochs = map[int64]int64{}
+	}
+	c.epochs[userID]++
 	deleted := int64(len(c.sessionStates))
 	c.sessionStates = nil
 	return deleted, nil
+}
+
+func (c *contentModerationTestHashCache) GetContentModerationUserEpoch(ctx context.Context, userID int64) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.epochs[userID], nil
+}
+
+func (c *contentModerationTestHashCache) AdvanceContentModerationUserEpoch(ctx context.Context, userID int64) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.epochs == nil {
+		c.epochs = map[int64]int64{}
+	}
+	c.epochs[userID]++
+	return c.epochs[userID], nil
 }
 
 func (c *contentModerationTestHashCache) snapshotRecorded() []string {
@@ -717,6 +791,25 @@ func TestContentModerationConfigNormalize_UsesDeepSeekOfficialReasoningEfforts(t
 		cfg.normalize()
 		require.Equal(t, tt.want, cfg.AIChat.ReasoningEffort)
 	}
+}
+
+func TestContentModerationConfigNormalize_EnforcesAIPerformanceBounds(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	cfg.AIChat.SynchronousBudgetMS = minAIChatSynchronousBudgetMS - 1
+	cfg.AIChat.MaxInputChars = minAIChatMaxInputChars - 1
+	cfg.normalize()
+	require.Equal(t, defaultAIChatSynchronousBudgetMS, cfg.AIChat.SynchronousBudgetMS)
+	require.Equal(t, defaultAIChatMaxInputChars, cfg.AIChat.MaxInputChars)
+
+	cfg.AIChat.SynchronousBudgetMS = minAIChatSynchronousBudgetMS
+	cfg.AIChat.MaxInputChars = minAIChatMaxInputChars
+	cfg.AIChat.FastInputChars = minAIChatMaxInputChars + 1
+	cfg.AIChat.FallbackInputChars = minAIChatMaxInputChars + 1
+	cfg.normalize()
+	require.Equal(t, minAIChatSynchronousBudgetMS, cfg.AIChat.SynchronousBudgetMS)
+	require.Equal(t, minAIChatMaxInputChars, cfg.AIChat.MaxInputChars)
+	require.Equal(t, minAIChatMaxInputChars, cfg.AIChat.FastInputChars)
+	require.Equal(t, minAIChatMaxInputChars, cfg.AIChat.FallbackInputChars)
 }
 
 func TestContentModerationCheck_AIChatUsesConfidenceThreshold(t *testing.T) {
@@ -848,7 +941,7 @@ func TestContentModerationCheck_AIChatPreBlockHonorsSynchronousBudget(t *testing
 	cfg.AIChat.BaseURL = server.URL + "/v1"
 	cfg.AIChat.APIKeys = []string{"deepseek-test-key"}
 	cfg.AIChat.TimeoutMS = 15000
-	cfg.AIChat.SynchronousBudgetMS = 250
+	cfg.AIChat.SynchronousBudgetMS = minAIChatSynchronousBudgetMS
 	cfg.AIChat.RetryCount = 5
 	cfg.AIChat.FailurePolicy = ContentModerationFailurePolicyBlock
 	cfg.RecordNonHits = true
@@ -879,6 +972,243 @@ func TestContentModerationCheck_AIChatPreBlockHonorsSynchronousBudget(t *testing
 	require.Equal(t, 1, requestCount, "deadline exhaustion must not start another API-key retry")
 	logs := requireContentModerationLogCount(t, repo, 1)
 	require.Contains(t, strings.ToLower(logs[0].Error), "deadline")
+}
+
+func TestAIChatModerationAttemptBudget(t *testing.T) {
+	tests := []struct {
+		name       string
+		remaining  time.Duration
+		backoff    time.Duration
+		hasNextKey bool
+		want       time.Duration
+	}{
+		{
+			name:       "default budget reserves a full backup window",
+			remaining:  4800 * time.Millisecond,
+			backoff:    100 * time.Millisecond,
+			hasNextKey: true,
+			want:       3150 * time.Millisecond,
+		},
+		{
+			name:       "tight viable budget preserves minimum windows",
+			remaining:  1300 * time.Millisecond,
+			backoff:    100 * time.Millisecond,
+			hasNextKey: true,
+			want:       500 * time.Millisecond,
+		},
+		{
+			name:       "too little time stays with current key",
+			remaining:  1100 * time.Millisecond,
+			backoff:    100 * time.Millisecond,
+			hasNextKey: true,
+			want:       1100 * time.Millisecond,
+		},
+		{
+			name:       "no backup keeps the complete parent budget",
+			remaining:  4800 * time.Millisecond,
+			backoff:    100 * time.Millisecond,
+			hasNextKey: false,
+			want:       4800 * time.Millisecond,
+		},
+		{
+			name:       "expired budget remains exhausted",
+			remaining:  0,
+			backoff:    100 * time.Millisecond,
+			hasNextKey: true,
+			want:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, aiChatModerationAttemptBudget(tt.remaining, tt.backoff, tt.hasNextKey))
+		})
+	}
+}
+
+func TestContentModerationCallModeration_AIChatTimeoutUsesDistinctBackupKey(t *testing.T) {
+	var mu sync.Mutex
+	seenKeys := make([]string, 0, 2)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seenKeys = append(seenKeys, key)
+		mu.Unlock()
+		if key == "slow-key" {
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.01,\"categories\":[],\"signals\":[],\"reason\":\"benign\"}"}}]}`,
+			)),
+			Request: r,
+		}, nil
+	})}
+
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.BaseURL = "https://audit.test/v1"
+	cfg.AIChat.APIKeys = []string{"slow-key", "healthy-key"}
+	cfg.AIChat.RetryCount = 1
+	cfg.AIChat.CacheEnabled = false
+	cfg.AIChat.ReasoningEffort = "high"
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = client
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	result, err := svc.callModeration(ctx, cfg, "ordinary request", true)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NoError(t, ctx.Err(), "backup must finish before the global deadline")
+	mu.Lock()
+	gotKeys := append([]string(nil), seenKeys...)
+	mu.Unlock()
+	require.Equal(t, []string{"slow-key", "healthy-key"}, gotKeys)
+
+	loads := svc.preBlockAPIKeyLoads(cfg.apiKeys())
+	require.Len(t, loads, 2)
+	require.Equal(t, int64(0), loads[0].Active)
+	require.Equal(t, int64(1), loads[0].Total)
+	require.Equal(t, int64(1), loads[0].Errors)
+	require.Equal(t, int64(0), loads[1].Active)
+	require.Equal(t, int64(1), loads[1].Total)
+	require.Equal(t, int64(1), loads[1].Success)
+}
+
+func TestContentModerationCallModeration_AIChatTwoKeyTimeoutsStayWithinParentBudget(t *testing.T) {
+	var mu sync.Mutex
+	seenKeys := make([]string, 0, 3)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seenKeys = append(seenKeys, key)
+		mu.Unlock()
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.BaseURL = "https://audit.test/v1"
+	cfg.AIChat.APIKeys = []string{"slow-one", "slow-two"}
+	cfg.AIChat.RetryCount = 1
+	cfg.AIChat.CacheEnabled = false
+	cfg.AIChat.ReasoningEffort = "high"
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = client
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result, err := svc.callModeration(ctx, cfg, "ordinary request", true)
+	elapsed := time.Since(started)
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, elapsed, 2*time.Second)
+	mu.Lock()
+	gotKeys := append([]string(nil), seenKeys...)
+	mu.Unlock()
+	require.GreaterOrEqual(t, len(gotKeys), 2)
+	require.Equal(t, "slow-one", gotKeys[0])
+	for _, key := range gotKeys[1:] {
+		require.Equal(t, "slow-two", key, "the second logical attempt must use the distinct backup key")
+	}
+
+	loads := svc.preBlockAPIKeyLoads(cfg.apiKeys())
+	require.Len(t, loads, 2)
+	for _, load := range loads {
+		require.Equal(t, int64(0), load.Active)
+		require.Equal(t, int64(1), load.Total)
+		require.Equal(t, int64(1), load.Errors)
+	}
+}
+
+func TestContentModerationCallModeration_AIChatParentCancelDoesNotStartBackup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	seenKeys := make([]string, 0, 1)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seenKeys = append(seenKeys, key)
+		mu.Unlock()
+		cancel()
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.BaseURL = "https://audit.test/v1"
+	cfg.AIChat.APIKeys = []string{"first-key", "backup-key"}
+	cfg.AIChat.RetryCount = 1
+	cfg.AIChat.CacheEnabled = false
+	cfg.AIChat.ReasoningEffort = "high"
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = client
+
+	result, err := svc.callModeration(ctx, cfg, "ordinary request", true)
+
+	require.Nil(t, result)
+	require.ErrorIs(t, err, context.Canceled)
+	mu.Lock()
+	gotKeys := append([]string(nil), seenKeys...)
+	mu.Unlock()
+	require.Equal(t, []string{"first-key"}, gotKeys)
+	loads := svc.preBlockAPIKeyLoads(cfg.apiKeys())
+	require.Equal(t, int64(0), loads[0].Active)
+	require.Equal(t, int64(1), loads[0].Errors)
+	require.Equal(t, int64(0), loads[1].Total)
+}
+
+func TestContentModerationCallModeration_AIChatRetryCountZeroDoesNotStartBackup(t *testing.T) {
+	var mu sync.Mutex
+	seenKeys := make([]string, 0, 1)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seenKeys = append(seenKeys, key)
+		mu.Unlock()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"not-json"}}]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	cfg := defaultContentModerationConfig()
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.BaseURL = "https://audit.test/v1"
+	cfg.AIChat.APIKeys = []string{"first-key", "unused-key"}
+	cfg.AIChat.RetryCount = 0
+	cfg.AIChat.CacheEnabled = false
+	cfg.AIChat.ReasoningEffort = "high"
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = client
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := svc.callModeration(ctx, cfg, "ordinary request", true)
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	mu.Lock()
+	gotKeys := append([]string(nil), seenKeys...)
+	mu.Unlock()
+	require.Equal(t, []string{"first-key"}, gotKeys)
+	loads := svc.preBlockAPIKeyLoads(cfg.apiKeys())
+	require.Equal(t, int64(0), loads[0].Active)
+	require.Equal(t, int64(1), loads[0].Errors)
+	require.Equal(t, int64(0), loads[1].Total)
 }
 
 func TestContentModerationCheck_RecordsExtractionFailures(t *testing.T) {
@@ -985,6 +1315,29 @@ func TestContentModerationCallModeration_AIChatCachesSuccessfulResult(t *testing
 	}
 }
 
+func TestModerationAPIResultCacheJSONPreservesCategories(t *testing.T) {
+	for _, categories := range [][]string{
+		{},
+		{"cyber_abuse", "policy_evasion"},
+	} {
+		original := moderationAPIResult{
+			Flagged:        len(categories) > 0,
+			CategoryScores: map[string]float64{"ai_risk": 0.8},
+			Categories:     append([]string{}, categories...),
+			Signals:        []string{"progressive_escalation"},
+		}
+		raw, err := json.Marshal(original)
+		require.NoError(t, err)
+		var restored moderationAPIResult
+		require.NoError(t, json.Unmarshal(raw, &restored))
+		require.Equal(t, original.Categories, restored.Categories)
+	}
+
+	var upstream moderationAPIResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"results":[{"flagged":false,"categories":{"hate":false},"category_scores":{"hate":0.01}}]}`), &upstream))
+	require.Len(t, upstream.Results, 1, "the cache-only field must not conflict with OpenAI's object-shaped categories")
+}
+
 func TestContentModerationCallModeration_AIChatIncompleteReviewIsNotCached(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1085,6 +1438,132 @@ func TestContentModerationCheckSync_AIChatIncompleteReviewDefersRiskAndSideEffec
 	require.Equal(t, "high", task.config.AIChat.ReasoningEffort)
 	require.NotEmpty(t, task.config.AIChat.cacheKeyAlias)
 	require.Equal(t, int64(1), svc.preBlockErrors.Load())
+}
+
+func TestContentModerationCheckSync_AIChatIncompleteReviewQueueFullPersistsEvidence(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []any{map[string]any{"message": map[string]any{
+					"role":    "assistant",
+					"content": `{"flagged":false,"risk_score":0.4,"categories":["cyber_abuse"],"signals":["ownership_unverified"],"reason":"needs full review"}`,
+				}}},
+			})
+			return
+		}
+		http.Error(w, "temporary audit failure", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	cache := &contentModerationTestHashCache{}
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(nil, nil, cache, nil, nil, nil, nil, nil)
+	svc.repo = repo
+	svc.httpClient = server.Client()
+	// An unbuffered queue makes the non-blocking supplemental send fail while
+	// still exercising the real queue-capacity path.
+	svc.asyncQueue = make(chan contentModerationTask)
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.BaseURL = server.URL + "/v1"
+	cfg.AIChat.APIKeys = []string{"deepseek-test-key"}
+	cfg.AIChat.ReasoningEffort = "adaptive"
+	cfg.AIChat.FailurePolicy = ContentModerationFailurePolicyAllow
+	cfg.AIChat.RiskLevelsEnabled = true
+	cfg.AIChat.SessionRiskEnabled = true
+	cfg.normalize()
+	input := ContentModerationCheckInput{
+		RequestID: "req-incomplete-queue-full",
+		UserID:    17,
+		APIKeyID:  19,
+		SessionID: "conversation-queue-full",
+		Protocol:  ContentModerationProtocolOpenAIResponses,
+		Endpoint:  "/v1/responses",
+	}
+	content := ContentModerationInput{Text: "ambiguous request", CurrentText: "ambiguous request"}
+
+	decision := svc.checkSync(context.Background(), input, cfg, content, content.Hash(), nil, true)
+
+	require.True(t, decision.Allowed)
+	require.False(t, decision.Blocked)
+	require.Equal(t, int64(1), svc.asyncDropped.Load())
+	require.Empty(t, cache.sessionStates)
+	require.Empty(t, cache.results)
+	require.Empty(t, cache.snapshotRecorded())
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, ContentModerationAuditStatusIncomplete, logs[0].AuditStatus)
+	require.Equal(t, "audit_review_incomplete", logs[0].AuditCode)
+	require.Contains(t, logs[0].Error, "supplemental_queue_unavailable")
+	require.False(t, logs[0].Flagged)
+	require.Equal(t, ContentModerationSideEffectStatusNotApplicable, logs[0].SideEffectStatus)
+	require.Equal(t, ContentModerationNotificationStatusNotRequired, logs[0].NotificationStatus)
+}
+
+func TestContentModerationCheckSync_AIChatIncompleteReviewFailurePolicyBlockReturnsUnavailable(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []any{map[string]any{"message": map[string]any{
+					"role":    "assistant",
+					"content": `{"flagged":false,"risk_score":0.4,"categories":["cyber_abuse"],"signals":["ownership_unverified"],"reason":"needs full review"}`,
+				}}},
+			})
+			return
+		}
+		http.Error(w, "temporary audit failure", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	cache := &contentModerationTestHashCache{}
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(nil, nil, cache, nil, nil, nil, nil, nil)
+	svc.repo = repo
+	svc.httpClient = server.Client()
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.AuditProvider = ContentModerationProviderAIChat
+	cfg.AIChat.BaseURL = server.URL + "/v1"
+	cfg.AIChat.APIKeys = []string{"deepseek-test-key"}
+	cfg.AIChat.ReasoningEffort = "adaptive"
+	cfg.AIChat.FailurePolicy = ContentModerationFailurePolicyBlock
+	cfg.AIChat.RiskLevelsEnabled = true
+	cfg.AIChat.SessionRiskEnabled = true
+	cfg.normalize()
+	input := ContentModerationCheckInput{
+		RequestID: "req-incomplete-fail-closed",
+		UserID:    27,
+		APIKeyID:  29,
+		SessionID: "conversation-fail-closed",
+		Protocol:  ContentModerationProtocolOpenAIResponses,
+		Endpoint:  "/v1/responses",
+	}
+	content := ContentModerationInput{Text: "ambiguous request", CurrentText: "ambiguous request"}
+
+	decision := svc.checkSync(context.Background(), input, cfg, content, content.Hash(), nil, true)
+
+	require.False(t, decision.Allowed)
+	require.True(t, decision.Blocked)
+	require.Equal(t, ContentModerationActionUnavailable, decision.Action)
+	require.Equal(t, http.StatusServiceUnavailable, decision.StatusCode)
+	require.Empty(t, svc.asyncQueue)
+	require.Empty(t, cache.sessionStates)
+	require.Empty(t, cache.results)
+	require.Empty(t, cache.snapshotRecorded())
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, ContentModerationAuditStatusIncomplete, logs[0].AuditStatus)
+	require.Equal(t, "audit_review_incomplete", logs[0].AuditCode)
+	require.False(t, logs[0].Flagged)
+	require.Equal(t, ContentModerationSideEffectStatusNotApplicable, logs[0].SideEffectStatus)
+	require.Equal(t, ContentModerationNotificationStatusNotRequired, logs[0].NotificationStatus)
 }
 
 func TestContentModerationEnqueueAsync_SupplementalTaskIsMemoryBounded(t *testing.T) {
@@ -2113,6 +2592,64 @@ func TestBuildContentModerationTestAuditResult_UsesConfiguredThresholdsOnly(t *t
 	require.Equal(t, 0.65, result.HighestScore)
 	require.Equal(t, 0.65, result.CompositeScore)
 	require.Equal(t, 0.98, result.Thresholds["harassment"])
+	require.Equal(t, 0.65, result.RiskScore)
+	require.Empty(t, result.RiskTier)
+	require.Empty(t, result.Categories)
+	require.Empty(t, result.Signals)
+}
+
+func TestBuildContentModerationTestAuditResult_ExposesAIReviewDetails(t *testing.T) {
+	result := buildContentModerationTestAuditResult(&moderationAPIResult{
+		Flagged:          true,
+		CategoryScores:   map[string]float64{"ai_risk": 0.82, "credential_theft": 0.82},
+		Categories:       []string{"credential_theft"},
+		Signals:          []string{"ownership_unverified", "auth_bypass"},
+		Reason:           "请求绕过官方找回流程",
+		ReviewIncomplete: true,
+		ReviewError:      "supplemental review timeout",
+	}, map[string]float64{"ai_risk": 0.7}, 0.35, 0.7)
+
+	require.NotNil(t, result)
+	require.True(t, result.Flagged)
+	require.Equal(t, 0.82, result.RiskScore)
+	require.Equal(t, "high", result.RiskTier)
+	require.Equal(t, []string{"credential_theft"}, result.Categories)
+	require.Equal(t, []string{"ownership_unverified", "auth_bypass"}, result.Signals)
+	require.Equal(t, "请求绕过官方找回流程", result.Reason)
+	require.True(t, result.ReviewIncomplete)
+	require.Equal(t, "supplemental review timeout", result.ReviewError)
+}
+
+func TestBuildContentModerationTestAuditResult_WeakSignalsRemainLowTierAtHighRawScore(t *testing.T) {
+	result := buildContentModerationTestAuditResult(&moderationAPIResult{
+		Flagged:        false,
+		CategoryScores: map[string]float64{"ai_risk": 0.95},
+		Signals:        []string{"ownership_unverified"},
+		Reason:         "仅所有权尚未核实",
+	}, map[string]float64{"ai_risk": 0.7}, 0.35, 0.7)
+
+	require.NotNil(t, result)
+	require.False(t, result.Flagged)
+	require.Equal(t, 0.95, result.RiskScore)
+	require.Equal(t, "low", result.RiskTier)
+}
+
+func TestContentModerationConfigViewReportsPromptMetadataWithoutReplacingCustomPrompt(t *testing.T) {
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+
+	recommendedView := svc.configView(cfg)
+	require.NotEmpty(t, recommendedView.AIChat.RecommendedSystemPrompt)
+	require.Equal(t, "2026-08-04.v1", recommendedView.AIChat.RecommendedPromptVersion)
+	require.Equal(t, recommendedView.AIChat.RecommendedPromptVersion, recommendedView.AIChat.SystemPromptVersion)
+	require.True(t, recommendedView.AIChat.UsesRecommendedSystemPrompt)
+
+	cfg.AIChat.SystemPrompt = "管理员自定义审核提示词"
+	cfg.normalize()
+	customView := svc.configView(cfg)
+	require.Equal(t, "管理员自定义审核提示词", customView.AIChat.SystemPrompt)
+	require.Equal(t, "custom", customView.AIChat.SystemPromptVersion)
+	require.False(t, customView.AIChat.UsesRecommendedSystemPrompt)
 }
 
 func TestContentModerationCallModeration_400DoesNotFreezeAPIKey(t *testing.T) {
@@ -2225,6 +2762,91 @@ func TestContentModerationTestAPIKeys_400DoesNotFreezeAPIKey(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, result.Items[0].LastHTTPStatus)
 	require.Zero(t, result.Items[0].FailureCount)
 	require.Nil(t, result.Items[0].FrozenUntil)
+	require.Nil(t, result.AuditResult)
+	require.NotNil(t, result.AuditError)
+	require.Equal(t, "audit_request_failed", result.AuditError.Code)
+	require.Equal(t, http.StatusBadRequest, result.AuditError.HTTPStatus)
+}
+
+func TestContentModerationTestAPIKeys_HTTP200WithoutValidAuditResultReturnsStructuredError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{
+				"role":    "assistant",
+				"content": "not-json",
+			}}},
+		})
+	}))
+	defer server.Close()
+
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{}},
+		nil, nil, nil, nil, nil, nil, nil,
+	)
+	result, err := svc.TestAPIKeys(context.Background(), TestContentModerationAPIKeysInput{
+		APIKeys:       []string{"deepseek-test-key"},
+		AuditProvider: ContentModerationProviderAIChat,
+		BaseURL:       server.URL + "/v1",
+		Model:         "deepseek-v4-flash",
+		Prompt:        "test prompt",
+	})
+
+	require.NoError(t, err)
+	require.Nil(t, result.AuditResult)
+	require.NotNil(t, result.AuditError)
+	require.Equal(t, "audit_request_failed", result.AuditError.Code)
+	require.Equal(t, http.StatusOK, result.AuditError.HTTPStatus)
+	require.Contains(t, result.AuditError.Message, "JSON")
+	require.Len(t, result.Items, 1)
+	require.Equal(t, "error", result.Items[0].Status)
+	require.Equal(t, http.StatusOK, result.Items[0].LastHTTPStatus)
+}
+
+func TestContentModerationTestAPIKeys_UsesDraftRiskLevelSettingsAndLabelsRequestScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{
+				"role":    "assistant",
+				"content": `{"flagged":false,"risk_score":0.5,"categories":["other"],"signals":[],"reason":"manual review"}`,
+			}}},
+		})
+	}))
+	defer server.Close()
+
+	for _, tt := range []struct {
+		name         string
+		riskLevels   bool
+		wantRiskTier string
+	}{
+		{name: "draft levels enabled", riskLevels: true, wantRiskTier: "observe"},
+		{name: "draft levels disabled", riskLevels: false, wantRiskTier: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			riskLevels := tt.riskLevels
+			svc := NewContentModerationService(
+				&contentModerationTestSettingRepo{values: map[string]string{}},
+				nil, nil, nil, nil, nil, nil, nil,
+			)
+			result, err := svc.TestAPIKeys(context.Background(), TestContentModerationAPIKeysInput{
+				APIKeys:               []string{"deepseek-test-key"},
+				AuditProvider:         ContentModerationProviderAIChat,
+				BaseURL:               server.URL + "/v1",
+				Model:                 "deepseek-v4-flash",
+				Prompt:                "test prompt",
+				AIConfidenceThreshold: 0.7,
+				AIRiskLevelsEnabled:   &riskLevels,
+				AIObserveThreshold:    0.45,
+			})
+
+			require.NoError(t, err)
+			require.Nil(t, result.AuditError)
+			require.NotNil(t, result.AuditResult)
+			require.Equal(t, tt.wantRiskTier, result.AuditResult.RiskTier)
+			require.Equal(t, "request", result.AuditResult.Scope)
+		})
+	}
 }
 
 func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
@@ -2772,6 +3394,116 @@ func TestContentModerationUnbanUser_RestoresOwnedBanAndClearsRiskState(t *testin
 	require.Equal(t, []int64{1001}, cache.clearedUsers)
 	require.Equal(t, []int64{1001}, invalidator.userIDs)
 	require.Equal(t, []string{"clear", "invalidate"}, events)
+	epoch, epochErr := cache.GetContentModerationUserEpoch(context.Background(), 1001)
+	require.NoError(t, epochErr)
+	require.EqualValues(t, 1, epoch)
+}
+
+func TestContentModerationUnbanUser_FencesQueuedRecordAndSupplementalTasks(t *testing.T) {
+	userID := int64(1001)
+	disabledAt := time.Now().Add(-time.Hour)
+	disabledLogID := int64(42)
+	repo := &contentModerationTestRepo{
+		banOutcome: ContentModerationBanOutcomeApplied,
+		moderationState: &ContentModerationUserState{
+			UserID:                  userID,
+			ModerationOwnedDisabled: true,
+			DisabledLogID:           &disabledLogID,
+			DisabledAt:              &disabledAt,
+		},
+	}
+	baseCache := &contentModerationTestHashCache{sessionStates: map[string]voteairiskstate.State{
+		"old-session": {Score: 0.9},
+	}}
+	dedupe := &contentModerationEmailDedupeTestStore{}
+	cache := &contentModerationEmailIntegrationCache{
+		contentModerationTestHashCache:        baseCache,
+		contentModerationEmailDedupeTestStore: dedupe,
+	}
+	svc := NewContentModerationService(nil, repo, cache, nil, nil, nil, nil, &EmailService{})
+	cfg := defaultContentModerationConfig()
+	cfg.AutoBanEnabled = true
+	cfg.BanThreshold = 1
+	cfg.EmailOnHit = true
+
+	oldInput := ContentModerationCheckInput{RequestID: "old-request", UserID: userID, APIKeyID: 7, SessionID: "old-session"}
+	svc.captureContentModerationEpoch(context.Background(), &oldInput)
+	require.True(t, oldInput.ModerationEpochSet)
+	require.Zero(t, oldInput.ModerationEpoch)
+	oldRecord := contentModerationTask{
+		input:            oldInput,
+		inputHash:        strings.Repeat("a", 64),
+		log:              svc.buildLog(oldInput, cfg, ContentModerationActionBlock, true, "credential_theft", 0.95, map[string]float64{"credential_theft": 0.95}, "old blocked prompt", nil, nil, ""),
+		config:           cloneContentModerationConfig(cfg),
+		recordHash:       true,
+		applySideEffects: true,
+		enqueuedAt:       time.Now(),
+	}
+	oldSupplemental := contentModerationTask{
+		input:        oldInput,
+		content:      ContentModerationInput{Text: "old supplemental prompt"},
+		inputHash:    strings.Repeat("b", 64),
+		config:       cloneContentModerationConfig(cfg),
+		supplemental: true,
+		enqueuedAt:   time.Now(),
+	}
+
+	result, err := svc.UnbanUser(context.Background(), userID, ContentModerationUnbanModeRestoreAndClearRisk)
+	require.NoError(t, err)
+	require.True(t, result.Restored)
+	require.True(t, result.RiskStateCleared)
+
+	svc.processAsyncTask(context.Background(), cfg, 0, oldRecord)
+	svc.supplementalPending.Store(1)
+	svc.processAsyncTask(context.Background(), cfg, 0, oldSupplemental)
+	require.Empty(t, repo.logs, "pre-unban record task must not persist after unban")
+	require.Empty(t, cache.snapshotRecorded(), "pre-unban task must not restore the flagged hash")
+	require.Empty(t, cache.sessionStates, "pre-unban supplemental task must not restore session risk")
+	require.False(t, repo.moderationState.ModerationOwnedDisabled, "pre-unban task must not re-ban the user")
+	require.Empty(t, dedupe.snapshotCalls(), "pre-unban task must not reserve or send a notification")
+	require.Zero(t, svc.supplementalPending.Load())
+
+	cfg.EmailOnHit = false
+	newInput := ContentModerationCheckInput{RequestID: "new-request", UserID: userID, APIKeyID: 7, SessionID: "new-session"}
+	svc.captureContentModerationEpoch(context.Background(), &newInput)
+	require.EqualValues(t, 1, newInput.ModerationEpoch)
+	newRecord := contentModerationTask{
+		input:            newInput,
+		inputHash:        strings.Repeat("c", 64),
+		log:              svc.buildLog(newInput, cfg, ContentModerationActionBlock, true, "credential_theft", 0.95, map[string]float64{"credential_theft": 0.95}, "new blocked prompt", nil, nil, ""),
+		config:           cloneContentModerationConfig(cfg),
+		recordHash:       true,
+		applySideEffects: true,
+		enqueuedAt:       time.Now(),
+	}
+	svc.processAsyncTask(context.Background(), cfg, 0, newRecord)
+	require.Len(t, repo.logs, 1, "post-unban task must remain eligible")
+	require.Len(t, cache.snapshotRecorded(), 1)
+	require.True(t, repo.moderationState.ModerationOwnedDisabled, "post-unban violation may apply a new moderation-owned ban")
+}
+
+func TestContentModerationUnbanUser_RestoreOnlyAdvancesEpochWithoutClearingRisk(t *testing.T) {
+	userID := int64(1001)
+	disabledAt := time.Now().Add(-time.Hour)
+	disabledLogID := int64(42)
+	repo := &contentModerationTestRepo{moderationState: &ContentModerationUserState{
+		UserID:                  userID,
+		ModerationOwnedDisabled: true,
+		DisabledLogID:           &disabledLogID,
+		DisabledAt:              &disabledAt,
+	}}
+	cache := &contentModerationTestHashCache{sessionStates: map[string]voteairiskstate.State{"session": {Score: 0.9}}}
+	svc := NewContentModerationService(nil, repo, cache, nil, nil, nil, nil, nil)
+
+	result, err := svc.UnbanUser(context.Background(), userID, ContentModerationUnbanModeRestoreOnly)
+
+	require.NoError(t, err)
+	require.True(t, result.Restored)
+	require.False(t, result.RiskStateCleared)
+	require.NotEmpty(t, cache.sessionStates)
+	epoch, epochErr := cache.GetContentModerationUserEpoch(context.Background(), userID)
+	require.NoError(t, epochErr)
+	require.EqualValues(t, 1, epoch)
 }
 
 func TestContentModerationUnbanUser_RetriesFailedCleanupWithClearRiskOnly(t *testing.T) {

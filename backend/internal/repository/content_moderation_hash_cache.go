@@ -14,8 +14,9 @@ import (
 
 const contentModerationFlaggedHashSetKey = "content_moderation:flagged_hashes"
 const contentModerationResultCachePrefix = "content_moderation:result:v1:"
-const contentModerationSessionRiskPrefix = "content_moderation:session_risk:v1:"
-const contentModerationSessionRiskIndexPrefix = "content_moderation:session_risk_index:v1:"
+const contentModerationSessionRiskPrefix = "content_moderation:session_risk:v2:"
+const contentModerationSessionRiskIndexPrefix = "content_moderation:session_risk_index:v2:"
+const contentModerationUserEpochPrefix = "content_moderation:user_epoch:v1:"
 
 type contentModerationHashCache struct {
 	rdb *redis.Client
@@ -24,6 +25,7 @@ type contentModerationHashCache struct {
 var _ service.ContentModerationSessionRiskStore = (*contentModerationHashCache)(nil)
 var _ service.ContentModerationIndexedSessionRiskStore = (*contentModerationHashCache)(nil)
 var _ service.ContentModerationUserStateCleaner = (*contentModerationHashCache)(nil)
+var _ service.ContentModerationUserStateEpochStore = (*contentModerationHashCache)(nil)
 
 func NewContentModerationHashCache(rdb *redis.Client) service.ContentModerationHashCache {
 	return &contentModerationHashCache{rdb: rdb}
@@ -193,6 +195,28 @@ func (c *contentModerationHashCache) updateContentModerationSessionRisk(ctx cont
 
 func contentModerationSessionRiskIndexKey(userID int64) string {
 	return fmt.Sprintf("%s{%d}", contentModerationSessionRiskIndexPrefix, userID)
+}
+
+func (c *contentModerationHashCache) GetContentModerationUserEpoch(ctx context.Context, userID int64) (int64, error) {
+	if c == nil || c.rdb == nil || userID <= 0 {
+		return 0, nil
+	}
+	epoch, err := c.rdb.Get(ctx, contentModerationUserEpochKey(userID)).Int64()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return epoch, err
+}
+
+func (c *contentModerationHashCache) AdvanceContentModerationUserEpoch(ctx context.Context, userID int64) (int64, error) {
+	if c == nil || c.rdb == nil || userID <= 0 {
+		return 0, nil
+	}
+	return c.rdb.Incr(ctx, contentModerationUserEpochKey(userID)).Result()
+}
+
+func contentModerationUserEpochKey(userID int64) string {
+	return fmt.Sprintf("%s{%d}", contentModerationUserEpochPrefix, userID)
 }
 
 func contentModerationSessionRiskWatchKeys(redisKey, indexKey string) []string {

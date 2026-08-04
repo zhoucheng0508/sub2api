@@ -139,6 +139,7 @@ docs/*
 !docs/CUSTOMIZATION_DIFF_V0.1.169_CN.md
 !docs/CUSTOMIZATION_DIFF_V0.1.170_CN.md
 !docs/SUB2API_CUSTOM_UPGRADE_PROMPT_CN.md
+!docs/RISK_CONTROL_PR2_PR4_TEST_PLAN_CN.md
 !docs/legal/
 !docs/legal/*.md
 .serena/
