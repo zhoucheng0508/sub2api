@@ -454,6 +454,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			markPatchDelete("max_completion_tokens")
 		}
 		for _, unsupportedField := range []string{"prompt_cache_retention", "safety_identifier", "prompt_cache_options"} {
+			// CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): native GPT-5.6 API-key Responses passthrough.
+			if unsupportedField == "prompt_cache_options" && account.IsOpenAIApiKey() && isGPT56PromptCacheModel(upstreamModel) {
+				// Native GPT-5.6 Responses requests may explicitly provide this
+				// standard field. Preserve client intent; account-level automation is
+				// limited to the Chat Completions bridge.
+				continue
+			}
 			if gjson.GetBytes(body, unsupportedField).Exists() {
 				markPatchDelete(unsupportedField)
 			}

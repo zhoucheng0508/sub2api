@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -108,9 +110,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
+	cacheDiagnostics := openAIPromptCacheDiagnostics{Mode: openai_compat.PromptCacheModeOff, KeySource: "none"}
 	if promptCacheKey == "" && account.Type == AccountTypeOAuth && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
 		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, upstreamModel)
 		compatPromptCacheInjected = promptCacheKey != ""
+	}
+	if account.IsOpenAIApiKey() {
+		// CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): opt-in API-key account augmentation.
+		promptCacheKey, cacheDiagnostics = resolveOpenAIAPIKeyPromptCacheKey(c, account, body, &chatReq, upstreamModel, promptCacheKey)
 	}
 
 	// 3. Build the upstream (Responses API) body.
@@ -128,9 +135,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	isResponsesShape := !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()
 
 	var (
-		responsesReq  *apicompat.ResponsesRequest
-		responsesBody []byte
-		err           error
+		responsesReq   *apicompat.ResponsesRequest
+		responsesBody  []byte
+		cacheRetryBody []byte
+		err            error
 	)
 	if isResponsesShape {
 		responsesBody, err = sjson.SetBytes(body, "model", upstreamModel)
@@ -160,6 +168,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if effort := gjson.GetBytes(responsesBody, "reasoning.effort").String(); effort != "" {
 			responsesReq.Reasoning = &apicompat.ResponsesReasoning{Effort: effort}
 		}
+		cacheRetryBody = append([]byte(nil), responsesBody...)
 	} else {
 		// Normal path: convert Chat Completions → Responses.
 		// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
@@ -169,6 +178,18 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 		responsesReq.Model = upstreamModel
 		normalizeResponsesRequestServiceTier(responsesReq)
+		cacheRetryBody, err = json.Marshal(responsesReq)
+		if err != nil {
+			return nil, fmt.Errorf("marshal cache fallback responses request: %w", err)
+		}
+		if account.IsOpenAIApiKey() {
+			if existing := strings.TrimSpace(responsesReq.PromptCacheKey); existing == "" {
+				responsesReq.PromptCacheKey = strings.TrimSpace(promptCacheKey)
+			}
+			if err := applyGPT56ExplicitPromptCache(responsesReq, &cacheDiagnostics); err != nil {
+				return nil, fmt.Errorf("apply GPT-5.6 prompt cache: %w", err)
+			}
+		}
 		responsesBody, err = json.Marshal(responsesReq)
 		if err != nil {
 			return nil, fmt.Errorf("marshal responses request: %w", err)
@@ -187,6 +208,21 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		logFields = append(logFields,
 			zap.Bool("compat_prompt_cache_key_injected", true),
 			zap.String("compat_prompt_cache_key_sha256", hashSensitiveValueForLog(promptCacheKey)),
+		)
+	}
+	if account.IsOpenAIApiKey() {
+		logFields = append(logFields,
+			zap.String("prompt_cache_mode", string(cacheDiagnostics.Mode)),
+			zap.String("prompt_cache_key_source", cacheDiagnostics.KeySource),
+			zap.String("prompt_cache_key_hash", cacheDiagnostics.KeyHash),
+			zap.Int("prompt_cache_breakpoint_count", cacheDiagnostics.BreakpointCount),
+			zap.String("prompt_cache_options_mode", cacheDiagnostics.OptionsMode),
+			zap.Bool("cache_fields_auto_injected", cacheDiagnostics.CacheFieldsAutoInjected),
+			zap.Bool("cache_field_retry_stripped", false),
+			zap.String("inbound_endpoint", "/v1/chat/completions"),
+			zap.String("upstream_endpoint", "/v1/responses"),
+			zap.Int64("upstream_account_id", account.ID),
+			zap.String("final_upstream_model", upstreamModel),
 		)
 	}
 	logger.L().Debug("openai chat_completions: model mapping applied", logFields...)
@@ -232,6 +268,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				}
 			}
 		}
+		if !cacheDiagnostics.CacheFieldsAutoInjected {
+			cacheRetryBody = append(cacheRetryBody[:0], responsesBody...)
+		}
 	}
 
 	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
@@ -245,6 +284,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, policyErr
 	}
 	responsesBody = updatedBody
+	if cacheDiagnostics.CacheFieldsAutoInjected && len(cacheRetryBody) > 0 {
+		cacheRetryBody, policyErr = s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, cacheRetryBody)
+		if policyErr != nil {
+			return nil, policyErr
+		}
+	}
 
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
@@ -273,6 +318,37 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	resp, err := s.doOpenAIUpstream(c, upstreamReq, account, proxyURL)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+	}
+	if resp.StatusCode >= 400 && cacheDiagnostics.CacheFieldsAutoInjected && len(cacheRetryBody) > 0 {
+		respBody := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		if isAutoPromptCacheFieldRejection(resp.StatusCode, respBody) {
+			cacheDiagnostics.RetryStripped = true
+			fallbackPromptCacheKey := strings.TrimSpace(chatReq.PromptCacheKey)
+			fallbackCtx, releaseFallbackCtx := detachUpstreamContext(ctx)
+			fallbackReq, buildErr := s.buildUpstreamRequest(fallbackCtx, c, account, cacheRetryBody, token, true, fallbackPromptCacheKey, false)
+			releaseFallbackCtx()
+			if buildErr != nil {
+				return nil, fmt.Errorf("build prompt-cache compatibility retry: %w", buildErr)
+			}
+			if fallbackPromptCacheKey != "" {
+				apiKeyID := getAPIKeyIDFromContext(c)
+				fallbackReq.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, fallbackPromptCacheKey)))
+			}
+			logger.L().Info("openai chat_completions: retrying without auto-injected prompt cache fields",
+				zap.Int64("account_id", account.ID),
+				zap.String("prompt_cache_mode", string(cacheDiagnostics.Mode)),
+				zap.Bool("cache_field_retry_stripped", true),
+			)
+			resp, err = s.doOpenAIUpstream(c, fallbackReq, account, proxyURL)
+			if err != nil {
+				return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+			}
+			responsesBody = cacheRetryBody
+			promptCacheKey = fallbackPromptCacheKey
+		} else {
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 

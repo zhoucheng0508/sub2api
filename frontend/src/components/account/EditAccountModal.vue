@@ -1662,6 +1662,26 @@
         >
           {{ t('admin.accounts.openai.responsesModeTextDisabledHint') }}
         </div>
+        <!-- CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): OpenAI API Key opt-in configuration. -->
+        <div class="flex items-center justify-between gap-4" data-testid="openai-prompt-cache-settings">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.promptCacheMode') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.promptCacheModeDesc') }}
+            </p>
+          </div>
+          <div class="w-64">
+            <Select
+              v-model="openAIPromptCacheMode"
+              :options="openAIPromptCacheModeOptions"
+              :disabled="!openAITextGenerationCapabilityEnabled || openAIResponsesMode === 'force_chat_completions'"
+              data-testid="openai-prompt-cache-mode-select"
+            />
+          </div>
+        </div>
+        <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+          {{ t('admin.accounts.openai.promptCacheModeWarning') }}
+        </p>
         <div>
           <label class="input-label mb-2 block">{{ t('admin.accounts.openai.endpointCapabilities') }}</label>
           <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -2683,6 +2703,7 @@ import type {
   CheckMixedChannelResponse,
   OpenAICompactMode,
   OpenAIResponsesMode,
+  OpenAIPromptCacheMode,
   OpenAIEndpointCapability,
   OllamaCloudUsageState
 } from '@/types'
@@ -2930,6 +2951,7 @@ const openAILongContextBillingEnabled = ref(false)
 const editPlanType = ref<string>('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
+const openAIPromptCacheMode = ref<OpenAIPromptCacheMode>('off')
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -3064,6 +3086,11 @@ const openAIResponsesModeOptions = computed(() => [
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
 ])
+const openAIPromptCacheModeOptions = computed(() => [
+  { value: 'off', label: t('admin.accounts.openai.promptCacheModeOff') },
+  { value: 'key_only', label: t('admin.accounts.openai.promptCacheModeKeyOnly') },
+  { value: 'gpt56_explicit', label: t('admin.accounts.openai.promptCacheModeGPT56Explicit') }
+])
 const openAITextEndpointCapabilityLabel = computed(() => {
   if (openAIResponsesMode.value === 'force_responses') {
     return t('admin.accounts.openai.capabilityResponses')
@@ -3148,6 +3175,10 @@ const normalizeOpenAIResponsesMode = (mode: unknown): OpenAIResponsesMode => {
     return mode
   }
   return 'auto'
+}
+const normalizeOpenAIPromptCacheMode = (mode: unknown): OpenAIPromptCacheMode => {
+  if (mode === 'key_only' || mode === 'gpt56_explicit') return mode
+  return 'off'
 }
 const isOpenAIModelRestrictionDisabled = computed(() =>
   props.account?.platform === 'openai' && openaiPassthroughEnabled.value
@@ -3381,6 +3412,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   editPlanType.value = ''
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
+  openAIPromptCacheMode.value = 'off'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -3404,6 +3436,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     openAICompactMode.value = (extra?.openai_compact_mode as OpenAICompactMode) || 'auto'
     if (newAccount.type === 'apikey') {
       openAIResponsesMode.value = normalizeOpenAIResponsesMode(extra?.openai_responses_mode)
+      openAIPromptCacheMode.value = normalizeOpenAIPromptCacheMode(extra?.openai_prompt_cache_mode)
       openAIEndpointCapabilities.value = readOpenAIEndpointCapabilities(
         newAccount.credentials as Record<string, unknown> | undefined
       )
@@ -4688,6 +4721,15 @@ const handleSubmit = async () => {
         } else {
           newExtra.openai_responses_mode = openAIResponsesMode.value
         }
+			if (
+				openAITextGenerationCapabilityEnabled.value &&
+				openAIResponsesMode.value !== 'force_chat_completions' &&
+				openAIPromptCacheMode.value !== 'off'
+			) {
+				newExtra.openai_prompt_cache_mode = openAIPromptCacheMode.value
+			} else {
+				delete newExtra.openai_prompt_cache_mode
+			}
 		}
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100

@@ -237,6 +237,38 @@ frontend/src/views/admin/RiskControlView.vue
 
 完整专项测试矩阵见 `docs/RISK_CONTROL_PR2_PR4_TEST_PLAN_CN.md`。
 
+## 6.3 OpenAI API Key GPT-5.6 提示缓存优化
+
+本轮二开为支持 Responses API 的 OpenAI API Key 账号增加独立、默认关闭的
+`openai_prompt_cache_mode` 配置：
+
+- `off`：不自动生成缓存键或断点，保留客户端明确传入的标准字段；
+- `key_only`：按本地 API Key、上游账号、最终模型和稳定会话身份生成脱敏缓存键；
+- `gpt56_explicit`：在稳定键基础上，为 GPT-5.6 家族注入显式缓存策略和最多 4 个滚动断点。
+
+该功能只作用于 OpenAI API Key 的 Chat Completions → Responses 转换链路，不改变
+OAuth 缓存、原始 Chat 直转、账号代理、模型映射、Fast 计费、安全审计或故障切换。
+上游拒绝由 Sub2API 自动注入的缓存字段时，只使用同一账号和同一代理进行一次兼容
+重试；客户端主动提供的字段不会被静默删除。功能不需要数据库迁移，配置存储在
+`accounts.extra`。
+
+后续同步官方版本时，优先搜索：
+
+```text
+CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE)
+openai_prompt_cache_mode
+```
+
+独立实现主要位于：
+
+```text
+backend/internal/pkg/openai_compat/prompt_cache.go
+backend/internal/service/openai_apikey_prompt_cache.go
+```
+
+官方核心接入点仅限 Chat → Responses 转换、Responses 原生字段保留和账号创建/编辑
+界面，便于后续版本重放和冲突审查。
+
 ## 7. 发布工作流
 
 `.github/workflows/custom-image.yml` 在推送 `custom-v<版本>-<序号>` 标签时构建
@@ -314,5 +346,16 @@ go test -tags=integration ./...
 - 分组编辑界面显示“启用利润控制”；
 - 系统设置显示“启用风控中心”和内容审计配置入口；当前本地配置仍为关闭，因此风控页面按设计跳回系统设置；
 - 390 px 移动端视口下首页和分组页无横向溢出，浏览器控制台无应用错误。
+
+本轮 OpenAI API Key GPT-5.6 提示缓存优化补充验收：
+
+- `internal/pkg/apicompat`、`internal/pkg/openai_compat` 和 `internal/service` 缓存专项及回归测试通过；
+- 前端账号创建/编辑测试、二开专项测试、ESLint、`vue-tsc --noEmit` 和生产构建通过；
+- 构建并运行本地镜像 `sub2api-custom:0.1.170-prompt-cache-local`，应用容器健康，原 PostgreSQL、Redis 和数据挂载未替换；
+- 浏览器验证 OpenAI API Key 创建和编辑界面均显示“关闭”“仅稳定缓存键”“稳定缓存键 + 显式滚动断点”三个模式，默认关闭，边界说明完整；
+- 使用一次性 PostgreSQL、Redis、Sub2API 和本机 Mock Responses 上游完成隔离转发验证，未使用真实上游 API Key；
+- Mock 首次请求包含稳定缓存键、`prompt_cache_options.mode=explicit` 和 2 个显式断点，`service_tier=fast` 按现有策略规范化为 `priority`；
+- Mock 返回 `unsupported_parameter: prompt_cache_options` 后只发生一次兼容重试，重试移除系统自动字段，同时保留模型、消息角色、文本、顺序和 `service_tier=priority`；
+- 隔离验收容器、网络、临时数据库、Mock 脚本和抓包已删除；未创建 PR、未推送、未部署生产，也未产生外部 API 费用。
 
 本地测试库没有 API Key 和上游账号，因此本次无法执行真实模型请求、余额扣减、`gpt-5.6-luna`、`gpt-5.6-terra` 和 fast 2 倍计费的端到端验证。这些项目仍是生产切换前的业务验收项。

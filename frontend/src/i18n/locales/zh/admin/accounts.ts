@@ -601,6 +601,12 @@ export default {
         responsesModeForceResponses: '强制 Responses',
         responsesModeForceChatCompletions: '强制 Chat Completions',
         responsesModeTextDisabledHint: '未启用 Responses / Chat Completions 端点时，此设置不适用。',
+        promptCacheMode: 'GPT-5.6 提示缓存优化',
+        promptCacheModeDesc: '仅适用于支持 Responses API 的 OpenAI API Key 上游，不影响 OAuth 账号，也不等同于 Compact。',
+        promptCacheModeOff: '关闭',
+        promptCacheModeKeyOnly: '仅稳定缓存键',
+        promptCacheModeGPT56Explicit: '稳定缓存键 + 显式滚动断点',
+        promptCacheModeWarning: '第三方兼容服务如果不支持 GPT-5.6 的 prompt_cache_options 和缓存断点字段，请保持关闭。',
         endpointCapabilities: '端点能力',
         endpointCapabilitiesDesc:
           '用于调度筛选。文本端点会跟随上方 Responses API 支持显示为 Responses、Chat Completions 或自动模式；Embeddings 独立控制 /v1/embeddings。',
