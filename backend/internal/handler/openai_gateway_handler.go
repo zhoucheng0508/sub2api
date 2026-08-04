@@ -3265,6 +3265,8 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		if cmSvc != nil {
 			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
 				RequestID:       requestID,
+				SessionID:       sessionID,
+				InputHash:       requestPayloadHash,
 				UserID:          userID,
 				UserEmail:       userEmail,
 				APIKeyID:        apiKeyID,

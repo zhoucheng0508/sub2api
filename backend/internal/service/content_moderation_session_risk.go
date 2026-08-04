@@ -28,6 +28,13 @@ type contentModerationTierResult struct {
 	State           voteairiskstate.State
 }
 
+// ContentModerationIndexedSessionRiskStore lets production stores associate
+// opaque session and actor risk keys with a user. Legacy test stores can keep
+// implementing ContentModerationSessionRiskStore only.
+type ContentModerationIndexedSessionRiskStore interface {
+	UpdateContentModerationSessionRiskForUser(ctx context.Context, userID int64, key string, event voteairiskstate.Event, cfg voteairiskstate.Config) (voteairiskstate.State, error)
+}
+
 func (cfg *ContentModerationConfig) aiSessionRiskConfig() voteairiskstate.Config {
 	if cfg == nil {
 		return voteairiskstate.DefaultConfig()
@@ -123,6 +130,9 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 	if sessionKey == "" {
 		return out
 	}
+	if !shouldAccumulateContentModerationRisk(result, currentScore, riskCfg.BlockThreshold) {
+		return out
+	}
 	event := voteairiskstate.Event{
 		Score:       currentScore,
 		Categories:  moderationResultCategories(result),
@@ -131,7 +141,7 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 		SessionHash: sessionHash,
 		At:          time.Now().UTC(),
 	}
-	state, err := store.UpdateContentModerationSessionRisk(ctx, sessionKey, event, riskCfg)
+	state, err := updateContentModerationSessionRisk(ctx, store, input.UserID, sessionKey, event, riskCfg)
 	if err != nil {
 		slog.Warn("content_moderation.session_risk_update_failed", "error", err)
 		return out
@@ -145,7 +155,7 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 		actorCfg.BlockCooldown = 0
 		actorCfg.ModerateIncrement = 0.025
 		actorCfg.ElevatedIncrement = 0.05
-		actorState, actorErr := store.UpdateContentModerationSessionRisk(ctx, actorKey, event, actorCfg)
+		actorState, actorErr := updateContentModerationSessionRisk(ctx, store, input.UserID, actorKey, event, actorCfg)
 		if actorErr != nil {
 			slog.Warn("content_moderation.actor_risk_update_failed", "error", actorErr)
 		} else {
@@ -155,4 +165,37 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 	out.CumulativeScore = math.Min(1, out.CumulativeScore+out.ActorBonus)
 	out.Tier = voteairiskstate.TierForScore(out.CumulativeScore, riskCfg.ObserveThreshold, riskCfg.BlockThreshold)
 	return out
+}
+
+func updateContentModerationSessionRisk(
+	ctx context.Context,
+	store ContentModerationSessionRiskStore,
+	userID int64,
+	key string,
+	event voteairiskstate.Event,
+	cfg voteairiskstate.Config,
+) (voteairiskstate.State, error) {
+	if indexed, ok := store.(ContentModerationIndexedSessionRiskStore); ok && userID > 0 {
+		return indexed.UpdateContentModerationSessionRiskForUser(ctx, userID, key, event, cfg)
+	}
+	return store.UpdateContentModerationSessionRisk(ctx, key, event, cfg)
+}
+
+func shouldAccumulateContentModerationRisk(result *moderationAPIResult, score, blockThreshold float64) bool {
+	if result == nil || score >= blockThreshold {
+		return result != nil
+	}
+	if len(moderationResultCategories(result)) > 0 {
+		return true
+	}
+	weakSignalSeen := false
+	for _, signal := range result.Signals {
+		switch strings.TrimSpace(signal) {
+		case "defensive_context", "ownership_unverified":
+			weakSignalSeen = true
+		case "credential_access", "auth_bypass", "secret_extraction", "malware_delivery", "policy_evasion", "progressive_escalation":
+			return true
+		}
+	}
+	return !weakSignalSeen
 }

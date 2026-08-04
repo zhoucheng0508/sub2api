@@ -4,7 +4,11 @@ import { flushPromises, mount } from '@vue/test-utils'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 
 import RiskControlView from '../RiskControlView.vue'
-import type { ContentModerationConfig, UpdateContentModerationConfig } from '@/api/admin/riskControl'
+import type {
+  ContentModerationConfig,
+  ContentModerationLog,
+  UpdateContentModerationConfig,
+} from '@/api/admin/riskControl'
 
 const {
   getConfig,
@@ -17,8 +21,10 @@ const {
   getUserById,
   listAccounts,
   getAccountById,
+  unbanUser,
   showError,
   showSuccess,
+  showWarning,
 } = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateConfig: vi.fn(),
@@ -30,8 +36,10 @@ const {
   getUserById: vi.fn(),
   listAccounts: vi.fn(),
   getAccountById: vi.fn(),
+  unbanUser: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
+  showWarning: vi.fn(),
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -44,7 +52,7 @@ vi.mock('@/api/admin', () => ({
       testAPIKeys: vi.fn(),
       deleteFlaggedHash: vi.fn(),
       clearFlaggedHashes: vi.fn(),
-      unbanUser: vi.fn(),
+      unbanUser,
     },
     groups: {
       getAll: getGroups,
@@ -67,6 +75,7 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
     showSuccess,
+    showWarning,
   }),
 }))
 
@@ -82,6 +91,9 @@ vi.mock('vue-i18n', async () => {
       t: (key: string, params?: Record<string, string | number>) => {
         if (key === 'admin.riskControl.preBlockAPIKeyLoadSummary') {
           return `同步并发 ${params?.active} / 可用 Key ${params?.available}，累计 ${params?.total} 次，worker：${params?.workerActive} / ${params?.workerTotal}`
+        }
+        if (key === 'admin.riskControl.unbanPartialSuccess') {
+          return `partial success: ${params?.warning}`
         }
         return key.replace(/\{(\w+)\}/g, (_, token) => String(params?.[token] ?? `{${token}}`))
       },
@@ -168,6 +180,45 @@ const runtimeStatus = () => ({
   last_cleanup_deleted_non_hit: 0,
 })
 
+const moderationLog = (overrides: Partial<ContentModerationLog> = {}): ContentModerationLog => ({
+  id: 1,
+  request_id: 'req-1',
+  user_id: 7,
+  user_email: 'user@example.com',
+  api_key_id: 9,
+  api_key_name: 'test-key',
+  group_id: 11,
+  group_name: 'mixed',
+  endpoint: '/v1/responses',
+  provider: 'openai',
+  model: 'gpt-5.6-terra',
+  mode: 'pre_block',
+  action: 'block',
+  flagged: true,
+  highest_category: 'cyber_abuse',
+  highest_score: 0.91,
+  matched_keyword: '',
+  category_scores: { cyber_abuse: 0.91 },
+  threshold_snapshot: { cyber_abuse: 0.7 },
+  input_excerpt: 'test input',
+  upstream_latency_ms: 320,
+  error: '',
+  audit_status: 'success',
+  audit_code: 'audited',
+  audit_retryable: false,
+  violation_count: 3,
+  auto_banned: true,
+  email_sent: true,
+  side_effect_status: 'completed',
+  notification_status: 'sent',
+  side_effect_error: '',
+  moderation_ban_active: true,
+  user_status: 'disabled',
+  queue_delay_ms: 0,
+  created_at: '2026-08-04T00:00:00Z',
+  ...overrides,
+})
+
 const AppLayoutStub = { template: '<div><slot /></div>' }
 const BaseDialogStub = defineComponent({
   props: {
@@ -226,8 +277,10 @@ describe('admin RiskControlView', () => {
     getUserById.mockReset()
     listAccounts.mockReset()
     getAccountById.mockReset()
+    unbanUser.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
+    showWarning.mockReset()
 
     getConfig.mockResolvedValue(baseConfig())
     getStatus.mockResolvedValue(runtimeStatus())
@@ -236,6 +289,13 @@ describe('admin RiskControlView', () => {
     getProxies.mockResolvedValue([])
     listUsers.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
     listAccounts.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
+    unbanUser.mockResolvedValue({
+      user_id: 7,
+      status: 'active',
+      mode: 'restore_and_clear_risk',
+      restored: true,
+      risk_state_cleared: true,
+    })
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
       ...payload,
@@ -561,5 +621,171 @@ describe('admin RiskControlView', () => {
       'max-h-[280px]',
       'overflow-y-auto',
     ]))
+  })
+
+  it('renders a skipped audit as skipped even when diagnostic error text is present', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        action: 'skip',
+        flagged: false,
+        audit_status: 'skipped',
+        audit_code: 'empty_content',
+        audit_retryable: false,
+        error: 'request contains no auditable content',
+        side_effect_status: 'not_applicable',
+        notification_status: 'not_required',
+        auto_banned: false,
+        moderation_ban_active: false,
+        user_status: 'active',
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="audit-status-skipped"]').text()).toBe('admin.riskControl.auditStatusSkipped')
+    expect(wrapper.text()).not.toContain('admin.riskControl.auditStatusError')
+    expect(wrapper.text()).toContain('admin.riskControl.sideEffectStatus.not_applicable')
+    expect(wrapper.text()).toContain('admin.riskControl.notificationStatus.not_required')
+  })
+
+  it('uses restore and clear risk as the default moderation unban mode', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog()],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-moderation-unban"]').trigger('click')
+    await flushPromises()
+
+    const clearRiskMode = wrapper.get<HTMLInputElement>('[data-test="unban-mode-restore_and_clear_risk"]')
+    expect(clearRiskMode.element.checked).toBe(true)
+    await wrapper.get('[data-test="confirm-moderation-unban"]').trigger('click')
+    await flushPromises()
+
+    expect(unbanUser).toHaveBeenCalledWith(7, { mode: 'restore_and_clear_risk' })
+    expect(showSuccess).toHaveBeenCalledWith('admin.riskControl.unbanSuccessCleared')
+  })
+
+  it('retries risk-state cleanup after a partial unban and closes on success', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog()],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    unbanUser.mockResolvedValueOnce({
+      user_id: 7,
+      status: 'active',
+      mode: 'restore_and_clear_risk',
+      restored: true,
+      risk_state_cleared: false,
+      warning: 'Redis cleanup unavailable',
+    }).mockResolvedValueOnce({
+      user_id: 7,
+      status: 'active',
+      mode: 'clear_risk_only',
+      restored: false,
+      risk_state_cleared: true,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-moderation-unban"]').trigger('click')
+    await wrapper.get('[data-test="confirm-moderation-unban"]').trigger('click')
+    await flushPromises()
+
+    expect(showWarning).toHaveBeenCalledWith('partial success: Redis cleanup unavailable')
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="unban-partial-warning"]').text()).toContain('Redis cleanup unavailable')
+    expect(wrapper.find('[data-test="confirm-moderation-unban"]').exists()).toBe(false)
+    await wrapper.get('[data-test="retry-moderation-risk-clear"]').trigger('click')
+    await flushPromises()
+
+    expect(unbanUser).toHaveBeenNthCalledWith(2, 7, { mode: 'clear_risk_only' })
+    expect(showSuccess).toHaveBeenCalledWith('admin.riskControl.riskStateCleanupRetrySuccess')
+    expect(wrapper.find('[data-test="unban-partial-warning"]').exists()).toBe(false)
+  })
+
+  it('does not offer moderation unban for an account disabled outside risk control', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        moderation_ban_active: false,
+        unban_block_reason: 'manual administrator suspension',
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="open-moderation-unban"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="unban-unavailable-reason"]').text()).toContain('manual administrator suspension')
+    expect(unbanUser).not.toHaveBeenCalled()
   })
 })

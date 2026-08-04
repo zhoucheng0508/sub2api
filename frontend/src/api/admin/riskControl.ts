@@ -8,6 +8,10 @@ export type AIAuditReasoningEffort = 'adaptive' | 'low' | 'high' | 'max'
 export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
 export type ContentModerationScopeFilterType = 'all' | 'include' | 'exclude'
+export type ContentModerationAuditStatus = 'success' | 'skipped' | 'incomplete' | 'error'
+export type ContentModerationSideEffectStatus = 'pending' | 'completed' | 'partial' | 'failed' | 'not_applicable'
+export type ContentModerationNotificationStatus = 'pending' | 'sent' | 'deduplicated' | 'not_required' | 'failed'
+export type ContentModerationUnbanMode = 'restore_only' | 'restore_and_clear_risk' | 'clear_risk_only'
 
 export interface ContentModerationModelFilter {
   type: ContentModerationModelFilterType
@@ -283,9 +287,17 @@ export interface ContentModerationLog {
   input_excerpt: string
   upstream_latency_ms: number | null
   error: string
+  audit_status: ContentModerationAuditStatus
+  audit_code: string
+  audit_retryable: boolean
   violation_count: number
   auto_banned: boolean
   email_sent: boolean
+  side_effect_status: ContentModerationSideEffectStatus
+  notification_status: ContentModerationNotificationStatus
+  side_effect_error: string
+  moderation_ban_active: boolean
+  unban_block_reason?: string
   user_status: string
   queue_delay_ms: number | null
   created_at: string
@@ -313,6 +325,14 @@ export interface ContentModerationLogsResponse {
 export interface ContentModerationUnbanUserResponse {
   user_id: number
   status: string
+  mode: ContentModerationUnbanMode
+  restored: boolean
+  risk_state_cleared: boolean
+  warning?: string
+}
+
+export interface ContentModerationUnbanUserRequest {
+  mode: ContentModerationUnbanMode
 }
 
 export interface DeleteFlaggedHashResponse {
@@ -357,9 +377,13 @@ export async function listLogs(
   return data
 }
 
-export async function unbanUser(userID: number): Promise<ContentModerationUnbanUserResponse> {
+export async function unbanUser(
+  userID: number,
+  payload: ContentModerationUnbanUserRequest = { mode: 'restore_and_clear_risk' }
+): Promise<ContentModerationUnbanUserResponse> {
   const { data } = await apiClient.post<ContentModerationUnbanUserResponse>(
-    `/admin/risk-control/users/${userID}/unban`
+    `/admin/risk-control/users/${userID}/unban`,
+    payload
   )
   return data
 }

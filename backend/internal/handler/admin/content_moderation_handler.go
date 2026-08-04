@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +98,10 @@ type contentModerationAPIKeyTestRequest struct {
 
 type contentModerationHashRequest struct {
 	InputHash string `json:"input_hash"`
+}
+
+type contentModerationUnbanRequest struct {
+	Mode string `json:"mode"`
 }
 
 func (h *ContentModerationHandler) GetConfig(c *gin.Context) {
@@ -265,7 +271,12 @@ func (h *ContentModerationHandler) UnbanUser(c *gin.Context) {
 		response.BadRequest(c, "Invalid user_id")
 		return
 	}
-	result, err := h.service.UnbanUser(c.Request.Context(), userID)
+	var req contentModerationUnbanRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	result, err := h.service.UnbanUser(c.Request.Context(), userID, req.Mode)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
