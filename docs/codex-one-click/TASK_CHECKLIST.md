@@ -4,7 +4,7 @@ Status legend: `[x]` complete, `[ ]` pending, `[~]` explicitly deferred.
 
 ## Repository And Coordination
 
-- [x] Work against the local `custom` branch and baseline `e83f49b99`.
+- [x] Work against the local `custom` branch; automatic-download follow-up baseline is `f706f9e6a`.
 - [x] Preserve pre-existing uncommitted changes.
 - [x] Use separate development and test agents with independent verification.
 - [x] Add a separate review agent for final code review.
@@ -25,6 +25,11 @@ Status legend: `[x]` complete, `[ ]` pending, `[~]` explicitly deferred.
 - [x] Add backup and rollback generation.
 - [x] Redact raw keys and generated Base64 payloads in previews.
 - [x] Add responsive desktop/mobile layouts.
+- [x] Resolve the latest CC Switch installer instead of navigating only to the Releases page.
+- [x] Support Windows, macOS, and Linux x64/ARM64 asset selection.
+- [x] Keep the official Releases fallback visible.
+- [x] Cache latest release metadata and deduplicate concurrent upstream requests.
+- [x] Reject user-controlled repositories, URLs, and unsafe GitHub asset paths.
 
 ## Remediation Work
 
@@ -50,3 +55,6 @@ Status legend: `[x]` complete, `[ ]` pending, `[~]` explicitly deferred.
 - [x] Independent reviewer P2 findings resolved and re-reviewed.
 - [x] Final reviewer verdict: PASS for release candidate validation.
 - [x] Run a real CC Switch external-protocol launch and validate the imported provider payload.
+- [x] Resolve the live CC Switch `v3.19.1` Windows installer through the local API.
+- [x] Confirm the GitHub asset redirects to an attachment response.
+- [x] Verify the download controls at desktop and 375 px viewport widths.

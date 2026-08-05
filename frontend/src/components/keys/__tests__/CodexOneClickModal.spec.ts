@@ -5,6 +5,8 @@ import { buildCodexSetupScript } from '@/utils/codexOneClick'
 
 const openSpy = vi.fn()
 const clipboardCopySpy = vi.hoisted(() => vi.fn())
+const resolveCCSwitchDownloadSpy = vi.hoisted(() => vi.fn())
+const startCCSwitchDownloadSpy = vi.hoisted(() => vi.fn())
 const mountedWrappers: Array<{ unmount: () => void }> = []
 
 vi.mock('vue-i18n', () => ({
@@ -15,11 +17,23 @@ vi.mock('@/composables/useClipboard', () => ({
   useClipboard: () => ({ copyToClipboard: clipboardCopySpy })
 }))
 
+vi.mock('@/api/downloads', () => ({
+  resolveCCSwitchDownload: resolveCCSwitchDownloadSpy,
+  startCCSwitchDownload: startCCSwitchDownloadSpy
+}))
+
 describe('CodexOneClickModal', () => {
   beforeEach(() => {
     openSpy.mockReset()
     clipboardCopySpy.mockReset()
     clipboardCopySpy.mockResolvedValue(true)
+    resolveCCSwitchDownloadSpy.mockReset()
+    resolveCCSwitchDownloadSpy.mockResolvedValue({
+      download_url: 'https://github.com/farion1231/cc-switch/releases/download/v3.19.1/CC-Switch-v3.19.1-Windows.msi',
+      file_name: 'CC-Switch-v3.19.1-Windows.msi',
+      release_url: 'https://github.com/farion1231/cc-switch/releases/tag/v3.19.1'
+    })
+    startCCSwitchDownloadSpy.mockReset()
     vi.stubGlobal('open', openSpy)
   })
 
@@ -73,7 +87,9 @@ describe('CodexOneClickModal', () => {
       'https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi'
     )
     expect(codexDownload.text()).toContain('keys.oneClick.downloadCodexWindows')
-    expect(ccSwitchDownload.attributes('href')).toBe(
+    expect(ccSwitchDownload.element.tagName).toBe('BUTTON')
+    expect(wrapper.get('[data-testid="cc-switch-arch-amd64"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="cc-switch-release-fallback"]').attributes('href')).toBe(
       'https://github.com/farion1231/cc-switch/releases/latest'
     )
     expect(codexDownload.attributes('rel')).toBe('noopener noreferrer')
@@ -90,6 +106,81 @@ describe('CodexOneClickModal', () => {
     )
     expect(wrapper.get('[data-testid="download-codex-app"]').text()).toContain('keys.oneClick.openCodexLinuxGuide')
     expect(wrapper.text()).toContain('keys.oneClick.officialAddressHint')
+  })
+
+  it('resolves the selected CC Switch installer and starts a same-page download', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="guide-os-linux"]').trigger('click')
+    await wrapper.get('[data-testid="cc-switch-arch-arm64"]').trigger('click')
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+
+    expect(resolveCCSwitchDownloadSpy).toHaveBeenCalledWith('linux', 'arm64', expect.any(AbortSignal))
+    expect(startCCSwitchDownloadSpy).toHaveBeenCalledWith(
+      'https://github.com/farion1231/cc-switch/releases/download/v3.19.1/CC-Switch-v3.19.1-Windows.msi'
+    )
+  })
+
+  it('shows a visible failure while keeping the official Releases fallback', async () => {
+    resolveCCSwitchDownloadSpy.mockRejectedValueOnce(new Error('unavailable'))
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="cc-switch-download-error"]').text()).toContain('keys.oneClick.ccSwitchDownloadFailed')
+    expect(wrapper.get('[data-testid="cc-switch-release-fallback"]').attributes('rel')).toBe('noopener noreferrer')
+    expect(startCCSwitchDownloadSpy).not.toHaveBeenCalled()
+  })
+
+  it('shows the fallback when starting the resolved download throws', async () => {
+    startCCSwitchDownloadSpy.mockImplementationOnce(() => {
+      throw new Error('navigation blocked')
+    })
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="cc-switch-download-error"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="cc-switch-release-fallback"]').attributes('href')).toBe(
+      'https://github.com/farion1231/cc-switch/releases/latest'
+    )
+  })
+
+  it('prevents duplicate resolution while a download is pending', async () => {
+    resolveCCSwitchDownloadSpy.mockReturnValueOnce(new Promise(() => {}))
+    const wrapper = mountModal()
+    const downloadButton = wrapper.get('[data-testid="download-cc-switch"]')
+
+    await downloadButton.trigger('click')
+    await downloadButton.trigger('click')
+
+    expect(resolveCCSwitchDownloadSpy).toHaveBeenCalledTimes(1)
+    expect(downloadButton.attributes('disabled')).toBeDefined()
+    expect(downloadButton.text()).toContain('keys.oneClick.resolvingCcSwitch')
+  })
+
+  it('does not navigate when the selected platform changes while resolution is pending', async () => {
+    let resolveRequest!: (value: { download_url: string; file_name: string; release_url: string }) => void
+    resolveCCSwitchDownloadSpy.mockReturnValueOnce(new Promise((resolve) => { resolveRequest = resolve }))
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+    await wrapper.get('[data-testid="guide-os-macos"]').trigger('click')
+    resolveRequest({ download_url: 'https://github.com/old', file_name: 'old', release_url: 'https://github.com/releases' })
+    await Promise.resolve()
+    await wrapper.vm.$nextTick()
+
+    expect(startCCSwitchDownloadSpy).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending download when the modal closes', async () => {
+    let resolveRequest!: (value: { download_url: string; file_name: string; release_url: string }) => void
+    resolveCCSwitchDownloadSpy.mockReturnValueOnce(new Promise((resolve) => { resolveRequest = resolve }))
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+    const signal = resolveCCSwitchDownloadSpy.mock.calls[0][2] as AbortSignal
+    await wrapper.setProps({ show: false })
+    expect(signal.aborted).toBe(true)
+
+    resolveRequest({ download_url: 'https://github.com/old', file_name: 'old', release_url: 'https://github.com/releases' })
+    await Promise.resolve()
+    expect(startCCSwitchDownloadSpy).not.toHaveBeenCalled()
   })
 
   it('keeps the guide key-free until step three starts the CC Switch import', async () => {

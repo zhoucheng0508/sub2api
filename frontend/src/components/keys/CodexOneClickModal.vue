@@ -102,16 +102,45 @@
                 <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('keys.oneClick.installCcSwitchDescription') }}</p>
                 <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ t('keys.oneClick.officialAddressHint') }}</p>
               </div>
-              <a
-                :href="CC_SWITCH_DOWNLOAD_URL"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="btn btn-secondary max-w-full shrink-0 whitespace-normal text-center"
+              <button
+                type="button"
+                :disabled="ccSwitchDownloadStatus === 'loading'"
+                class="btn btn-secondary max-w-full shrink-0 whitespace-normal text-center disabled:cursor-wait disabled:opacity-60"
                 data-testid="download-cc-switch"
+                @click="downloadCcSwitch"
               >
                 <Icon name="download" size="sm" />
-                {{ t('keys.oneClick.downloadCcSwitch') }}
-              </a>
+                {{ ccSwitchDownloadStatus === 'loading' ? t('keys.oneClick.resolvingCcSwitch') : t('keys.oneClick.downloadCcSwitch') }}
+              </button>
+            </div>
+            <div class="flex flex-wrap items-center justify-end gap-2 px-3 pb-2" data-testid="cc-switch-architecture">
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('keys.oneClick.architecture') }}</span>
+              <button
+                v-for="arch in ccSwitchArchitectures"
+                :key="arch.id"
+                type="button"
+                :aria-pressed="activeArch === arch.id"
+                :class="['btn min-h-7 px-2 py-0.5 text-xs', activeArch === arch.id ? 'btn-primary' : 'btn-secondary']"
+                :data-testid="`cc-switch-arch-${arch.id}`"
+                @click="activeArch = arch.id"
+              >
+                {{ arch.label }}
+              </button>
+              <a
+                :href="CC_SWITCH_RELEASE_URL"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="ml-1 text-xs font-medium text-gray-500 underline dark:text-gray-400"
+                data-testid="cc-switch-release-fallback"
+              >{{ t('keys.oneClick.openCcSwitchReleases') }}</a>
+            </div>
+            <div
+              v-if="ccSwitchDownloadStatus === 'error'"
+              class="flex flex-wrap items-center justify-end gap-2 px-3 pb-3 text-xs text-red-600 dark:text-red-400"
+              role="alert"
+              data-testid="cc-switch-download-error"
+            >
+              <span>{{ t('keys.oneClick.ccSwitchDownloadFailed') }}</span>
             </div>
             <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:gap-3">
               <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 text-sm font-medium text-gray-600 dark:border-dark-600 dark:text-gray-300">3</span>
@@ -232,6 +261,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { maskApiKey } from '@/utils/maskApiKey'
 import { buildCcSwitchImportDeeplink, buildCcSwitchUsageUrl } from '@/utils/ccswitchImport'
 import { useClipboard } from '@/composables/useClipboard'
+import { resolveCCSwitchDownload, startCCSwitchDownload, type CCSwitchArchitecture } from '@/api/downloads'
 import {
   DEFAULT_CODEX_MODEL,
   buildCodexSetupScript,
@@ -247,7 +277,7 @@ const CODEX_DOWNLOAD_URLS: Record<CodexOperatingSystem, string> = {
   macos: 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg',
   linux: 'https://learn.chatgpt.com/docs/codex/cli'
 }
-const CC_SWITCH_DOWNLOAD_URL = 'https://github.com/farion1231/cc-switch/releases/latest'
+const CC_SWITCH_RELEASE_URL = 'https://github.com/farion1231/cc-switch/releases/latest'
 
 const props = defineProps<{
   show: boolean
@@ -265,11 +295,15 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const activeMethod = ref<AccessMethod>('guide')
 const activeOs = ref<CodexOperatingSystem>('windows')
+const activeArch = ref<CCSwitchArchitecture>('amd64')
+const ccSwitchDownloadStatus = ref<'idle' | 'loading' | 'error'>('idle')
 const copyStatus = ref<'idle' | 'success' | 'error'>('idle')
 const { copyToClipboard: clipboardCopy } = useClipboard()
 const PROTOCOL_FAILURE_DELAY_MS = 1800
 let protocolCheckTimer: ReturnType<typeof setTimeout> | null = null
 let protocolListenersActive = false
+let ccSwitchDownloadController: AbortController | null = null
+let ccSwitchDownloadRequestId = 0
 
 const methods = computed(() => [
   { id: 'guide' as const, label: t('keys.oneClick.guide') },
@@ -280,6 +314,10 @@ const operatingSystems: Array<{ id: CodexOperatingSystem; label: string }> = [
   { id: 'macos', label: 'macOS' },
   { id: 'windows', label: 'Windows' },
   { id: 'linux', label: 'Linux' }
+]
+const ccSwitchArchitectures: Array<{ id: CCSwitchArchitecture; label: string }> = [
+  { id: 'amd64', label: 'x64' },
+  { id: 'arm64', label: 'ARM64' }
 ]
 const codexDownload = computed(() => ({
   url: CODEX_DOWNLOAD_URLS[activeOs.value],
@@ -306,15 +344,51 @@ watch(() => props.show, (show) => {
   if (show) {
     activeMethod.value = 'guide'
     activeOs.value = 'windows'
+    activeArch.value = 'amd64'
     copyStatus.value = 'idle'
+    ccSwitchDownloadStatus.value = 'idle'
   } else {
     clearProtocolCheck()
+    cancelCcSwitchDownload()
   }
 })
 
 watch(activeOs, () => {
   copyStatus.value = 'idle'
+  cancelCcSwitchDownload()
 })
+
+watch(activeArch, () => {
+  cancelCcSwitchDownload()
+})
+
+function cancelCcSwitchDownload(): void {
+  ccSwitchDownloadRequestId += 1
+  ccSwitchDownloadController?.abort()
+  ccSwitchDownloadController = null
+  ccSwitchDownloadStatus.value = 'idle'
+}
+
+async function downloadCcSwitch(): Promise<void> {
+  if (ccSwitchDownloadStatus.value === 'loading') return
+  const requestedOs = activeOs.value
+  const requestedArch = activeArch.value
+  const requestId = ++ccSwitchDownloadRequestId
+  const controller = new AbortController()
+  ccSwitchDownloadController = controller
+  ccSwitchDownloadStatus.value = 'loading'
+  try {
+    const download = await resolveCCSwitchDownload(requestedOs, requestedArch, controller.signal)
+    if (requestId !== ccSwitchDownloadRequestId || !props.show || activeOs.value !== requestedOs || activeArch.value !== requestedArch) return
+    startCCSwitchDownload(download.download_url)
+    ccSwitchDownloadStatus.value = 'idle'
+  } catch {
+    if (requestId !== ccSwitchDownloadRequestId || !props.show) return
+    ccSwitchDownloadStatus.value = 'error'
+  } finally {
+    if (requestId === ccSwitchDownloadRequestId) ccSwitchDownloadController = null
+  }
+}
 
 function getKeyboardTargetIndex(event: KeyboardEvent, currentIndex: number, length: number): number | null {
   switch (event.key) {
@@ -440,5 +514,6 @@ async function copyScript(): Promise<void> {
 
 onUnmounted(() => {
   clearProtocolCheck()
+  cancelCcSwitchDownload()
 })
 </script>

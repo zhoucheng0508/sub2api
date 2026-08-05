@@ -97,3 +97,46 @@ First review evidence also passed at 4 files / 49 focused tests, ESLint, TypeScr
 No code-review blocker remains in the agreed scope. Before production release, retain the normal final gate already defined by the delivery checklist: production build, desktop/mobile smoke flow, one real CC Switch launch on the target desktop environment, and confirmation that the six `docs/codex-one-click/*.md` artifacts are staged with the feature.
 
 Linux BusyBox/Alpine compatibility may proceed as a separately tracked follow-up and does not prevent this release.
+
+## 7. CC Switch automatic download review
+
+### Final verdict
+
+**PASS - no open P1, P2, or confirmed P3 finding.**
+
+The automatic-download implementation is suitable for release candidate validation. It resolves metadata only and sends the browser to a validated, versioned GitHub asset; the application server does not proxy installer bytes.
+
+### Security and behavior review
+
+- **Open redirect / arbitrary navigation: PASS.** `backend/internal/service/ccswitch_download_service.go:247` accepts only HTTPS `github.com` URLs with no user info, explicit port, query, or fragment, and requires the exact escaped path prefix `/farion1231/cc-switch/releases/download/`. The public request cannot supply a URL or repository. `frontend/src/api/downloads.ts:12` navigates only to the server-returned value after that validation.
+- **SSRF / arbitrary proxy: PASS.** `backend/internal/service/ccswitch_download_service.go:17` fixes the repository to `farion1231/cc-switch`. The handler accepts only the `os` and `arch` enums and never calls the generic download/proxy methods. The server returns JSON metadata rather than fetching the installer asset.
+- **Public handler surface: PASS.** `backend/internal/handler/ccswitch_download_handler.go:20` maps invalid enums to 400, a missing compatible asset to 404, and upstream failure to a generic 502 without exposing internal errors. The route is intentionally public and exposes only fixed-repository release metadata.
+- **Failure amplification and cache invalidation: PASS.** `backend/internal/service/ccswitch_download_service.go:80` uses `singleflight.DoChan`, a 15-minute success cache, one-minute negative cache, and stale-on-error behavior. No network call is made while the cache mutex is held. A service-owned 30-second context at line 90 prevents the first public caller from cancelling or poisoning the shared fetch, while lines 112-119 still let each caller stop waiting independently.
+- **Nil and upstream anomalies: PASS.** A nil release is converted to a cached upstream error at `backend/internal/service/ccswitch_download_service.go:96`, preventing a dereference panic. An invalid release page URL falls back to the fixed official Releases URL.
+- **GitHub asset URL validation: PASS.** Tests reject HTTP, wrong host, lookalike subdomain, user info, port, wrong repository, lookalike repository path, encoded path separator, and query-based redirect attempts. Checksum, signature, and source artifacts are excluded before selection.
+- **Current and future asset naming: PASS with safe fallback.** The reviewer queried the live fixed GitHub API during review: latest was `v3.19.1`, with neutral Windows x64 MSI, explicit Windows arm64 MSI, neutral macOS DMG, and explicit Linux x86_64/arm64 AppImages. `backend/internal/service/ccswitch_download_service_test.go:197` captures those real naming patterns. Unknown future names fail closed to 404, and the frontend always displays the fixed official Releases link.
+- **Architecture selection: PASS.** `backend/internal/service/ccswitch_download_service.go:207` requires explicit arm64 tokens for Windows and Linux, preventing an x64-neutral installer from being mislabeled as arm64. The neutral macOS DMG is deliberately allowed for both architectures because the current release publishes one universal DMG.
+- **Browser download and fallback: PASS.** `frontend/src/components/keys/CodexOneClickModal.vue:372` resolves the selected platform, then performs a same-page navigation to GitHub so the browser can follow GitHub's asset redirect and `Content-Disposition` behavior without loading a large installer Blob into application memory. The official Releases fallback is permanently visible at line 130, including when metadata resolution fails.
+- **Async cancellation and stale-result handling: PASS.** `frontend/src/components/keys/CodexOneClickModal.vue:362` aborts and invalidates pending requests on OS change, architecture change, modal close, and unmount. Lines 372-389 capture the requested selection and request ID, preventing an older response from downloading the wrong installer or navigating after the modal closes.
+
+### Remediations verified during review
+
+The first review pass identified four issues before implementation freeze; all were corrected before this final verdict:
+
+1. Public requests could have triggered sequential upstream calls during GitHub failure. Resolved with singleflight, negative caching, and stale-on-error.
+2. The first caller's cancellation could have poisoned the shared cache. Resolved with `context.WithoutCancel` plus a bounded service timeout and a regression test.
+3. Architecture-neutral Windows/Linux packages could have been selected for arm64. Resolved by requiring explicit arm64 markers outside macOS.
+4. Changing selection or closing the modal during resolution could have navigated to a stale installer. Resolved with AbortController and request/selection guards.
+
+### Independent verification
+
+- Backend service and handler download tests: **PASS**.
+- Frontend CC Switch import and modal suites: **PASS**, 2 files / 39 tests.
+- Frontend ESLint on changed download files: **PASS**.
+- `vue-tsc --noEmit`: **PASS**.
+- Backend service, handler, route, and server compilation checks: **PASS**.
+- `git diff --check`: **PASS**.
+
+### Release recommendation
+
+**Approve CC Switch automatic download for release candidate validation.** No review blocker remains. The final smoke gate should click each supported OS/architecture combination against the live resolver, confirm GitHub starts the expected asset download, and confirm the permanent official Releases fallback remains usable when the resolver is unavailable.

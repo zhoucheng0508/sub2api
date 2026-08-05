@@ -9,7 +9,7 @@ Final result: **PASS**. Independent testing and two-pass code review found no op
 - Date: 2026-08-05
 - Repository: `D:\sub2api`
 - Branch: `custom`
-- Baseline HEAD: `e83f49b99`
+- Automatic-download follow-up baseline: `f706f9e6a`
 - Frontend: `http://127.0.0.1:5173/keys`
 - Backend: `http://127.0.0.1:18080`
 
@@ -30,6 +30,15 @@ Focused suite distribution:
 - `codexOneClick.spec.ts`: 8 tests
 - `CodexOneClickModal.spec.ts`: 17 tests
 - `KeysView.spec.ts`: 12 tests
+
+Automatic-download follow-up results:
+
+| Test area | Result | Evidence |
+| --- | --- | --- |
+| CC Switch backend service and handler | PASS | Six platform variants, real v3.19.1 names, cache/concurrency/cancel, HTTP 200/400/404/502 |
+| CC Switch modal component | PASS | 23/23 tests |
+| Related backend package compilation | PASS | Handler, routes, and server packages |
+| TypeScript, full ESLint, production build | PASS | No new failures; only existing build warnings |
 
 ## Functional Test Matrix
 
@@ -52,6 +61,9 @@ Focused suite distribution:
 | F-15 | Delay protocol failure for 1.8 seconds | No premature failure before timeout | PASS |
 | F-16 | Blur or hide page during protocol launch | Pending failure is cancelled | PASS |
 | F-17 | Generate Codex config from production root variants | Exactly one `/v1` is written | PASS |
+| F-18 | Click Download CC Switch | Local resolver returns the current installer asset instead of the Releases page | PASS |
+| F-19 | Select x64 or ARM64 | Resolver uses the matching OS/architecture policy | PASS |
+| F-20 | Resolver fails or is unavailable | Official Releases fallback remains visible | PASS |
 
 ## Security Test Matrix
 
@@ -63,6 +75,8 @@ Focused suite distribution:
 | S-04 | CC Switch payload is built only after explicit action | PASS |
 | S-05 | No key output to console/localStorage/sessionStorage | PASS |
 | S-06 | Backup and rollback scripts are generated | PASS |
+| S-07 | User-controlled repository, URL, host, port, userinfo, query, or encoded path | Rejected |
+| S-08 | Concurrent requests and caller cancellation | Shared fetch is bounded and cancellation cannot poison the cache |
 
 ## Browser Results
 
@@ -74,11 +88,15 @@ Focused suite distribution:
 - Final post-review smoke used the current row `123`, verified the selected tab/tabpanel keyboard state, and repeated the stable 375 px layout check.
 - Real CC Switch protocol launch: PASS. The confirmation dialog received Codex, provider `Sub2API`, endpoint `https://ai.vote520.com/v1`, a masked selected key, model `gpt-5.6`, and enabled usage querying.
 - The imported local test key returned HTTP 401 when queried against the production domain, which is expected because local and production credentials are isolated. The production `/v1/usage` route was independently confirmed to exist and require authentication.
+- Automatic download smoke: the button called the local resolver with HTTP 200 and selected `CC-Switch-v3.19.1-Windows.msi`; GitHub returned an attachment redirect to `release-assets.githubusercontent.com` while the API key page remained open.
+- The download button, x64/ARM64 controls, and official fallback stayed visible and inside the dialog at 1280 x 720 and 375 x 812. The existing off-canvas sidebar can still contribute to document scroll width at the mobile breakpoint, but the one-click dialog controls themselves did not overflow.
+- No console errors or warnings were emitted by the automatic-download interaction.
 
 ## Service Results
 
 - Frontend API key page returned HTTP 200.
 - Backend health returned HTTP 200 with `{"status":"ok"}`.
+- Live download resolver returned HTTP 200 for Windows x64 and the current GitHub `v3.19.1` MSI metadata.
 
 ## Expected Warnings And Limitations
 
@@ -93,4 +111,5 @@ Focused suite distribution:
 - Initial review: three P2 findings covering Codex `/v1`, protocol detection, and ignored documents.
 - Remediation review: all three findings closed.
 - Final verdict: PASS for release candidate validation.
+- Automatic-download follow-up review: PASS with no open P1, P2, or confirmed P3 finding.
 - Full evidence: [CODE_REVIEW_REPORT.md](./CODE_REVIEW_REPORT.md).

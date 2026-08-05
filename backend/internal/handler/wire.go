@@ -188,6 +188,7 @@ func ProvideHandlers(
 	modelPlazaHandler *ModelPlazaHandler,
 	asyncImageHandler *AsyncImageHandler,
 	batchImageHandler *BatchImageHandler,
+	ccSwitchDownloadHandler *CCSwitchDownloadHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 ) *Handlers {
@@ -212,6 +213,7 @@ func ProvideHandlers(
 		ModelPlaza:       modelPlazaHandler,
 		AsyncImage:       asyncImageHandler,
 		BatchImage:       batchImageHandler,
+		CCSwitchDownload: ccSwitchDownloadHandler,
 	}
 }
 
@@ -237,6 +239,7 @@ var ProviderSet = wire.NewSet(
 	NewModelPlazaHandler,
 	NewAsyncImageHandler,
 	ProvideBatchImageHandler,
+	NewCCSwitchDownloadHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

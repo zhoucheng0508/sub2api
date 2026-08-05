@@ -754,6 +754,7 @@ var ProviderSet = wire.NewSet(
 	NewIdentityService,
 	NewCRSSyncService,
 	ProvideUpdateService,
+	NewCCSwitchDownloadService,
 	ProvideTokenRefreshService,
 	wire.Bind(new(GrokOAuthReconciler), new(*TokenRefreshService)),
 	ProvideAccountExpiryService,
