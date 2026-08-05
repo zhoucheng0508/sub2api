@@ -77,6 +77,8 @@ Desktop.ini
 # ===================
 # 临时文件
 # ===================
+__pycache__/
+*.py[cod]
 tmp/
 temp/
 *.tmp
@@ -111,6 +113,7 @@ backend/data/
 backend/config.yaml
 deploy/config.yaml
 backend/.installed
+tools/channel_status_watcher/
 
 # ===================
 # 其他
