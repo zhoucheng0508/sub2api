@@ -132,6 +132,9 @@ deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/codex-one-click/
+docs/codex-one-click/*
+!docs/codex-one-click/*.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md

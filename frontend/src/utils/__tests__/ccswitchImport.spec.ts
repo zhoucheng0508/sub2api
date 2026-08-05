@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   GROK_CC_SWITCH_MODEL,
   OPENAI_CC_SWITCH_CODEX_MODEL,
-  buildCcSwitchImportDeeplink
+  buildCcSwitchImportDeeplink,
+  buildCcSwitchUsageUrl
 } from '@/utils/ccswitchImport'
 import type { GroupPlatform } from '@/types'
 
@@ -13,7 +14,7 @@ function paramsFromDeeplink(deeplink: string): URLSearchParams {
 
 describe('ccswitchImport utils', () => {
   it('defaults OpenAI CC Switch imports to the current Codex model', () => {
-    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-5.5')
+    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-5.6')
   })
 
   it('defaults Grok Build imports to the current Grok model', () => {
@@ -27,10 +28,26 @@ describe('ccswitchImport utils', () => {
     usageScript: 'return true'
   }
 
-  it('adds the Codex model parameter for OpenAI imports', () => {
+  it.each([
+    'https://ai.vote520.com',
+    'https://ai.vote520.com/',
+    'https://ai.vote520.com/v1',
+    'https://ai.vote520.com/v1/',
+    '  https://ai.vote520.com/v1/  '
+  ])('builds one normalized /v1/usage URL for base URL %s', (baseUrl) => {
+    expect(buildCcSwitchUsageUrl(baseUrl)).toBe('https://ai.vote520.com/v1/usage')
+  })
+
+  it.each([
+    'https://ai.vote520.com',
+    'https://ai.vote520.com/',
+    'https://ai.vote520.com/v1',
+    'https://ai.vote520.com/v1/'
+  ])('adds the Codex model and one /v1 endpoint for OpenAI base URL %s', (baseUrl) => {
     const params = paramsFromDeeplink(
       buildCcSwitchImportDeeplink({
         ...baseInput,
+        baseUrl,
         platform: 'openai',
         clientType: 'claude'
       })
@@ -38,7 +55,8 @@ describe('ccswitchImport utils', () => {
 
     expect(params.get('resource')).toBe('provider')
     expect(params.get('app')).toBe('codex')
-    expect(params.get('endpoint')).toBe(baseInput.baseUrl)
+    expect(params.get('homepage')).toBe(baseUrl)
+    expect(params.get('endpoint')).toBe('https://ai.vote520.com/v1')
     expect(params.get('model')).toBe(OPENAI_CC_SWITCH_CODEX_MODEL)
     expect(atob(params.get('usageScript') || '')).toBe(baseInput.usageScript)
   })

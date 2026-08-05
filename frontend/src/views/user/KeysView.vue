@@ -3,6 +3,38 @@
     <TablePageLayout>
       <template #filters>
         <div class="flex flex-col gap-3">
+          <div
+            v-if="apiKeys.length > 0 && !isCodexBannerDismissed"
+            class="relative flex flex-col gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-3 pr-12 sm:flex-row sm:items-center sm:justify-between dark:border-primary-800 dark:bg-primary-950/30"
+            data-testid="codex-one-click-banner"
+          >
+            <div>
+              <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.bannerTitle') }}</p>
+              <p class="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
+                {{ eligibleCodexKey ? t('keys.oneClick.bannerDescription') : t('keys.oneClick.noEligibleKey') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              class="btn btn-primary shrink-0"
+              :disabled="!eligibleCodexKey"
+              :title="eligibleCodexKey ? t('keys.oneClick.action') : t('keys.oneClick.ineligibleHint')"
+              data-testid="codex-one-click-banner-action"
+              @click="openCodexOneClick(eligibleCodexKey)"
+            >
+              <Icon name="bolt" size="sm" />
+              {{ t('keys.oneClick.action') }}
+            </button>
+            <button
+              type="button"
+              class="absolute right-3 top-3 rounded-md p-1 text-gray-400 transition-colors hover:bg-white/70 hover:text-gray-700 dark:hover:bg-dark-800 dark:hover:text-gray-200"
+              :aria-label="t('keys.oneClick.dismissBanner')"
+              data-testid="dismiss-codex-one-click-banner"
+              @click="dismissCodexBanner"
+            >
+              <Icon name="x" size="sm" />
+            </button>
+          </div>
           <div class="flex flex-wrap items-center gap-3">
             <SearchInput
               v-model="filterSearch"
@@ -378,6 +410,21 @@
               >
                 <Icon name="terminal" size="sm" />
                 <span class="text-xs">{{ t('keys.useKey') }}</span>
+              </button>
+              <button
+                @click="openCodexOneClick(row)"
+                :disabled="!isCodexOneClickEligible(row)"
+                :class="[
+                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors',
+                  isCodexOneClickEligible(row)
+                    ? 'text-gray-500 hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20 dark:hover:text-primary-400'
+                    : 'cursor-not-allowed text-gray-300 dark:text-dark-600'
+                ]"
+                :title="isCodexOneClickEligible(row) ? t('keys.oneClick.action') : t('keys.oneClick.ineligibleHint')"
+                data-testid="codex-one-click-row"
+              >
+                <Icon name="bolt" size="sm" />
+                <span class="text-xs">{{ t('keys.oneClick.action') }}</span>
               </button>
               <!-- Import to CC Switch Button -->
               <button
@@ -998,6 +1045,16 @@
       @close="closeUseKeyModal"
     />
 
+    <CodexOneClickModal
+      :show="showCodexOneClick"
+      :api-key="codexOneClickKey?.key || ''"
+      :key-name="codexOneClickKey?.name || ''"
+      :base-url="codexBaseUrl"
+      :provider-name="(publicSettings?.site_name || 'sub2api').trim() || 'sub2api'"
+      @close="closeCodexOneClick"
+      @protocol-failed="appStore.showError(t('keys.ccSwitchNotInstalled'))"
+    />
+
     <!-- CCS Client Selection Dialog for Antigravity -->
     <BaseDialog
       :show="showCcsClientSelect"
@@ -1137,6 +1194,7 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import SearchInput from '@/components/common/SearchInput.vue'
 	import Icon from '@/components/icons/Icon.vue'
 	import UseKeyModal from '@/components/keys/UseKeyModal.vue'
+	import CodexOneClickModal from '@/components/keys/CodexOneClickModal.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
@@ -1147,8 +1205,10 @@ import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
 import {
   buildCcSwitchImportDeeplink,
+  buildCcSwitchUsageUrl,
   type CcSwitchClientType
 } from '@/utils/ccswitchImport'
+import { isCodexOneClickEligible } from '@/utils/codexOneClick'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1300,13 +1360,26 @@ const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
+const showCodexOneClick = ref(false)
 const showCcsClientSelect = ref(false)
 const showColumnDropdown = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
+const codexOneClickKey = ref<ApiKey | null>(null)
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
+const eligibleCodexKey = computed(() =>
+  apiKeys.value.find(isCodexOneClickEligible) || null
+)
+const codexBaseUrl = computed(() => publicSettings.value?.api_base_url || window.location.origin)
+const CODEX_BANNER_DISMISSED_KEY = 'sub2api_codex_one_click_banner_dismissed'
+const isCodexBannerDismissed = ref(localStorage.getItem(CODEX_BANNER_DISMISSED_KEY) === 'true')
+
+const dismissCodexBanner = () => {
+  isCodexBannerDismissed.value = true
+  localStorage.setItem(CODEX_BANNER_DISMISSED_KEY, 'true')
+}
 const dropdownRef = ref<HTMLElement | null>(null)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
@@ -1537,6 +1610,17 @@ const openUseKeyModal = (key: ApiKey) => {
 const closeUseKeyModal = () => {
   showUseKeyModal.value = false
   selectedKey.value = null
+}
+
+const openCodexOneClick = (key: ApiKey | null) => {
+  if (!key || !isCodexOneClickEligible(key)) return
+  codexOneClickKey.value = key
+  showCodexOneClick.value = true
+}
+
+const closeCodexOneClick = () => {
+  showCodexOneClick.value = false
+  codexOneClickKey.value = null
 }
 
 const handlePageChange = (page: number) => {
@@ -1886,10 +1970,11 @@ const importToCcswitch = (row: ApiKey) => {
 const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
   const baseUrl = publicSettings.value?.api_base_url || window.location.origin
   const platform = row.group?.platform || 'anthropic'
+  const usageUrl = buildCcSwitchUsageUrl(baseUrl)
 
   const usageScript = `({
     request: {
-      url: "{{baseUrl}}/v1/usage",
+      url: "${usageUrl}",
       method: "GET",
       headers: { "Authorization": "Bearer {{apiKey}}" }
     },
