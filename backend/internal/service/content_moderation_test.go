@@ -985,7 +985,7 @@ func TestContentModerationCheck_AIChatFailurePolicies(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "fail open allows upstream error", policy: ContentModerationFailurePolicyAllow, keys: []string{"deepseek-test-key"}},
-		{name: "fail closed blocks upstream error", policy: ContentModerationFailurePolicyBlock, keys: []string{"deepseek-test-key"}, wantStatus: http.StatusServiceUnavailable},
+		{name: "fail closed blocks upstream error", policy: ContentModerationFailurePolicyBlock, keys: []string{"deepseek-test-key"}, wantStatus: http.StatusForbidden},
 		{name: "fail closed blocks missing keys", policy: ContentModerationFailurePolicyBlock, wantStatus: http.StatusServiceUnavailable},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1025,6 +1025,7 @@ func TestContentModerationCheck_AIChatFailurePolicies(t *testing.T) {
 			} else {
 				require.False(t, decision.Allowed)
 				require.True(t, decision.Blocked)
+				require.False(t, decision.Flagged)
 				require.Equal(t, tt.wantStatus, decision.StatusCode)
 				require.Equal(t, ContentModerationActionUnavailable, decision.Action)
 				require.Len(t, repo.snapshotLogs(), 1)
@@ -1624,7 +1625,7 @@ func TestContentModerationCheckSync_AIChatIncompleteReviewQueueFullPersistsEvide
 	require.Equal(t, ContentModerationNotificationStatusNotRequired, logs[0].NotificationStatus)
 }
 
-func TestContentModerationCheckSync_AIChatIncompleteReviewFailurePolicyBlockReturnsUnavailable(t *testing.T) {
+func TestContentModerationCheckSync_AIChatIncompleteReviewFailurePolicyBlockReturnsPolicyStatus(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
@@ -1672,7 +1673,8 @@ func TestContentModerationCheckSync_AIChatIncompleteReviewFailurePolicyBlockRetu
 	require.False(t, decision.Allowed)
 	require.True(t, decision.Blocked)
 	require.Equal(t, ContentModerationActionUnavailable, decision.Action)
-	require.Equal(t, http.StatusServiceUnavailable, decision.StatusCode)
+	require.False(t, decision.Flagged)
+	require.Equal(t, cfg.BlockStatus, decision.StatusCode)
 	require.Empty(t, svc.asyncQueue)
 	require.Empty(t, cache.sessionStates)
 	require.Empty(t, cache.results)
@@ -2761,7 +2763,7 @@ func TestContentModerationConfigViewReportsPromptMetadataWithoutReplacingCustomP
 
 	recommendedView := svc.configView(cfg)
 	require.NotEmpty(t, recommendedView.AIChat.RecommendedSystemPrompt)
-	require.Equal(t, "2026-08-04.v1", recommendedView.AIChat.RecommendedPromptVersion)
+	require.Equal(t, voteaimoderation.RecommendedSystemPromptVersion, recommendedView.AIChat.RecommendedPromptVersion)
 	require.Equal(t, recommendedView.AIChat.RecommendedPromptVersion, recommendedView.AIChat.SystemPromptVersion)
 	require.True(t, recommendedView.AIChat.UsesRecommendedSystemPrompt)
 

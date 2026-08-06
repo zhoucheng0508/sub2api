@@ -106,6 +106,9 @@ func TestNormalizeAndClassifySystemPrompt(t *testing.T) {
 			t.Fatalf("recommended prompt is missing %s", section)
 		}
 	}
+	if got := len([]rune(RecommendedSystemPrompt)); got > 800 {
+		t.Fatalf("recommended prompt is not compact: chars=%d", got)
+	}
 	if version, active := ClassifySystemPrompt(RecommendedSystemPrompt); version != RecommendedSystemPromptVersion || !active {
 		t.Fatalf("recommended prompt classified as version=%q active=%v", version, active)
 	}
@@ -181,6 +184,21 @@ func TestParseResultNormalizesMisplacedRiskSignals(t *testing.T) {
 	}
 	if defensive.Flagged || len(defensive.Categories) != 0 || len(defensive.Signals) != 1 || defensive.Signals[0] != "defensive_context" {
 		t.Fatalf("misplaced weak signal was not normalized safely: %#v", defensive)
+	}
+}
+
+func TestParseResultNormalizesMisplacedCategories(t *testing.T) {
+	t.Parallel()
+
+	result, err := ParseResult(`{"flagged":true,"risk_score":0.9,"categories":[],"signals":["phishing","credential_access","phishing"],"reason":"credential capture"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Flagged || len(result.Categories) != 1 || result.Categories[0] != "phishing" {
+		t.Fatalf("misplaced category was not normalized: %#v", result)
+	}
+	if len(result.Signals) != 1 || result.Signals[0] != "credential_access" {
+		t.Fatalf("valid signal was not preserved and deduplicated: %#v", result)
 	}
 }
 
@@ -664,7 +682,7 @@ func TestAuditStageUsesFixedReasoningAndOutputBudgets(t *testing.T) {
 		wantTokens   int
 	}{
 		{stage: StageFast, wantThinking: "disabled", wantTokens: 111},
-		{stage: StageFull, wantThinking: "enabled", wantEffort: "high", wantTokens: 222},
+		{stage: StageFull, wantThinking: "disabled", wantTokens: 222},
 		{stage: StageMax, wantThinking: "enabled", wantEffort: "max", wantTokens: 333},
 	}
 	for _, tt := range tests {
@@ -697,6 +715,61 @@ func TestAuditStageUsesFixedReasoningAndOutputBudgets(t *testing.T) {
 				t.Fatalf("stage result=%#v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestAuditStageFastHedgesSlowPrimary(t *testing.T) {
+	t.Parallel()
+	requests := make(chan chatRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		requests <- request
+		if request.ResponseFormat != nil {
+			<-r.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"signals\":[],\"reason\":\"benign\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result, err := AuditStage(ctx, server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", FallbackInputChars: 100,
+	}, "test-key", strings.Repeat("safe input ", 50), StageFast, nil)
+	if err != nil || result == nil || result.Flagged {
+		t.Fatalf("hedged result=%#v err=%v", result, err)
+	}
+	if elapsed := time.Since(started); elapsed >= 750*time.Millisecond {
+		t.Fatalf("hedged fallback finished too late: %v", elapsed)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count=%d want=2", len(requests))
+	}
+}
+
+func TestAuditStageFullDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	requests := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := AuditStage(ctx, server.Client(), Config{BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash"}, "test-key", "safe input", StageFull, nil)
+	if err == nil {
+		t.Fatal("expected full-stage provider error")
+	}
+	if len(requests) != 1 {
+		t.Fatalf("request count=%d want=1", len(requests))
 	}
 }
 
@@ -1332,6 +1405,29 @@ func TestAuditReservesParentDeadlineForShortFallback(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= 900*time.Millisecond {
 		t.Fatalf("fallback did not complete inside the parent deadline: %v", elapsed)
+	}
+}
+
+func TestPrimaryAuditAttemptReservesProductionFallbackBudget(t *testing.T) {
+	t.Parallel()
+
+	parentDeadline := time.Now().Add(4800 * time.Millisecond)
+	ctx, cancelParent := context.WithDeadline(context.Background(), parentDeadline)
+	defer cancelParent()
+	retry := &fallbackBudget{available: true}
+	attemptCtx, cancelAttempt := primaryAuditAttemptContext(ctx, http.DefaultClient, retry)
+	defer cancelAttempt()
+	attemptDeadline, ok := attemptCtx.Deadline()
+	if !ok {
+		t.Fatal("primary attempt has no deadline")
+	}
+	reserved := parentDeadline.Sub(attemptDeadline)
+	if reserved < 1750*time.Millisecond || reserved > 2050*time.Millisecond {
+		t.Fatalf("fallback reserve=%v, want 1.75s..2.05s", reserved)
+	}
+	primaryBudget := time.Until(attemptDeadline)
+	if primaryBudget < 2700*time.Millisecond {
+		t.Fatalf("primary budget=%v, want at least 2.7s", primaryBudget)
 	}
 }
 

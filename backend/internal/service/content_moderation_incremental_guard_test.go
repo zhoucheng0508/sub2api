@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -386,8 +387,8 @@ func TestContentModerationGuard_CandidateForcesFullReviewAndPromotesOnlyAfterSem
 			ReasoningEffort string `json:"reasoning_effort"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-		require.Equal(t, "enabled", request.Thinking.Type)
-		require.Equal(t, "high", request.ReasoningEffort)
+		require.Equal(t, "disabled", request.Thinking.Type)
+		require.Empty(t, request.ReasoningEffort)
 		writeContentModerationGuardResult(
 			w, true, 0.91, []string{"credential_theft"}, []string{"auth_bypass"},
 			"requires semantic block",
@@ -876,6 +877,133 @@ func TestContentModerationGuard_FullReviewContainsExactlyOneAuditTarget(t *testi
 	require.Contains(t, plan.fullInput, "Earlier answer.")
 	require.Zero(t, strings.Count(plan.canonicalFullPrefix, "[AUDIT-TARGET-LOCATOR"))
 	require.Equal(t, 1, strings.Count(plan.canonicalFullPrefix, target))
+}
+
+func TestContentModerationGuard_PeriodicTrajectoryKeepsTenTurnsAndSamplesContent(t *testing.T) {
+	turns := make([]voteaiauditcontext.Turn, 0, 24)
+	for round := 1; round <= 12; round++ {
+		turns = append(turns,
+			voteaiauditcontext.Turn{Role: voteaiauditcontext.RoleUser, Text: fmt.Sprintf("user-%02d-%s", round, strings.Repeat("u", 240))},
+			voteaiauditcontext.Turn{Role: voteaiauditcontext.RoleAssistant, Text: fmt.Sprintf("assistant-%02d-%s", round, strings.Repeat("a", 160))},
+		)
+	}
+	targetIndex := len(turns) - 2
+	target := turns[targetIndex].Text
+	canonical, input := buildContentModerationPeriodicReviewInputForTurns(
+		turns, targetIndex, "user_request", target, voteaiauditcontext.State{TurnCount: 9},
+	)
+
+	require.Contains(t, canonical, "[PERIODIC-RISK-TRAJECTORY last_user_turns=10]")
+	require.NotContains(t, canonical, "user-02-")
+	require.Contains(t, canonical, "user-03-")
+	require.Contains(t, canonical, "user-12-")
+	require.Contains(t, canonical, "[CONTEXT OMITTED]")
+	require.Equal(t, 1, strings.Count(input, "[AUDIT-TARGET-LOCATOR"))
+	require.Less(t, len([]rune(input)), 3000)
+}
+
+func TestContentModerationGuard_PeriodicTrajectoryOnlyAppliesToSolePeriodicReason(t *testing.T) {
+	require.True(t, contentModerationUsesPeriodicTrajectory([]string{voteaiauditcontext.ReviewReasonPeriodic}))
+	require.False(t, contentModerationUsesPeriodicTrajectory([]string{
+		voteaiauditcontext.ReviewReasonPeriodic,
+		voteaiauditcontext.ReviewReasonRiskRise,
+	}))
+	require.False(t, contentModerationUsesPeriodicTrajectory([]string{voteaiauditcontext.ReviewReasonStrongSignal}))
+
+	plan := &contentModerationIncrementalPlan{
+		fullInput:           "full-input",
+		canonicalFullPrefix: "full-prefix",
+		periodicInput:       "periodic-input",
+		canonicalPeriodic:   "periodic-prefix",
+	}
+	plan.activatePeriodicTrajectory()
+	require.Equal(t, "periodic-input", plan.fullInput)
+	require.Equal(t, "periodic-prefix", plan.canonicalFullPrefix)
+	require.True(t, plan.fullHistoryTruncated)
+	require.True(t, plan.prefixCompacted)
+	require.False(t, plan.prefixHistoryRewrite)
+}
+
+func TestContentModerationGuard_PersistedAuditReasonDropsCleanLowRiskExplanation(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	result := &moderationAPIResult{
+		CategoryScores: map[string]float64{"ai_risk": 0.05},
+		Reason:         "请求为正常项目进度讨论",
+	}
+	require.Empty(t, contentModerationPersistedAuditReason(result, cfg))
+}
+
+func TestContentModerationGuard_PersistedAuditReasonKeepsRiskEvidence(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	tests := []moderationAPIResult{
+		{CategoryScores: map[string]float64{"ai_risk": 0.25}, Reason: "风险分达到历史阈值"},
+		{CategoryScores: map[string]float64{"ai_risk": 0.05}, Categories: []string{"cyber_abuse"}, Reason: "存在风险类别"},
+		{CategoryScores: map[string]float64{"ai_risk": 0.05}, Signals: []string{"defensive_context"}, Reason: "存在语义信号"},
+	}
+	for index := range tests {
+		require.Equal(t, tests[index].Reason, contentModerationPersistedAuditReason(&tests[index], cfg))
+	}
+}
+
+func TestContentModerationGuard_PeriodicOnlyReviewUsesCompactTrajectory(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeContentModerationGuardResult(w, false, 0.05, nil, nil, "benign")
+	}))
+	defer server.Close()
+
+	cfg := contentModerationGuardConfig(server.URL)
+	cfg.AIChat.IncrementalAuditEnabled = true
+	cfg.AIChat.PeriodicFullReviewTurns = 1
+	cfg.AIChat.CacheEnabled = false
+	svc, _ := newContentModerationGuardService(t, cfg, server, newContentModerationGuardCache())
+
+	result, plan, err := svc.callIncrementalAIChatAudit(context.Background(), ContentModerationCheckInput{
+		UserID: 81, APIKeyID: 91, SessionID: "periodic-compact", RequestID: "periodic-compact-1",
+	}, cfg, contentModerationGuardInput("ordinary project update"), false)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, voteaimoderation.StageFull, result.Stage)
+	require.Equal(t, int64(2), calls.Load())
+	require.Equal(t, []string{voteaiauditcontext.ReviewReasonPeriodic}, plan.escalationReasons)
+	require.Contains(t, plan.fullInput, "[PERIODIC-RISK-TRAJECTORY")
+	require.NotContains(t, plan.fullInput, "[CONVERSATION-HISTORY]")
+}
+
+func TestContentModerationGuard_StrongSignalKeepsFullHistoryEvenWhenPeriodic(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeContentModerationGuardResult(w, true, 0.95, []string{"policy_evasion"}, []string{"policy_evasion"}, "high risk")
+	}))
+	defer server.Close()
+
+	cfg := contentModerationGuardConfig(server.URL)
+	cfg.AIChat.IncrementalAuditEnabled = true
+	cfg.AIChat.PeriodicFullReviewTurns = 1
+	cfg.AIChat.CacheEnabled = false
+	svc, _ := newContentModerationGuardService(t, cfg, server, newContentModerationGuardCache())
+	content := contentModerationGuardInput("ordinary project update")
+	content.Turns = []ContentModerationTurn{
+		{Role: "user", Purpose: string(voteaiinputprovenance.PurposeSupportingContext), Text: strings.Repeat("historical context ", 80)},
+		{Role: "assistant", Purpose: string(voteaiinputprovenance.PurposeSupportingContext), Text: "ordinary answer"},
+		{Role: "user", Purpose: string(voteaiinputprovenance.PurposeAuditTarget), Text: "ordinary project update"},
+	}
+
+	result, plan, err := svc.callIncrementalAIChatAudit(context.Background(), ContentModerationCheckInput{
+		UserID: 82, APIKeyID: 92, SessionID: "periodic-strong", RequestID: "periodic-strong-1",
+	}, cfg, content, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, voteaimoderation.StageMax, result.Stage)
+	require.Equal(t, int64(2), calls.Load())
+	require.Contains(t, plan.escalationReasons, voteaiauditcontext.ReviewReasonPeriodic)
+	require.Contains(t, plan.escalationReasons, voteaiauditcontext.ReviewReasonStrongSignal)
+	require.Contains(t, plan.fullInput, "[CONVERSATION-HISTORY]")
+	require.NotContains(t, plan.fullInput, "[PERIODIC-RISK-TRAJECTORY")
 }
 
 func TestContentModerationGuard_FullReviewRedactsSecretsFromEveryHistoricalRole(t *testing.T) {

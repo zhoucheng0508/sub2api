@@ -2278,7 +2278,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
 		_ = s.repo.CreateLog(ctx, log)
 		if failClosed {
-			return contentModerationUnavailableDecision()
+			return contentModerationFailClosedAuditDecision(cfg)
 		}
 		if trackPreBlock && !cfg.AIChat.supplementalReview && cfg.AuditProvider == ContentModerationProviderAIChat &&
 			(errors.Is(err, voteaimoderation.ErrAuditTimeout) || errors.Is(err, voteaimoderation.ErrTemporary) || errors.Is(err, context.DeadlineExceeded)) {
@@ -2308,7 +2308,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, reviewError)
 			populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
 			_ = s.repo.CreateLog(ctx, log)
-			return contentModerationUnavailableDecision()
+			return contentModerationFailClosedAuditDecision(cfg)
 		}
 		if cfg.AIChat.supplementalReview {
 			// A supplemental task is the final bounded attempt. Persist one
@@ -2507,6 +2507,21 @@ func contentModerationUnavailableDecision() *ContentModerationDecision {
 		Blocked:    true,
 		Message:    "Content audit service is temporarily unavailable; please retry later",
 		StatusCode: http.StatusServiceUnavailable,
+		Action:     ContentModerationActionUnavailable,
+	}
+}
+
+func contentModerationFailClosedAuditDecision(cfg *ContentModerationConfig) *ContentModerationDecision {
+	status := http.StatusForbidden
+	if cfg != nil && cfg.BlockStatus >= 400 && cfg.BlockStatus <= 499 {
+		status = cfg.BlockStatus
+	}
+	return &ContentModerationDecision{
+		Allowed:    false,
+		Blocked:    true,
+		Flagged:    false,
+		Message:    "Content audit service is temporarily unavailable; request blocked by fail-closed policy",
+		StatusCode: status,
 		Action:     ContentModerationActionUnavailable,
 	}
 }

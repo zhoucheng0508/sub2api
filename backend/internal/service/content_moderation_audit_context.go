@@ -23,6 +23,11 @@ import (
 const (
 	contentModerationPinnedSystemChars = 2000
 	contentModerationPinnedUserChars   = 2000
+	periodicReviewUserTurns            = 10
+	periodicReviewTargetChars          = 512
+	periodicReviewUserChars            = 64
+	periodicReviewAssistantChars       = 32
+	periodicReviewSystemChars          = 128
 )
 
 type contentModerationIncrementalPlan struct {
@@ -32,6 +37,8 @@ type contentModerationIncrementalPlan struct {
 	fastInput            voteaiauditcontext.FastInput
 	fullInput            string
 	canonicalFullPrefix  string
+	periodicInput        string
+	canonicalPeriodic    string
 	latestUserText       string
 	stableSession        bool
 	fullHistoryAvailable bool
@@ -197,9 +204,87 @@ func (s *ContentModerationService) prepareIncrementalAudit(
 	plan.canonicalFullPrefix, plan.fullInput, inputTruncated, plan.prefixCompacted, plan.prefixHistoryRewrite = buildContentModerationFullReviewInputForTurns(
 		turns, targetIndex, content.AuditTargetKind, fullAuditTargetText, plan.state, cfg,
 	)
+	plan.canonicalPeriodic, plan.periodicInput = buildContentModerationPeriodicReviewInputForTurns(
+		turns, targetIndex, content.AuditTargetKind, fullAuditTargetText, plan.state,
+	)
 	plan.fullHistoryTruncated = inputTruncated
 	plan.inputTruncated = plan.inputTruncated || inputTruncated
 	return plan, nil
+}
+
+// buildContentModerationPeriodicReviewInputForTurns provides a compact
+// trajectory view only for clean sessions whose sole escalation reason is the
+// periodic guard. Risk-driven and forced reviews always retain fullInput.
+func buildContentModerationPeriodicReviewInputForTurns(
+	turns []voteaiauditcontext.Turn,
+	targetIndex int,
+	targetKind, targetText string,
+	state voteaiauditcontext.State,
+) (canonical, input string) {
+	targetKind = defaultContentModerationString(strings.TrimSpace(targetKind), "user_request")
+	targetText = voteaiauditcontext.RedactSecrets(strings.TrimSpace(targetText))
+	if targetIndex < 0 || targetIndex >= len(turns) {
+		turns = append(turns, voteaiauditcontext.Turn{Role: voteaiauditcontext.RoleUser, Text: targetText})
+		targetIndex = len(turns) - 1
+	}
+
+	start := targetIndex
+	userTurns := 0
+	for index := targetIndex; index >= 0; index-- {
+		if turns[index].Role == voteaiauditcontext.RoleUser {
+			userTurns++
+			if userTurns > periodicReviewUserTurns {
+				break
+			}
+		}
+		start = index
+	}
+
+	selected := append([]voteaiauditcontext.Turn(nil), turns[start:targetIndex+1]...)
+	visibleTarget := targetIndex - start
+	for index := range selected {
+		text := voteaiauditcontext.RedactSecrets(strings.TrimSpace(selected[index].Text))
+		limit := periodicReviewAssistantChars
+		switch selected[index].Role {
+		case voteaiauditcontext.RoleSystem:
+			limit = periodicReviewSystemChars
+		case voteaiauditcontext.RoleUser:
+			limit = periodicReviewUserChars
+		}
+		if index == visibleTarget {
+			text = targetText
+			limit = periodicReviewTargetChars
+		}
+		selected[index].Text = sampleContentModerationHeadMiddleTail(text, limit)
+		selected[index].Truncated = len([]rune(text)) > len([]rune(selected[index].Text))
+	}
+
+	targetRole := strings.ToUpper(strings.TrimSpace(string(selected[visibleTarget].Role)))
+	if targetRole == "" {
+		targetRole = "USER"
+	}
+	conversation := renderContentModerationAuditTurns(selected)
+	canonical = "[PERIODIC-RISK-TRAJECTORY last_user_turns=10]\n" + strings.TrimSpace(conversation)
+	input = canonical + "\n\n" + contentModerationAuditTargetLocator(targetKind, visibleTarget+1, targetRole)
+	if summary := contentModerationAuditStateSummary(state); summary != "" {
+		input += "\n\n" + summary
+	}
+	return canonical, input
+}
+
+func contentModerationUsesPeriodicTrajectory(reasons []string) bool {
+	return len(reasons) == 1 && reasons[0] == voteaiauditcontext.ReviewReasonPeriodic
+}
+
+func (plan *contentModerationIncrementalPlan) activatePeriodicTrajectory() {
+	if plan == nil || strings.TrimSpace(plan.periodicInput) == "" {
+		return
+	}
+	plan.fullInput = plan.periodicInput
+	plan.canonicalFullPrefix = plan.canonicalPeriodic
+	plan.fullHistoryTruncated = true
+	plan.prefixCompacted = true
+	plan.prefixHistoryRewrite = false
 }
 
 func lowWeightContentModerationActorState(state voteaiauditcontext.State) voteaiauditcontext.State {
@@ -888,6 +973,9 @@ func (s *ContentModerationService) callIncrementalAIChatAudit(
 		s.updateContentModerationAuditContext(ctx, input, cfg, plan, fastResult, false)
 		return fastResult, plan, nil
 	}
+	if contentModerationUsesPeriodicTrajectory(decision.Reasons) {
+		plan.activatePeriodicTrajectory()
+	}
 
 	stage := voteaimoderation.StageFull
 	if voteaiauditcontext.HasStrongSignal(fastResult.Signals) && fastResult.CategoryScores["ai_risk"] >= cfg.AIChat.ConfidenceThreshold {
@@ -952,7 +1040,7 @@ func (s *ContentModerationService) updateContentModerationAuditContext(
 		RiskScore:       result.CategoryScores["ai_risk"],
 		Categories:      append([]string(nil), result.Categories...),
 		Signals:         append([]string(nil), result.Signals...),
-		Reason:          result.Reason,
+		Reason:          contentModerationPersistedAuditReason(result, cfg),
 		RequestID:       input.RequestID,
 		PolicyVersion:   plan.policyVersion,
 		FullReview:      fullReview,
@@ -976,6 +1064,22 @@ func (s *ContentModerationService) updateContentModerationAuditContext(
 		return
 	}
 	plan.state = state
+}
+
+// Low-risk explanations remain in the audit log. Persisting them in session
+// state would make the next fast audit replay an otherwise unrelated user turn.
+func contentModerationPersistedAuditReason(result *moderationAPIResult, cfg *ContentModerationConfig) string {
+	if result == nil {
+		return ""
+	}
+	threshold := voteaiauditcontext.DefaultConfig().HistoryRiskThreshold
+	if cfg != nil {
+		threshold = cfg.auditContextConfig().HistoryRiskThreshold
+	}
+	if result.CategoryScores["ai_risk"] < threshold && len(result.Categories) == 0 && len(result.Signals) == 0 {
+		return ""
+	}
+	return result.Reason
 }
 
 func (s *ContentModerationService) recordContentModerationPrefixContinuity(state voteaiauditcontext.State) {

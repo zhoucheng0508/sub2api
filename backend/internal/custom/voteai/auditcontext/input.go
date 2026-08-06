@@ -58,6 +58,11 @@ func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State,
 	}
 
 	previousUserLimit := cfg.RecentUserTurns
+	if target.Kind == "user_request" && !requiresRecentHistory(target.Text, state, cfg) {
+		// A clean independent request does not benefit from replaying an older
+		// user turn. Risky or referential requests retain the configured window.
+		previousUserLimit = 1
+	}
 	if target.Kind == "user_request" && previousUserLimit > 0 {
 		// RecentUserTurns counts the audit target itself. Treating it as an
 		// additional-history limit leaks one extra user turn on every request.
@@ -180,6 +185,21 @@ func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State,
 		LastUserTruncated:   targetTruncated,
 		IncludedTurnIndexes: includedIndexes,
 	}, nil
+}
+
+func requiresRecentHistory(targetText string, state State, cfg Config) bool {
+	if NeedsPreviousContext(targetText) {
+		return true
+	}
+	tier := strings.ToLower(strings.TrimSpace(state.Tier))
+	if tier != "" && tier != TierLow {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(state.Trend), TrendRising) ||
+		state.CurrentScore >= cfg.HistoryRiskThreshold {
+		return true
+	}
+	return len(state.Categories) > 0 || len(state.Signals) > 0 || len(state.RecentReasons) > 0
 }
 
 func renderFastTargetInput(target AuditTarget, summary string, indexes []int, turns map[int]Turn, targetTruncated bool) string {

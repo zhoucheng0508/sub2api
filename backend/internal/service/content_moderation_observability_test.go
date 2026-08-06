@@ -330,12 +330,40 @@ func TestContentModerationAuditDetails_LegacyMissingBooleansRemainUnknown(t *tes
 	require.Nil(t, details.HasExplicitUserTurn)
 	require.Nil(t, details.TrustedClient)
 	require.Nil(t, details.InputTruncated)
+	require.Nil(t, details.PrefixContinuity)
+	require.Nil(t, details.PrefixBaseline)
 
 	encoded, err := json.Marshal(details)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), `"has_explicit_user_turn"`)
 	require.NotContains(t, string(encoded), `"trusted_client"`)
 	require.NotContains(t, string(encoded), `"input_truncated"`)
+	require.NotContains(t, string(encoded), `"prefix_continuity"`)
+	require.NotContains(t, string(encoded), `"prefix_baseline"`)
+}
+
+func TestPopulateContentModerationAuditDetails_EmitsFalsePrefixDiagnostics(t *testing.T) {
+	log := &ContentModerationLog{}
+	cfg := &ContentModerationConfig{AuditProvider: ContentModerationProviderAIChat}
+	plan := &contentModerationIncrementalPlan{
+		state: voteaiauditcontext.State{
+			PrefixEpoch:       2,
+			PrefixContinuity:  false,
+			PrefixBaseline:    false,
+			PrefixBreakReason: voteaiauditcontext.PrefixBreakHistoryRewritten,
+		},
+	}
+
+	populateContentModerationAuditDetails(log, cfg, ContentModerationInput{}, &moderationAPIResult{}, plan, false)
+
+	require.NotNil(t, log.AuditDetails.PrefixContinuity)
+	require.False(t, *log.AuditDetails.PrefixContinuity)
+	require.NotNil(t, log.AuditDetails.PrefixBaseline)
+	require.False(t, *log.AuditDetails.PrefixBaseline)
+	encoded, err := json.Marshal(log.AuditDetails)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"prefix_continuity":false`)
+	require.Contains(t, string(encoded), `"prefix_baseline":false`)
 }
 
 func TestRecordContentModerationAuditUsage_CountsIncompleteOrNonConservingUsageAsUnknown(t *testing.T) {
