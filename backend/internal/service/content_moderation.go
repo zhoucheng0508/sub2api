@@ -4697,19 +4697,6 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 	return &clone
 }
 
-func contentModerationConfigGeneration(cfg *ContentModerationConfig) [sha256.Size]byte {
-	if cfg == nil {
-		return [sha256.Size]byte{}
-	}
-	normalized := cloneContentModerationConfig(cfg)
-	normalized.normalize()
-	raw, err := json.Marshal(normalized)
-	if err != nil {
-		return [sha256.Size]byte{}
-	}
-	return sha256.Sum256(raw)
-}
-
 func contentModerationRuntimeGeneration(
 	cfg *ContentModerationConfig,
 	engineFingerprintSignals []openaipkg.EngineFingerprintSignal,

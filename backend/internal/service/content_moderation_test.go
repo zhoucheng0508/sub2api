@@ -127,7 +127,8 @@ func TestContentModerationSessionRisk_DoesNotAccumulateWeakDefensiveSignals(t *t
 		CategoryScores: map[string]float64{"ai_risk": 0.45, "cyber_abuse": 0.45},
 		Signals:        []string{"ownership_unverified", "auth_bypass"},
 	}
-	svc.applyAIChatRiskState(context.Background(), input, cfg, strong)
+	_, err := svc.applyAIChatRiskState(context.Background(), input, cfg, strong)
+	require.NoError(t, err)
 	require.NotEmpty(t, cache.sessionStates, "a supported strong signal must still accumulate")
 }
 

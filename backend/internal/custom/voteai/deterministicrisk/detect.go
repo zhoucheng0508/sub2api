@@ -113,7 +113,7 @@ func Detect(input Input) Result {
 
 	if combination, ok := completeNearbyCombination(targetEvidence); ok {
 		explicitExecution := hasExplicitHarmfulExecution(targetEvidence, combination)
-		if targetEvidence.authorizedDetected && !(explicitExecution && hasExplicitThirdParty(combination)) {
+		if targetEvidence.authorizedDetected && (!explicitExecution || !hasExplicitThirdParty(combination)) {
 			return makeResult(LevelCandidate, input.Target, targetEvidence, combination, metadataExcluded, "")
 		}
 		if !explicitExecution {
@@ -725,22 +725,6 @@ func containsToken(values []tokenMatch, target tokenMatch) bool {
 		}
 	}
 	return false
-}
-
-func clauseRange(matches []tokenMatch) (int, int) {
-	if len(matches) == 0 {
-		return 0, 0
-	}
-	minimum, maximum := matches[0].clause, matches[0].clause
-	for _, match := range matches[1:] {
-		if match.clause < minimum {
-			minimum = match.clause
-		}
-		if match.clause > maximum {
-			maximum = match.clause
-		}
-	}
-	return minimum, maximum
 }
 
 func spanWidth(matches []tokenMatch) int {

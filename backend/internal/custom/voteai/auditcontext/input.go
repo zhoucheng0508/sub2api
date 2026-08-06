@@ -184,34 +184,37 @@ func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State,
 
 func renderFastTargetInput(target AuditTarget, summary string, indexes []int, turns map[int]Turn, targetTruncated bool) string {
 	var builder strings.Builder
-	builder.WriteString("[AUDIT-TARGET kind=")
-	builder.WriteString(target.Kind)
-	builder.WriteString("]\n")
-	builder.WriteString(target.Text)
-	if targetTruncated {
-		builder.WriteString("\n")
-		builder.WriteString(sourceTruncatedMarker)
+	write := func(value string) {
+		_, _ = builder.WriteString(value)
 	}
-	builder.WriteString("\n\n[SUPPORTING-CONTEXT]")
+	write("[AUDIT-TARGET kind=")
+	write(target.Kind)
+	write("]\n")
+	write(target.Text)
+	if targetTruncated {
+		write("\n")
+		write(sourceTruncatedMarker)
+	}
+	write("\n\n[SUPPORTING-CONTEXT]")
 	if len(indexes) == 0 {
-		builder.WriteString("\nnone")
+		write("\nnone")
 	}
 	for _, index := range indexes {
 		turn, ok := turns[index]
 		if !ok {
 			continue
 		}
-		builder.WriteString("\n[")
-		builder.WriteString(strings.ToUpper(string(turn.Role)))
-		builder.WriteString("]\n")
-		builder.WriteString(turn.Text)
+		write("\n[")
+		write(strings.ToUpper(string(turn.Role)))
+		write("]\n")
+		write(turn.Text)
 		if turn.Truncated {
-			builder.WriteString("\n")
-			builder.WriteString(sourceTruncatedMarker)
+			write("\n")
+			write(sourceTruncatedMarker)
 		}
 	}
-	builder.WriteString("\n\n")
-	builder.WriteString(summary)
+	write("\n\n")
+	write(summary)
 	return builder.String()
 }
 
@@ -273,27 +276,6 @@ func formatSummary(state State, cfg Config, compact bool) string {
 		state.TurnCount, tier, clampScore(state.CurrentScore), clampScore(state.MaxScore), trend, categories, signals, reasonText,
 	)
 	return truncateRunes(summary, cfg.SummaryMaxChars, contentTruncatedMarker)
-}
-
-func renderFastInput(summary string, indexes []int, turns map[int]Turn) string {
-	var builder strings.Builder
-	builder.WriteString(summary)
-	builder.WriteString("\n\n[RECENT-CONTEXT]")
-	for _, index := range indexes {
-		turn, ok := turns[index]
-		if !ok {
-			continue
-		}
-		builder.WriteString("\n[")
-		builder.WriteString(strings.ToUpper(string(turn.Role)))
-		builder.WriteString("]\n")
-		builder.WriteString(turn.Text)
-		if turn.Truncated {
-			builder.WriteString("\n")
-			builder.WriteString(sourceTruncatedMarker)
-		}
-	}
-	return builder.String()
 }
 
 func normalizeTurnText(value string) string {

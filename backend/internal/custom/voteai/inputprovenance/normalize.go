@@ -227,9 +227,9 @@ func appendOutsideFragment(builder *strings.Builder, fragment string) {
 		return
 	}
 	if builder.Len() > 0 {
-		builder.WriteString("\n\n")
+		_, _ = builder.WriteString("\n\n")
 	}
-	builder.WriteString(fragment)
+	_, _ = builder.WriteString(fragment)
 }
 
 func hasContextHandoffShape(text string) bool {
