@@ -153,3 +153,44 @@ func TestExtractClientSessionID_InjectionHeaderDropped(t *testing.T) {
 	c.Request.Header.Set("session_id", "abc\r\nX-Injected: 1")
 	require.Equal(t, "", ExtractClientSessionID(c))
 }
+
+func TestExtractContentModerationSessionIdentity_HeaderPrecedesPromptCacheKey(t *testing.T) {
+	c := newSessionHeaderContext(t, map[string]string{"session_id": "  header-session  "})
+
+	sessionID, source := ExtractContentModerationSessionIdentity(c, []byte(`{"prompt_cache_key":"body-session"}`))
+
+	require.Equal(t, "header-session", sessionID)
+	require.Equal(t, ContentModerationSessionSourceHeader, source)
+}
+
+func TestExtractContentModerationSessionIdentity_UsesSanitizedPromptCacheKey(t *testing.T) {
+	c := newSessionHeaderContext(t, nil)
+
+	sessionID, source := ExtractContentModerationSessionIdentity(c, []byte(`{"prompt_cache_key":"  cache-session  ","request_id":"ignored"}`))
+
+	require.Equal(t, "cache-session", sessionID)
+	require.Equal(t, ContentModerationSessionSourcePromptCacheKey, source)
+}
+
+func TestExtractContentModerationSessionIdentity_InvalidOrAbsentIsNone(t *testing.T) {
+	c := newSessionHeaderContext(t, nil)
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "empty", body: nil},
+		{name: "invalid json", body: []byte(`{"prompt_cache_key":`)},
+		{name: "non string", body: []byte(`{"prompt_cache_key":123}`)},
+		{name: "nested only", body: []byte(`{"metadata":{"prompt_cache_key":"nested"}}`)},
+		{name: "request id only", body: []byte(`{"request_id":"req-1","message_id":"msg-1"}`)},
+		{name: "overlong", body: []byte(`{"prompt_cache_key":"` + strings.Repeat("x", maxPersistedSessionIDLength+1) + `"}`)},
+		{name: "oversized body", body: make([]byte, maxContentModerationExtractionBodyBytes+1)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionID, source := ExtractContentModerationSessionIdentity(c, tc.body)
+			require.Empty(t, sessionID)
+			require.Equal(t, ContentModerationSessionSourceNone, source)
+		})
+	}
+}

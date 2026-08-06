@@ -35,12 +35,13 @@ func TestContentModerationWeakSignalsDoNotAccumulateOrEscalateByScoreAlone(t *te
 	cfg := defaultContentModerationConfig()
 	cfg.AIChat.SessionRiskEnabled = true
 	cfg.AIChat.ActorRiskEnabled = true
-	result := (&ContentModerationService{hashCache: &contentModerationTestHashCache{}}).applyAIChatRiskState(
+	result, err := (&ContentModerationService{hashCache: &contentModerationTestHashCache{}}).applyAIChatRiskState(
 		context.Background(),
 		ContentModerationCheckInput{UserID: 10, APIKeyID: 20, SessionID: "weak-only"},
 		cfg,
 		weak,
 	)
+	require.NoError(t, err)
 	require.Equal(t, voteairiskstate.TierLow, result.Tier)
 	require.Equal(t, 0.95, result.CurrentScore)
 	require.Zero(t, result.CumulativeScore)
@@ -84,7 +85,9 @@ func TestContentModerationSessionRiskAccumulatesAndIsolatesIdentity(t *testing.T
 	var got contentModerationTierResult
 	for i := 0; i < 4; i++ {
 		input.RequestID = fmt.Sprintf("request-%d", i)
-		got = svc.applyAIChatRiskState(context.Background(), input, cfg, result)
+		var err error
+		got, err = svc.applyAIChatRiskState(context.Background(), input, cfg, result)
+		require.NoError(t, err)
 	}
 	require.Equal(t, voteairiskstate.TierHigh, got.Tier)
 	require.GreaterOrEqual(t, got.CumulativeScore, cfg.AIChat.ConfidenceThreshold)
@@ -92,7 +95,8 @@ func TestContentModerationSessionRiskAccumulatesAndIsolatesIdentity(t *testing.T
 	isolated := input
 	isolated.SessionID = "conversation-b"
 	isolated.RequestID = "isolated"
-	other := svc.applyAIChatRiskState(context.Background(), isolated, cfg, result)
+	other, err := svc.applyAIChatRiskState(context.Background(), isolated, cfg, result)
+	require.NoError(t, err)
 	require.Equal(t, voteairiskstate.TierObserve, other.Tier)
 	require.InDelta(t, 0.45, other.CumulativeScore, 0.001)
 }
@@ -114,7 +118,8 @@ func TestContentModerationSessionRisk_DoesNotAccumulateWeakDefensiveSignals(t *t
 	}
 
 	for range 8 {
-		svc.applyAIChatRiskState(context.Background(), input, cfg, weak)
+		_, err := svc.applyAIChatRiskState(context.Background(), input, cfg, weak)
+		require.NoError(t, err)
 	}
 	require.Empty(t, cache.sessionStates, "moderate defensive or ownership-only signals must not create sticky risk")
 
@@ -122,7 +127,8 @@ func TestContentModerationSessionRisk_DoesNotAccumulateWeakDefensiveSignals(t *t
 		CategoryScores: map[string]float64{"ai_risk": 0.45, "cyber_abuse": 0.45},
 		Signals:        []string{"ownership_unverified", "auth_bypass"},
 	}
-	svc.applyAIChatRiskState(context.Background(), input, cfg, strong)
+	_, err := svc.applyAIChatRiskState(context.Background(), input, cfg, strong)
+	require.NoError(t, err)
 	require.NotEmpty(t, cache.sessionStates, "a supported strong signal must still accumulate")
 }
 
@@ -176,7 +182,8 @@ func TestContentModerationSessionRiskPrecheckHonorsCooldown(t *testing.T) {
 			BlockedUntilUnix: time.Now().Add(10 * time.Minute).Unix(),
 		},
 	}
-	state, blocked := svc.getBlockedSessionRisk(context.Background(), input, cfg)
+	state, blocked, err := svc.getBlockedSessionRisk(context.Background(), input, cfg)
+	require.NoError(t, err)
 	require.True(t, blocked)
 	require.InDelta(t, 0.9, state.Score, 0.001)
 }
@@ -236,6 +243,35 @@ func (r *contentModerationTestSettingRepo) Delete(ctx context.Context, key strin
 	return nil
 }
 
+func TestContentModerationGetStatusExposesAuditUsageCounters(t *testing.T) {
+	svc := &ContentModerationService{
+		settingRepo: &contentModerationTestSettingRepo{values: map[string]string{}},
+	}
+	svc.auditFastCalls.Store(11)
+	svc.auditFullCalls.Store(7)
+	svc.auditMaxCalls.Store(3)
+	svc.auditResultCacheHits.Store(5)
+	svc.auditPromptTokens.Store(101)
+	svc.auditCachedInputTokens.Store(202)
+	svc.auditUncachedInputTokens.Store(303)
+	svc.auditOutputTokens.Store(404)
+	svc.auditUsageUnknown.Store(2)
+	svc.auditInputChars.Store(505)
+
+	status, err := svc.GetStatus(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(11), status.AuditFastCalls)
+	require.Equal(t, int64(7), status.AuditFullCalls)
+	require.Equal(t, int64(3), status.AuditMaxCalls)
+	require.Equal(t, int64(5), status.AuditResultCacheHits)
+	require.Equal(t, int64(101), status.AuditPromptTokens)
+	require.Equal(t, int64(202), status.AuditCachedInputTokens)
+	require.Equal(t, int64(303), status.AuditUncachedInputTokens)
+	require.Equal(t, int64(404), status.AuditOutputTokens)
+	require.Equal(t, int64(2), status.AuditUsageUnknown)
+	require.Equal(t, int64(505), status.AuditInputChars)
+}
+
 type contentModerationTestRepo struct {
 	mu              sync.Mutex
 	logs            []ContentModerationLog
@@ -273,6 +309,9 @@ func (r *contentModerationTestRepo) UpdateLogEffects(ctx context.Context, logID 
 		r.logs[idx].SideEffectStatus = patch.SideEffectStatus
 		r.logs[idx].NotificationStatus = patch.NotificationStatus
 		r.logs[idx].SideEffectError = patch.SideEffectError
+		if patch.AuditDetails != nil {
+			r.logs[idx].AuditDetails = *patch.AuditDetails
+		}
 		return nil
 	}
 	return fmt.Errorf("log %d not found", logID)
@@ -390,6 +429,7 @@ func requireRecordedHashCount(t *testing.T, cache *contentModerationTestHashCach
 type contentModerationTestHashCache struct {
 	mu            sync.Mutex
 	hashes        map[string]struct{}
+	suppressions  map[string]struct{}
 	recorded      []string
 	checked       []string
 	deleted       []string
@@ -397,11 +437,42 @@ type contentModerationTestHashCache struct {
 	hasResultUsed bool
 	results       map[string][]byte
 	resultTTLs    map[string]time.Duration
+	resultGetErr  error
+	resultSetErr  error
 	sessionStates map[string]voteairiskstate.State
+	sessionGetErr error
+	sessionPutErr error
 	clearedUsers  []int64
 	clearErr      error
 	onClear       func(int64)
 	epochs        map[int64]int64
+}
+
+type contentModerationSuppressionRaceCache struct {
+	*contentModerationTestHashCache
+}
+
+type contentModerationSuppressionErrorCache struct {
+	*contentModerationTestHashCache
+	err         error
+	recordCalls int
+}
+
+func (c *contentModerationSuppressionErrorCache) IsFlaggedInputHashSuppressed(context.Context, string) (bool, error) {
+	return false, c.err
+}
+
+func (c *contentModerationSuppressionErrorCache) RecordFlaggedInputHashIfAllowed(context.Context, string) (bool, error) {
+	c.recordCalls++
+	return true, nil
+}
+
+func (c *contentModerationSuppressionRaceCache) IsFlaggedInputHashSuppressed(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (c *contentModerationSuppressionRaceCache) RecordFlaggedInputHashIfAllowed(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 type contentModerationTestUserRepo struct {
@@ -573,14 +644,29 @@ func (i *contentModerationTestAuthCacheInvalidator) InvalidateAuthCacheByGroupID
 }
 
 func (c *contentModerationTestHashCache) RecordFlaggedInputHash(ctx context.Context, inputHash string) error {
+	_, err := c.RecordFlaggedInputHashIfAllowed(ctx, inputHash)
+	return err
+}
+
+func (c *contentModerationTestHashCache) RecordFlaggedInputHashIfAllowed(_ context.Context, inputHash string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, suppressed := c.suppressions[inputHash]; suppressed {
+		return false, nil
+	}
 	if c.hashes == nil {
 		c.hashes = map[string]struct{}{}
 	}
 	c.hashes[inputHash] = struct{}{}
 	c.recorded = append(c.recorded, inputHash)
-	return nil
+	return true, nil
+}
+
+func (c *contentModerationTestHashCache) IsFlaggedInputHashSuppressed(_ context.Context, inputHash string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, suppressed := c.suppressions[inputHash]
+	return suppressed, nil
 }
 
 func (c *contentModerationTestHashCache) HasFlaggedInputHash(ctx context.Context, inputHash string) (bool, error) {
@@ -598,6 +684,10 @@ func (c *contentModerationTestHashCache) DeleteFlaggedInputHash(ctx context.Cont
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deleted = append(c.deleted, inputHash)
+	if c.suppressions == nil {
+		c.suppressions = map[string]struct{}{}
+	}
+	c.suppressions[inputHash] = struct{}{}
 	if c.hashes == nil {
 		return false, nil
 	}
@@ -612,6 +702,12 @@ func (c *contentModerationTestHashCache) ClearFlaggedInputHashes(ctx context.Con
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	deleted := int64(len(c.hashes))
+	if c.suppressions == nil {
+		c.suppressions = map[string]struct{}{}
+	}
+	for inputHash := range c.hashes {
+		c.suppressions[inputHash] = struct{}{}
+	}
 	c.hashes = map[string]struct{}{}
 	return deleted, nil
 }
@@ -625,6 +721,9 @@ func (c *contentModerationTestHashCache) CountFlaggedInputHashes(ctx context.Con
 func (c *contentModerationTestHashCache) GetContentModerationResult(ctx context.Context, key string) ([]byte, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.resultGetErr != nil {
+		return nil, false, c.resultGetErr
+	}
 	value, ok := c.results[key]
 	return append([]byte(nil), value...), ok, nil
 }
@@ -632,6 +731,9 @@ func (c *contentModerationTestHashCache) GetContentModerationResult(ctx context.
 func (c *contentModerationTestHashCache) SetContentModerationResult(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.resultSetErr != nil {
+		return c.resultSetErr
+	}
 	if c.results == nil {
 		c.results = map[string][]byte{}
 	}
@@ -646,6 +748,9 @@ func (c *contentModerationTestHashCache) SetContentModerationResult(ctx context.
 func (c *contentModerationTestHashCache) GetContentModerationSessionRisk(ctx context.Context, key string) (voteairiskstate.State, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.sessionGetErr != nil {
+		return voteairiskstate.State{}, false, c.sessionGetErr
+	}
 	state, ok := c.sessionStates[key]
 	return state, ok, nil
 }
@@ -653,6 +758,9 @@ func (c *contentModerationTestHashCache) GetContentModerationSessionRisk(ctx con
 func (c *contentModerationTestHashCache) UpdateContentModerationSessionRisk(ctx context.Context, key string, event voteairiskstate.Event, cfg voteairiskstate.Config) (voteairiskstate.State, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.sessionPutErr != nil {
+		return voteairiskstate.State{}, c.sessionPutErr
+	}
 	if c.sessionStates == nil {
 		c.sessionStates = map[string]voteairiskstate.State{}
 	}
@@ -736,10 +844,11 @@ func TestBuildContentModerationLog_RedactsInputExcerpt(t *testing.T) {
 		Provider:  "openai",
 	}
 
-	log := svc.buildLog(input, cfg, ContentModerationActionAllow, true, "sexual", 0.8, map[string]float64{"sexual": 0.8}, "hello sk-proj-1234567890abcdef", nil, nil, "")
+	testAPIKey := strings.Join([]string{"sk", "proj", "1234567890abcdef"}, "-")
+	log := svc.buildLog(input, cfg, ContentModerationActionAllow, true, "sexual", 0.8, map[string]float64{"sexual": 0.8}, "hello "+testAPIKey, nil, nil, "")
 
-	require.NotContains(t, log.InputExcerpt, "sk-proj-1234567890abcdef")
-	require.Contains(t, log.InputExcerpt, "[已脱敏]")
+	require.NotContains(t, log.InputExcerpt, testAPIKey)
+	require.Contains(t, log.InputExcerpt, "[REDACTED_API_KEY]")
 }
 
 func TestRedactContentModerationSecrets_LongHexAndTokens(t *testing.T) {
@@ -750,8 +859,9 @@ func TestRedactContentModerationSecrets_LongHexAndTokens(t *testing.T) {
 	require.NotContains(t, out, "cf5bbdc4cd508f3aaf0d2070d529d4a4ac29099f8ecc357f696df28e1df91554")
 	require.NotContains(t, out, "abc123456789xyz")
 	require.NotContains(t, out, "eyJhbGciOiJIUzI1NiJ9")
-	require.NotContains(t, out, "https://example.com/private/path")
-	require.Contains(t, out, "[已脱敏]")
+	require.Contains(t, out, "https://example.com/private/path?token=[REDACTED]")
+	require.NotContains(t, out, "abc123")
+	require.Contains(t, out, "[REDACTED")
 }
 
 func TestContentModerationConfigNormalize_NonHitRetentionMaxThreeDays(t *testing.T) {
@@ -1307,7 +1417,17 @@ func TestContentModerationCallModeration_AIChatCachesSuccessfulResult(t *testing
 	require.NoError(t, err)
 	second, err := svc.callModeration(context.Background(), cfg, "same content")
 	require.NoError(t, err)
-	require.Equal(t, first, second)
+	require.False(t, first.ResultCacheHit)
+	require.NotEmpty(t, first.AuditKeyHash)
+	require.True(t, second.ResultCacheHit)
+	require.Empty(t, second.AuditKeyHash)
+	require.Zero(t, second.InputChars, "a result-cache hit does not send input to DeepSeek")
+	firstComparable := *first
+	secondComparable := *second
+	firstComparable.AuditKeyHash = ""
+	firstComparable.InputChars = 0
+	secondComparable.ResultCacheHit = false
+	require.Equal(t, firstComparable, secondComparable)
 	require.Equal(t, 1, requestCount)
 	require.Len(t, cache.results, 1)
 	for _, ttl := range cache.resultTTLs {
@@ -2272,11 +2392,12 @@ func TestBuildModerationTestInputRejectsMultipleImages(t *testing.T) {
 }
 
 func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMessage(t *testing.T) {
+	developerSecret := strings.Join([]string{"sk", "proj", "1234567890abcdef"}, "-")
 	body := []byte(`{
 		"model":"gpt-5.5",
 		"instructions":"instructions.....",
 		"input":[
-			{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer permissions sk-proj-1234567890abcdef"}]},
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer permissions ` + developerSecret + `"}]},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"first user prompt"}]},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"last user prompt"}]}
 		],
@@ -2862,9 +2983,15 @@ func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
 	require.NoError(t, err)
 
 	hashCache := &contentModerationTestHashCache{hashes: map[string]struct{}{}}
-	content := ContentModerationInput{Text: "[USER]\nblocked prompt", CurrentText: "blocked prompt"}
+	content := ContentModerationInput{
+		Text:            "[USER]\nblocked prompt",
+		CurrentText:     "blocked prompt",
+		AuditTargetText: "blocked prompt",
+		AuditTargetKind: "user_request",
+	}
 	content.Normalize()
-	hashCache.hashes[content.Hash()] = struct{}{}
+	hashText := content.AuditTargetHash(contentModerationAuditPolicyVersion(cfg))
+	hashCache.hashes[hashText] = struct{}{}
 
 	repo := &contentModerationTestRepo{}
 	userRepo := &contentModerationTestUserRepo{user: &User{ID: 1001, Status: StatusActive}}
@@ -2891,9 +3018,9 @@ func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
 	require.True(t, decision.Blocked)
 	require.Equal(t, ContentModerationActionHashBlock, decision.Action)
 	require.Equal(t, http.StatusConflict, decision.StatusCode)
-	require.Equal(t, content.Hash(), decision.InputHash)
+	require.Equal(t, hashText, decision.InputHash)
 	require.Contains(t, decision.Message, "命中历史风险输入")
-	require.Contains(t, decision.Message, content.Hash())
+	require.Contains(t, decision.Message, hashText)
 	require.Len(t, hashCache.snapshotChecked(), 1)
 	logs := requireContentModerationLogCount(t, repo, 1)
 	require.True(t, logs[0].Flagged)
@@ -3262,6 +3389,199 @@ func TestContentModerationDeleteFlaggedInputHash_NormalizesAndDeletes(t *testing
 	require.NoError(t, err)
 	require.Equal(t, existingHash, result.InputHash)
 	require.False(t, result.Deleted)
+}
+
+func TestContentModerationSuppressedHashBypassesStaleAIResultCache(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		writeContentModerationGuardResult(w, false, 0.05, nil, nil, "fresh provider allow")
+	}))
+	defer server.Close()
+
+	inputHash := strings.Repeat("b", 64)
+	cache := &contentModerationTestHashCache{suppressions: map[string]struct{}{inputHash: {}}}
+	cfg := contentModerationGuardConfig(server.URL)
+	cfg.AIChat.CacheEnabled = true
+	cfg.AIChat.CacheTTLSeconds = 3600
+	cfg.AIChat.inputHash = inputHash
+	cfg.AIChat.auditStage = string(voteaimoderation.StageFast)
+	input := "same false-positive input"
+	cacheKey := contentModerationAIResultCacheKey(cfg, input)
+	require.NotEmpty(t, cacheKey)
+	stale, err := json.Marshal(moderationAPIResult{
+		Flagged: true, CategoryScores: map[string]float64{"ai_risk": 0.95},
+		Stage: voteaimoderation.StageFast,
+	})
+	require.NoError(t, err)
+	require.NoError(t, cache.SetContentModerationResult(context.Background(), cacheKey, stale, time.Hour))
+
+	svc := NewContentModerationService(nil, nil, cache, nil, nil, nil, nil, nil)
+	svc.httpClient = server.Client()
+	first, err := svc.callModeration(context.Background(), cfg, input)
+	require.NoError(t, err)
+	require.False(t, first.Flagged)
+	require.False(t, first.ResultCacheHit)
+	second, err := svc.callModeration(context.Background(), cfg, input)
+	require.NoError(t, err)
+	require.False(t, second.Flagged)
+	require.Equal(t, 2, requestCount, "suppression must fence both reads and writes of the stale result cache")
+}
+
+func TestContentModerationSuppressedAsyncRequestBypassesStaleCaches(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		writeContentModerationGuardResult(w, false, 0.05, nil, nil, "fresh provider allow")
+	}))
+	defer server.Close()
+
+	inputHash := strings.Repeat("d", 64)
+	cache := &contentModerationTestHashCache{suppressions: map[string]struct{}{inputHash: {}}}
+	cfg := contentModerationGuardConfig(server.URL)
+	cfg.Mode = ContentModerationModeObserve
+	cfg.AIChat.CacheEnabled = true
+	cfg.AIChat.CacheTTLSeconds = 3600
+	cfg.AIChat.IncrementalAuditEnabled = false
+	cfg.AIChat.inputHash = ""
+	content := contentModerationGuardInput("same false-positive async input")
+	cacheKey := contentModerationAIResultCacheKey(cfg, content.AIChatModerationInput())
+	require.NotEmpty(t, cacheKey)
+	stale, err := json.Marshal(moderationAPIResult{
+		Flagged: true, CategoryScores: map[string]float64{"ai_risk": 0.95},
+	})
+	require.NoError(t, err)
+	require.NoError(t, cache.SetContentModerationResult(context.Background(), cacheKey, stale, time.Hour))
+
+	svc, _ := newContentModerationGuardService(t, cfg, server, cache)
+	input := ContentModerationCheckInput{
+		RequestID: "suppressed-async-retry", UserID: 17, APIKeyID: 27,
+		SessionID: "suppressed-async", ModerationEpochSet: true,
+	}
+	queueDelay := 5
+	for range 2 {
+		decision := svc.checkSyncIdempotent(context.Background(), input, cfg, content, inputHash, &queueDelay, false)
+		require.NotNil(t, decision)
+		require.True(t, decision.Allowed)
+		require.False(t, decision.Flagged)
+	}
+
+	require.Equal(t, 2, requestCount, "a suppressed async target must bypass both the ordinary result cache and request ledger")
+	verdictKey := contentModerationRequestVerdictCacheKey(input, cfg, content, inputHash, "async_observe")
+	require.NotEmpty(t, verdictKey)
+	cache.mu.Lock()
+	_, verdictCached := cache.results[verdictKey]
+	cache.mu.Unlock()
+	require.False(t, verdictCached, "suppression must prevent a replacement request verdict from being cached")
+}
+
+func TestPersistContentModerationLog_SuppressionVetoIsVisibleAndPreventsPromotion(t *testing.T) {
+	inputHash := strings.Repeat("c", 64)
+	cache := &contentModerationTestHashCache{suppressions: map[string]struct{}{inputHash: {}}}
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(nil, repo, cache, nil, nil, nil, nil, nil)
+	log := &ContentModerationLog{
+		Action: ContentModerationActionBlock, Flagged: true,
+		AuditDetails: ContentModerationAuditDetails{HashState: "confirmed", HashPromotionReason: "semantic_full_review_strong_signal"},
+	}
+
+	svc.persistContentModerationLog(context.Background(), defaultContentModerationConfig(), log, inputHash, true, false)
+
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, "suppressed", logs[0].AuditDetails.HashState)
+	require.Equal(t, "administrator_suppression", logs[0].AuditDetails.HashPromotionReason)
+	require.Empty(t, cache.snapshotRecorded())
+	require.False(t, cache.hasHash(inputHash))
+}
+
+func TestPersistContentModerationLog_SuppressionVetoCancelsLateSideEffects(t *testing.T) {
+	inputHash := strings.Repeat("e", 64)
+	tests := []struct {
+		name  string
+		cache ContentModerationHashCache
+		base  *contentModerationTestHashCache
+	}{
+		{
+			name: "suppressed before persistence",
+			base: &contentModerationTestHashCache{suppressions: map[string]struct{}{inputHash: {}}},
+		},
+		{
+			name: "suppressed during atomic promotion",
+			base: &contentModerationTestHashCache{},
+		},
+	}
+	tests[0].cache = tests[0].base
+	tests[1].cache = &contentModerationSuppressionRaceCache{contentModerationTestHashCache: tests[1].base}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			userID := int64(71)
+			repo := &contentModerationTestRepo{banOutcome: ContentModerationBanOutcomeApplied}
+			svc := NewContentModerationService(nil, repo, test.cache, nil, nil, nil, nil, nil)
+			cfg := defaultContentModerationConfig()
+			cfg.AutoBanEnabled = true
+			cfg.BanThreshold = 1
+			cfg.EmailOnHit = true
+			log := &ContentModerationLog{
+				UserID: &userID, Action: ContentModerationActionBlock, Flagged: true,
+				AuditDetails: ContentModerationAuditDetails{
+					HashState: "confirmed", HashPromotionReason: "semantic_full_review_strong_signal",
+				},
+			}
+
+			svc.persistContentModerationLog(context.Background(), cfg, log, inputHash, true, true)
+
+			logs := repo.snapshotLogs()
+			require.Len(t, logs, 1)
+			require.Equal(t, "suppressed", logs[0].AuditDetails.HashState)
+			require.Equal(t, "administrator_suppression", logs[0].AuditDetails.HashPromotionReason)
+			require.Equal(t, ContentModerationSideEffectStatusNotApplicable, logs[0].SideEffectStatus)
+			require.Equal(t, ContentModerationNotificationStatusNotRequired, logs[0].NotificationStatus)
+			require.Zero(t, logs[0].ViolationCount)
+			require.False(t, logs[0].AutoBanned)
+			state, stateErr := repo.GetModerationUserState(context.Background(), userID)
+			require.NoError(t, stateErr)
+			require.Nil(t, state, "a suppressed late task must not re-ban the user")
+			require.Empty(t, test.base.snapshotRecorded())
+		})
+	}
+}
+
+func TestPersistContentModerationLog_SuppressionLookupFailureCancelsAllSideEffects(t *testing.T) {
+	inputHash := strings.Repeat("f", 64)
+	userID := int64(72)
+	cache := &contentModerationSuppressionErrorCache{
+		contentModerationTestHashCache: &contentModerationTestHashCache{},
+		err:                            errors.New("redis unavailable"),
+	}
+	repo := &contentModerationTestRepo{banOutcome: ContentModerationBanOutcomeApplied}
+	svc := NewContentModerationService(nil, repo, cache, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+	cfg.AutoBanEnabled = true
+	cfg.BanThreshold = 1
+	cfg.EmailOnHit = true
+	log := &ContentModerationLog{
+		UserID: &userID, Action: ContentModerationActionBlock, Flagged: true,
+		AuditDetails: ContentModerationAuditDetails{
+			HashState: "confirmed", HashPromotionReason: "semantic_full_review_strong_signal",
+		},
+	}
+
+	svc.persistContentModerationLog(context.Background(), cfg, log, inputHash, true, true)
+
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, "candidate", logs[0].AuditDetails.HashState)
+	require.Equal(t, "promotion_state_unavailable", logs[0].AuditDetails.HashPromotionReason)
+	require.Equal(t, ContentModerationSideEffectStatusNotApplicable, logs[0].SideEffectStatus)
+	require.Equal(t, ContentModerationNotificationStatusNotRequired, logs[0].NotificationStatus)
+	require.Zero(t, logs[0].ViolationCount)
+	require.False(t, logs[0].AutoBanned)
+	require.Zero(t, cache.recordCalls)
+	state, stateErr := repo.GetModerationUserState(context.Background(), userID)
+	require.NoError(t, stateErr)
+	require.Nil(t, state)
 }
 
 func TestContentModerationClearFlaggedInputHashesAndStatusCount(t *testing.T) {

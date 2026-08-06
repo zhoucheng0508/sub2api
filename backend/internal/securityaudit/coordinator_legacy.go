@@ -19,10 +19,13 @@ func (a *LegacyModerationAdapter) Check(ctx context.Context, req Request) (*Lega
 		return nil, nil
 	}
 	decision, err := a.service.Check(ctx, service.ContentModerationCheckInput{
-		RequestID: req.RequestID, SessionID: req.SessionID, UserID: req.UserID, UserEmail: req.UserEmail,
-		APIKeyID: req.APIKeyID, APIKeyName: req.APIKeyName, GroupID: cloneInt64Ptr(req.GroupID),
+		RequestID: req.RequestID, SessionID: req.SessionID, SessionSource: req.SessionSource,
+		UserID: req.UserID, UserEmail: req.UserEmail,
+		APIKeyID: req.APIKeyID, APIKeyName: req.APIKeyName, AccountID: req.AccountID, GroupID: cloneInt64Ptr(req.GroupID),
 		GroupName: req.GroupName, Endpoint: req.Endpoint, Provider: req.Provider,
 		Model: req.Model, Protocol: req.Protocol, Body: req.Body,
+		ClientHeaders: req.ClientHeaders.Clone(), TrustedMetadataProvenance: req.TrustedMetadataProvenance,
+		ModerationEpoch: req.ModerationEpoch, ModerationEpochSet: req.ModerationEpochSet,
 	})
 	if err != nil || decision == nil {
 		return nil, err

@@ -365,6 +365,7 @@
                         type="button"
                         class="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
                         :title="inputSummaryText(row)"
+                        data-test="open-input-detail"
                         @click="openInputDetail(row)"
                       >
                         <span class="min-w-0 flex-1 truncate">{{ inputSummaryText(row) }}</span>
@@ -483,6 +484,32 @@
                   v-model:fast-input-chars="configForm.ai_fast_input_chars"
                   v-model:fallback-input-chars="configForm.ai_fallback_input_chars"
                   :max-input-chars="configForm.ai_max_input_chars"
+                  class="lg:col-span-2"
+                />
+                <!-- CUSTOM(VOTE-AI-AUDIT-COST/CONTEXT): isolated incremental audit and full-review controls. -->
+                <IncrementalAuditSettings
+                  ref="incrementalAuditSettingsRef"
+                  v-model:incremental-audit-enabled="configForm.ai_incremental_audit_enabled"
+                  v-model:input-provenance-v2-enabled="configForm.ai_input_provenance_v2_enabled"
+                  v-model:deterministic-risk-v2-enabled="configForm.ai_deterministic_risk_v2_enabled"
+                  v-model:recent-user-turns="configForm.ai_recent_user_turns"
+                  v-model:summary-max-chars="configForm.ai_summary_max_chars"
+                  v-model:full-review-threshold="configForm.ai_full_review_threshold"
+                  v-model:full-review-risk-delta="configForm.ai_full_review_risk_delta"
+                  v-model:periodic-full-review-turns="configForm.ai_periodic_full_review_turns"
+                  v-model:full-review-max-input-chars="configForm.ai_full_review_max_input_chars"
+                  v-model:fast-max-output-tokens="configForm.ai_fast_max_output_tokens"
+                  v-model:full-max-output-tokens="configForm.ai_full_max_output_tokens"
+                  v-model:max-review-max-output-tokens="configForm.ai_max_review_max_output_tokens"
+                  v-model:audit-context-ttl-minutes="configForm.ai_audit_context_ttl_minutes"
+                  v-model:pricing-configured="configForm.ai_pricing_configured"
+                  v-model:pricing-version="configForm.ai_pricing_version"
+                  v-model:uncached-input-usd-per-million-tokens="configForm.ai_uncached_input_usd_per_million_tokens"
+                  v-model:cached-input-usd-per-million-tokens="configForm.ai_cached_input_usd_per_million_tokens"
+                  v-model:output-usd-per-million-tokens="configForm.ai_output_usd_per_million_tokens"
+                  :max-input-chars="configForm.ai_max_input_chars"
+                  :block-threshold="configForm.ai_confidence_threshold"
+                  :runtime-status="status"
                   class="lg:col-span-2"
                 />
                 <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
@@ -1299,10 +1326,12 @@
             </div>
           </div>
 
-          <div class="rounded-xl border border-gray-100 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+          <div class="rounded-lg border border-gray-100 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.inputDetailContent') }}</p>
+                <p class="text-sm font-semibold text-gray-900 dark:text-white">
+                  {{ inputDetailAuditDetails?.audit_target_excerpt ? t('admin.riskControl.auditTarget') : t('admin.riskControl.inputDetailContent') }}
+                </p>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {{ inputDetailRow.endpoint || '-' }} · {{ inputDetailRow.provider || '-' }} / {{ inputDetailRow.model || '-' }}
                 </p>
@@ -1313,10 +1342,48 @@
             </div>
             <pre class="mt-4 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-950 p-4 text-sm leading-6 text-gray-100 shadow-inner dark:bg-black/50">{{ inputDetailText }}</pre>
           </div>
+
+          <div v-if="inputDetailAuditDetails" class="border-t border-gray-100 pt-4 dark:border-dark-700" data-test="supporting-context">
+            <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.supportingContext') }}</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.supportingContextHint') }}</p>
+            <pre class="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-100 p-4 text-xs leading-5 text-gray-700 dark:bg-dark-900 dark:text-gray-200">{{ supportingContextText }}</pre>
+          </div>
+
+          <AuditStageDiagnostics :stages="inputDetailAuditDetails?.stages" />
+
+          <div v-if="hasAuditDiagnostics" class="border-t border-gray-100 pt-4 dark:border-dark-700">
+            <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.auditDiagnostics') }}</p>
+            <dl class="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+              <div
+                v-for="item in auditDiagnosticItems"
+                :key="item.key"
+                class="min-w-0"
+                :data-test="`audit-diagnostic-${item.key}`"
+              >
+                <dt class="text-xs text-gray-500 dark:text-gray-400">{{ item.label }}</dt>
+                <dd class="mt-1 break-words font-medium text-gray-900 dark:text-white">{{ item.value }}</dd>
+              </div>
+            </dl>
+            <p v-if="inputDetailAuditDetails?.model_reason" class="mt-4 rounded-lg bg-gray-50 px-3 py-2 text-sm leading-6 text-gray-700 dark:bg-dark-900/60 dark:text-gray-200">
+              {{ inputDetailAuditDetails?.model_reason }}
+            </p>
+          </div>
         </div>
 
         <template #footer>
-          <div class="flex justify-end">
+          <div class="flex w-full flex-wrap items-center justify-between gap-3">
+            <button
+              v-if="inputDetailHash"
+              type="button"
+              class="btn btn-danger"
+              :disabled="hashActionLoading || !isInputDetailHashValid"
+              data-test="input-detail-delete-flagged-hash"
+              @click="deleteInputDetailFlaggedHash"
+            >
+              <Icon name="trash" size="sm" :class="hashActionLoading ? 'animate-pulse' : ''" />
+              {{ t('admin.riskControl.deleteRecordFlaggedHash') }}
+            </button>
+            <span v-else />
             <button type="button" class="btn btn-secondary" @click="closeInputDetail">{{ t('common.close') }}</button>
           </div>
         </template>
@@ -1351,6 +1418,8 @@ import AuditProviderSelector from '@/custom/vote-ai/risk-control/AuditProviderSe
 // CUSTOM(VOTE-AI-RISK-PROMPT/PERFORMANCE/TRIAL): isolated AI audit configuration and trial result UI.
 import RecommendedPromptControl from '@/custom/vote-ai/risk-control/RecommendedPromptControl.vue'
 import ModerationPerformanceSettings from '@/custom/vote-ai/risk-control/ModerationPerformanceSettings.vue'
+import IncrementalAuditSettings from '@/custom/vote-ai/risk-control/IncrementalAuditSettings.vue'
+import AuditStageDiagnostics from '@/custom/vote-ai/risk-control/AuditStageDiagnostics.vue'
 import ModerationTestOutcome from '@/custom/vote-ai/risk-control/ModerationTestOutcome.vue'
 // CUSTOM(VOTE-AI-RISK-SCOPE): isolated searchable user/account scope selector.
 import ScopeEntitySelector from '@/custom/vote-ai/risk-control/ScopeEntitySelector.vue'
@@ -1362,6 +1431,7 @@ import { adminAPI } from '@/api/admin'
 import type {
   ContentModerationAPIKeyLoad,
   ContentModerationAPIKeyStatus,
+  ContentModerationAuditDetails,
   ContentModerationAuditProvider,
   ContentModerationProviderProfile,
   ContentModerationConfig,
@@ -1502,6 +1572,7 @@ const activeAIChatPromptVersion = ref('')
 const usesRecommendedAIChatSystemPrompt = ref(false)
 const inputDetailRow = ref<ContentModerationLog | null>(null)
 const savedConfigSnapshot = ref<ContentModerationConfig | null>(null)
+const incrementalAuditSettingsRef = ref<{ validate: () => string | null } | null>(null)
 let statusTimer: number | null = null
 
 const configForm = reactive({
@@ -1539,6 +1610,24 @@ const configForm = reactive({
   ai_session_risk_half_life_minutes: 30,
   ai_session_risk_block_cooldown_minutes: 30,
   ai_actor_risk_enabled: true,
+  ai_incremental_audit_enabled: false,
+  ai_input_provenance_v2_enabled: true,
+  ai_deterministic_risk_v2_enabled: true,
+  ai_recent_user_turns: 2,
+  ai_summary_max_chars: 800,
+  ai_full_review_threshold: 0.4,
+  ai_full_review_risk_delta: 0.15,
+  ai_periodic_full_review_turns: 10,
+  ai_full_review_max_input_chars: 60000,
+  ai_fast_max_output_tokens: 256,
+  ai_full_max_output_tokens: 1024,
+  ai_max_review_max_output_tokens: 1536,
+  ai_audit_context_ttl_minutes: 120,
+  ai_pricing_configured: false,
+  ai_pricing_version: '',
+  ai_uncached_input_usd_per_million_tokens: null as number | null,
+  ai_cached_input_usd_per_million_tokens: null as number | null,
+  ai_output_usd_per_million_tokens: null as number | null,
   sample_rate: 100,
   all_groups: true,
   group_ids: [] as number[],
@@ -1924,7 +2013,13 @@ const hasModerationAuditInput = computed(() => {
   return moderationTestPrompt.value.trim() !== '' || moderationTestImages.value.length > 0
 })
 
-const isFlaggedHashInputValid = computed(() => /^[a-fA-F0-9]{64}$/.test(flaggedHashInput.value.trim()))
+const inputDetailAuditDetails = computed(() => {
+  const details = inputDetailRow.value?.audit_details
+  return hasMeaningfulAuditDetails(details) ? details : undefined
+})
+const inputDetailHash = computed(() => inputDetailAuditDetails.value?.input_hash?.trim() || '')
+const isFlaggedHashInputValid = computed(() => isValidFlaggedHash(flaggedHashInput.value))
+const isInputDetailHashValid = computed(() => isValidFlaggedHash(inputDetailHash.value))
 
 const storedApiKeyTestButtonText = computed(() => {
   if (apiKeyTesting.value) return t('admin.riskControl.testingApiKeys')
@@ -2055,8 +2150,166 @@ const riskThresholdRows = computed<RiskThresholdRow[]>(() => (
 
 const inputDetailText = computed(() => {
   if (!inputDetailRow.value) return '-'
-  return inputDetailRow.value.input_excerpt || inputDetailRow.value.error || '-'
+  return inputDetailAuditDetails.value?.audit_target_excerpt || inputDetailRow.value.input_excerpt || inputDetailRow.value.error || '-'
 })
+
+const supportingContextText = computed(() => (
+  diagnosticText(inputDetailAuditDetails.value?.supporting_context_excerpt)
+))
+
+const auditDiagnosticItems = computed(() => {
+  const details = inputDetailAuditDetails.value
+  if (!details) return []
+  const localRule = details.local_rule_match
+  const promptTokens = details.prompt_tokens
+  const cachedTokens = details.cached_input_tokens
+  const uncachedTokens = details.uncached_input_tokens
+  const outputTokens = details.output_tokens
+  const stages = details.stages ?? []
+  const providerStages = stages.filter((stage) => stage.provider_called)
+  const legacyLocalOrSkipped = details.provider_applicable === undefined && stages.length === 0 && (
+    details.audit_stage === 'local'
+    || Boolean(details.local_rule_level)
+    || inputDetailRow.value?.audit_code === 'no_new_user_intent'
+  )
+  const noProviderUsage = details.provider_applicable === false
+    || legacyLocalOrSkipped
+    || (stages.length > 0 && providerStages.length === 0 && stages.every((stage) => !stage.failed))
+  const stageUsageComplete = stages.length > 0
+    && providerStages.length > 0
+    && providerStages.every((stage) => stage.usage_known && !stage.failed)
+  const tokenFieldsComplete = isKnownAuditCount(promptTokens)
+    && isKnownAuditCount(cachedTokens)
+    && isKnownAuditCount(uncachedTokens)
+    && isKnownAuditCount(outputTokens)
+    && promptTokens === cachedTokens + uncachedTokens
+  const hasCompleteTokenUsage = tokenFieldsComplete
+    && !noProviderUsage
+    && (stages.length > 0 ? stageUsageComplete : details.usage_unknown !== true)
+  let tokenText = noProviderUsage
+    ? t('admin.riskControl.auditStageNoProviderUsage')
+    : t('admin.riskControl.usageUnknown')
+  if (hasCompleteTokenUsage) {
+    tokenText = t('admin.riskControl.auditTokenSummary', {
+      prompt: formatNumber(promptTokens),
+      cached: formatNumber(cachedTokens),
+      uncached: formatNumber(uncachedTokens),
+      output: formatNumber(outputTokens),
+    })
+  }
+  const resultCacheHit = details.sub2api_result_cache_hit ?? details.result_cache_hit
+  const resultCacheApplicable = details.result_cache_applicable
+  const providerCacheRatio = details.provider_prefix_cache_ratio
+  const providerCacheText = typeof providerCacheRatio === 'number'
+    && Number.isFinite(providerCacheRatio)
+    && providerCacheRatio >= 0
+    && providerCacheRatio <= 1
+    ? percent(providerCacheRatio)
+    : t('common.unknown')
+  const usageCompletenessText = noProviderUsage
+    ? t('admin.riskControl.auditStageNotApplicable')
+    : hasCompleteTokenUsage
+      ? t('admin.riskControl.usageComplete')
+      : details.usage_unknown === true || (stages.length > 0 && !stageUsageComplete)
+        ? t('admin.riskControl.usageUnknown')
+        : t('common.unknown')
+  const prefixStatusText = details.prefix_baseline === true
+    ? t('admin.riskControl.auditPrefixBaseline')
+    : details.prefix_continuity === true
+      ? t('common.yes')
+      : details.prefix_continuity === false || Boolean(details.prefix_break_reason)
+        ? t('common.no')
+        : t('common.unknown')
+  const prefixBreakReasonText = details.prefix_baseline === true
+    ? t('admin.riskControl.auditPrefixBaseline')
+    : diagnosticText(details.prefix_break_reason)
+  return [
+    { key: 'stage', label: t('admin.riskControl.auditStage'), value: diagnosticText(details.audit_stage) },
+    { key: 'target', label: t('admin.riskControl.auditTargetType'), value: diagnosticPair(details.audit_target_kind, details.audit_target_source) },
+    { key: 'session', label: t('admin.riskControl.auditSession'), value: diagnosticPair(details.session_source, isKnownAuditCount(details.turn_count) ? formatNumber(details.turn_count) : undefined) },
+    { key: 'input-chars', label: t('admin.riskControl.auditInputChars'), value: isKnownAuditCount(details.input_chars) ? formatNumber(details.input_chars) : t('common.unknown') },
+    { key: 'tokens', label: t('admin.riskControl.auditTokens'), value: tokenText },
+    { key: 'usage-completeness', label: t('admin.riskControl.auditUsageCompleteness'), value: usageCompletenessText },
+    { key: 'cache', label: t('admin.riskControl.auditCache'), value: resultCacheApplicable === false || noProviderUsage ? t('admin.riskControl.auditStageNotApplicable') : resultCacheHit === undefined ? t('common.unknown') : resultCacheHit ? t('admin.riskControl.cacheHit') : t('admin.riskControl.cacheMiss') },
+    { key: 'provider-cache', label: t('admin.riskControl.auditProviderCache'), value: noProviderUsage ? t('admin.riskControl.auditStageNotApplicable') : providerCacheText },
+    { key: 'review-complete', label: t('admin.riskControl.auditReviewComplete'), value: details.review_applicable === false || noProviderUsage ? t('admin.riskControl.auditStageNotApplicable') : optionalBooleanText(details.review_complete) },
+    { key: 'explicit-user', label: t('admin.riskControl.auditExplicitUserTurn'), value: optionalBooleanText(details.has_explicit_user_turn) },
+    { key: 'trusted-client', label: t('admin.riskControl.auditTrustedClient'), value: optionalBooleanText(details.trusted_client) },
+    { key: 'escalation', label: t('admin.riskControl.auditEscalation'), value: diagnosticList(details.escalation_reasons) },
+    { key: 'input-hash', label: t('admin.riskControl.auditInputHash'), value: diagnosticText(details.input_hash) },
+    { key: 'hash-scope', label: t('admin.riskControl.auditHashScope'), value: diagnosticText(details.hash_scope) },
+    { key: 'hash', label: t('admin.riskControl.auditHash'), value: diagnosticPair(details.hash_state, details.hash_promotion_reason) },
+    { key: 'policy-version', label: t('admin.riskControl.auditPolicyVersion'), value: diagnosticText(details.policy_version) },
+    { key: 'audit-key-hash', label: t('admin.riskControl.auditKeyHash'), value: diagnosticText(details.audit_key_hash) },
+    { key: 'prefix', label: t('admin.riskControl.auditPrefix'), value: diagnosticPair(isKnownAuditCount(details.prefix_epoch) ? formatNumber(details.prefix_epoch) : undefined, prefixStatusText) },
+    { key: 'prefix-break-reason', label: t('admin.riskControl.auditPrefixBreakReason'), value: prefixBreakReasonText },
+    { key: 'input-truncated', label: t('admin.riskControl.auditInputTruncated'), value: optionalBooleanText(details.input_truncated) },
+    { key: 'trusted-signals', label: t('admin.riskControl.auditTrustedSignals'), value: diagnosticList(details.trusted_signals) },
+    { key: 'ignored-metadata', label: t('admin.riskControl.auditIgnoredMetadata'), value: diagnosticList(details.ignored_metadata) },
+    { key: 'signals', label: t('admin.riskControl.auditSignals'), value: diagnosticList(details.model_signals) },
+    { key: 'local-rule-identity', label: t('admin.riskControl.auditLocalRuleIdentity'), value: diagnosticPair(localRule?.rule_id, localRule?.rule_version) },
+    { key: 'local-rule-level', label: t('admin.riskControl.auditLocalRuleLevel'), value: diagnosticText(details.local_rule_level || localRule?.level) },
+    { key: 'local-rule-target-type', label: t('admin.riskControl.auditLocalRuleTargetType'), value: diagnosticPair(localRule?.target_kind, localRule?.target_source) },
+    { key: 'local-rule-intent', label: t('admin.riskControl.auditLocalRuleIntent'), value: diagnosticList(localRule?.matched_intent) },
+    { key: 'local-rule-target', label: t('admin.riskControl.auditLocalRuleTarget'), value: diagnosticList(localRule?.matched_target) },
+    { key: 'local-rule-action', label: t('admin.riskControl.auditLocalRuleAction'), value: diagnosticList(localRule?.matched_action) },
+    { key: 'local-rule-excerpt', label: t('admin.riskControl.auditLocalRuleExcerpt'), value: diagnosticText(localRule?.matched_excerpt) },
+    { key: 'lexical-types', label: t('admin.riskControl.auditLexicalTypes'), value: diagnosticList(localRule?.lexical_types) },
+    { key: 'negation-detected', label: t('admin.riskControl.auditNegationDetected'), value: optionalBooleanText(localRule?.negation_detected) },
+    { key: 'defensive-detected', label: t('admin.riskControl.auditDefensiveDetected'), value: optionalBooleanText(localRule?.defensive_detected) },
+    { key: 'local-rule-metadata-excluded', label: t('admin.riskControl.auditLocalRuleMetadataExcluded'), value: diagnosticList(localRule?.metadata_excluded) },
+  ]
+})
+
+const hasAuditDiagnostics = computed(() => auditDiagnosticItems.value.length > 0)
+
+const legacyAuditDetailFalseDefaults = new Set<keyof ContentModerationAuditDetails>([
+  'sub2api_result_cache_hit',
+  'review_complete',
+  'has_explicit_user_turn',
+  'trusted_client',
+])
+
+function hasMeaningfulAuditDetails(details: ContentModerationAuditDetails | undefined): details is ContentModerationAuditDetails {
+  if (!details) return false
+  return (Object.entries(details) as [keyof ContentModerationAuditDetails, unknown][]).some(([key, value]) => {
+    if (value === undefined || value === null) return false
+    if (legacyAuditDetailFalseDefaults.has(key) && value === false) return false
+    if (typeof value === 'string') return value.trim().length > 0
+    if (Array.isArray(value)) return value.length > 0
+    if (typeof value === 'object') return Object.keys(value).length > 0
+    return true
+  })
+}
+
+function isKnownAuditCount(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function optionalBooleanText(value: boolean | undefined): string {
+  if (value === undefined) return t('common.unknown')
+  return value ? t('common.yes') : t('common.no')
+}
+
+function diagnosticText(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value !== 'string') return t('common.unknown')
+  return value.trim() || t('common.unknown')
+}
+
+function diagnosticPair(first: unknown, second: unknown): string {
+  return `${diagnosticText(first)} / ${diagnosticText(second)}`
+}
+
+function diagnosticList(values: string[] | undefined): string {
+  if (!Array.isArray(values)) return t('common.unknown')
+  const normalized = values.map((value) => value.trim()).filter(Boolean)
+  return normalized.length > 0 ? normalized.join(', ') : t('common.none')
+}
+
+function isValidFlaggedHash(value: string): boolean {
+  return /^[a-fA-F0-9]{64}$/.test(value.trim())
+}
 
 const queueUsagePercent = computed(() => `${Math.min(100, Math.max(0, status.value?.queue_usage_percent ?? 0)).toFixed(1)}%`)
 
@@ -2209,6 +2462,24 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.ai_session_risk_half_life_minutes = config.ai_chat?.session_risk_half_life_minutes ?? 30
   configForm.ai_session_risk_block_cooldown_minutes = config.ai_chat?.session_risk_block_cooldown_minutes ?? 30
   configForm.ai_actor_risk_enabled = config.ai_chat?.actor_risk_enabled ?? true
+  configForm.ai_incremental_audit_enabled = config.ai_chat?.incremental_audit_enabled ?? false
+  configForm.ai_input_provenance_v2_enabled = config.ai_chat?.input_provenance_v2_enabled ?? true
+  configForm.ai_deterministic_risk_v2_enabled = config.ai_chat?.deterministic_risk_v2_enabled ?? true
+  configForm.ai_recent_user_turns = config.ai_chat?.recent_user_turns ?? 2
+  configForm.ai_summary_max_chars = config.ai_chat?.summary_max_chars ?? 800
+  configForm.ai_full_review_threshold = config.ai_chat?.full_review_threshold ?? 0.4
+  configForm.ai_full_review_risk_delta = config.ai_chat?.full_review_risk_delta ?? 0.15
+  configForm.ai_periodic_full_review_turns = config.ai_chat?.periodic_full_review_turns ?? 10
+  configForm.ai_full_review_max_input_chars = config.ai_chat?.full_review_max_input_chars ?? Math.min(60000, configForm.ai_max_input_chars)
+  configForm.ai_fast_max_output_tokens = config.ai_chat?.fast_max_output_tokens ?? 256
+  configForm.ai_full_max_output_tokens = config.ai_chat?.full_max_output_tokens ?? 1024
+  configForm.ai_max_review_max_output_tokens = config.ai_chat?.max_review_max_output_tokens ?? 1536
+  configForm.ai_audit_context_ttl_minutes = config.ai_chat?.audit_context_ttl_minutes ?? 120
+  configForm.ai_pricing_configured = config.ai_chat?.pricing_configured ?? false
+  configForm.ai_pricing_version = config.ai_chat?.pricing_version ?? ''
+  configForm.ai_uncached_input_usd_per_million_tokens = config.ai_chat?.uncached_input_usd_per_million_tokens ?? null
+  configForm.ai_cached_input_usd_per_million_tokens = config.ai_chat?.cached_input_usd_per_million_tokens ?? null
+  configForm.ai_output_usd_per_million_tokens = config.ai_chat?.output_usd_per_million_tokens ?? null
   loadProviderDraft(auditProvider)
   configForm.api_key_statuses = Array.isArray(config.api_key_statuses) ? [...config.api_key_statuses] : []
   providerDrafts[auditProvider].api_key_statuses = [...configForm.api_key_statuses]
@@ -2311,6 +2582,37 @@ function validateAIChatPerformanceSettings(): boolean {
   return true
 }
 
+function validateIncrementalAuditSettings(): boolean {
+  if (configForm.audit_provider !== 'ai_chat') return true
+  const errorKey = incrementalAuditSettingsRef.value?.validate()
+  if (!errorKey) return true
+  appStore.showError(t(errorKey))
+  return false
+}
+
+function validateAIChatPricingSettings(): boolean {
+  if (!configForm.ai_pricing_configured) return true
+  const version = configForm.ai_pricing_version.trim()
+  if (version.length < 1 || version.length > 100) {
+    appStore.showError(t('admin.riskControl.aiPricingVersionInvalid'))
+    return false
+  }
+  const rates = [
+    configForm.ai_uncached_input_usd_per_million_tokens,
+    configForm.ai_cached_input_usd_per_million_tokens,
+    configForm.ai_output_usd_per_million_tokens,
+  ]
+  if (rates.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1000000)) {
+    appStore.showError(t('admin.riskControl.aiPricingRateInvalid'))
+    return false
+  }
+  return true
+}
+
+function auditPricingRatePayload(value: number | null): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 async function saveConfig() {
   saving.value = true
   try {
@@ -2321,6 +2623,8 @@ async function saveConfig() {
       return
     }
     if (!validateAIChatPerformanceSettings()) return
+    if (!validateAIChatPricingSettings()) return
+    if (!validateIncrementalAuditSettings()) return
     const payload: UpdateContentModerationConfig = {
       enabled: configForm.enabled,
       mode: configForm.mode,
@@ -2349,6 +2653,30 @@ async function saveConfig() {
       ai_session_risk_half_life_minutes: Number(configForm.ai_session_risk_half_life_minutes) || 30,
       ai_session_risk_block_cooldown_minutes: Number(configForm.ai_session_risk_block_cooldown_minutes) || 0,
       ai_actor_risk_enabled: configForm.ai_actor_risk_enabled,
+      ai_incremental_audit_enabled: configForm.ai_incremental_audit_enabled,
+      ai_input_provenance_v2_enabled: configForm.ai_input_provenance_v2_enabled,
+      ai_deterministic_risk_v2_enabled: configForm.ai_deterministic_risk_v2_enabled,
+      ai_recent_user_turns: Number(configForm.ai_recent_user_turns) || 2,
+      ai_summary_max_chars: Number(configForm.ai_summary_max_chars) || 800,
+      ai_full_review_threshold: Number(configForm.ai_full_review_threshold) || 0.4,
+      ai_full_review_risk_delta: Number(configForm.ai_full_review_risk_delta) || 0.15,
+      ai_periodic_full_review_turns: Number(configForm.ai_periodic_full_review_turns) || 10,
+      ai_full_review_max_input_chars: Number(configForm.ai_full_review_max_input_chars) || 60000,
+      ai_fast_max_output_tokens: Number(configForm.ai_fast_max_output_tokens) || 256,
+      ai_full_max_output_tokens: Number(configForm.ai_full_max_output_tokens) || 1024,
+      ai_max_review_max_output_tokens: Number(configForm.ai_max_review_max_output_tokens) || 1536,
+      ai_audit_context_ttl_minutes: Number(configForm.ai_audit_context_ttl_minutes) || 120,
+      ai_pricing_configured: configForm.ai_pricing_configured,
+      ai_pricing_version: configForm.ai_pricing_configured ? configForm.ai_pricing_version.trim() : '',
+      ai_uncached_input_usd_per_million_tokens: configForm.ai_pricing_configured
+        ? auditPricingRatePayload(configForm.ai_uncached_input_usd_per_million_tokens)
+        : undefined,
+      ai_cached_input_usd_per_million_tokens: configForm.ai_pricing_configured
+        ? auditPricingRatePayload(configForm.ai_cached_input_usd_per_million_tokens)
+        : undefined,
+      ai_output_usd_per_million_tokens: configForm.ai_pricing_configured
+        ? auditPricingRatePayload(configForm.ai_output_usd_per_million_tokens)
+        : undefined,
       sample_rate: Number(configForm.sample_rate) || 0,
       all_groups: configForm.all_groups,
       group_ids: configForm.all_groups ? [] : [...configForm.group_ids],
@@ -2509,11 +2837,25 @@ async function confirmUnbanUser(mode: ContentModerationUnbanMode) {
 }
 
 async function deleteFlaggedHash() {
-  if (!isFlaggedHashInputValid.value || hashActionLoading.value) return
+  if (!isFlaggedHashInputValid.value) return
+  await deleteFlaggedHashValue(flaggedHashInput.value, true)
+}
+
+async function deleteInputDetailFlaggedHash() {
+  if (!isInputDetailHashValid.value || hashActionLoading.value) return
+  const hash = inputDetailHash.value
+  const confirmed = window.confirm(t('admin.riskControl.deleteRecordFlaggedHashConfirm', { hash }))
+  if (!confirmed) return
+  await deleteFlaggedHashValue(hash, false)
+}
+
+async function deleteFlaggedHashValue(value: string, clearManualInput: boolean) {
+  const hash = value.trim()
+  if (!isValidFlaggedHash(hash) || hashActionLoading.value) return
   hashActionLoading.value = true
   try {
-    const result = await adminAPI.riskControl.deleteFlaggedHash(flaggedHashInput.value)
-    flaggedHashInput.value = ''
+    const result = await adminAPI.riskControl.deleteFlaggedHash(hash)
+    if (clearManualInput) flaggedHashInput.value = ''
     await loadStatus(true)
     appStore.showSuccess(result.deleted ? t('admin.riskControl.flaggedHashDeleted') : t('admin.riskControl.flaggedHashNotFound'))
   } catch (err: unknown) {

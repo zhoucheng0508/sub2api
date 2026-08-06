@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	voteaiauditcontext "github.com/Wei-Shaw/sub2api/internal/custom/voteai/auditcontext"
 	"github.com/Wei-Shaw/sub2api/internal/custom/voteai/riskstate"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
@@ -199,12 +200,27 @@ func TestContentModerationUserStateClear_IsTargeted(t *testing.T) {
 	ctx := context.Background()
 	cfg := riskstate.DefaultConfig()
 	event := riskstate.Event{Score: 0.8, Categories: []string{"cyber_abuse"}, At: time.Now().UTC()}
+	auditCfg := voteaiauditcontext.DefaultConfig()
+	auditEvent := voteaiauditcontext.AuditEvent{
+		RiskScore:     0.42,
+		Categories:    []string{"cyber_abuse"},
+		Reason:        "redacted audit state",
+		RequestID:     "request-7",
+		PolicyVersion: "policy-v5",
+		TurnIncrement: 1,
+		At:            time.Now().UTC(),
+	}
 
 	for _, key := range []string{"user-7-session", "user-7-actor"} {
 		_, err := cache.UpdateContentModerationSessionRiskForUser(ctx, 7, key, event, cfg)
 		require.NoError(t, err)
 	}
 	_, err := cache.UpdateContentModerationSessionRiskForUser(ctx, 8, "user-8-session", event, cfg)
+	require.NoError(t, err)
+	_, err = cache.UpdateContentModerationAuditContextForUser(ctx, 7, "user-7-audit", auditEvent, auditCfg, 10*time.Minute)
+	require.NoError(t, err)
+	auditEvent.RequestID = "request-8"
+	_, err = cache.UpdateContentModerationAuditContextForUser(ctx, 8, "user-8-audit", auditEvent, auditCfg, 10*time.Minute)
 	require.NoError(t, err)
 	userSevenEmail, err := tryReserveContentModerationEmailForTest(ctx, cache, 7, "email-scope", 2, 10*time.Minute)
 	require.NoError(t, err)
@@ -216,14 +232,20 @@ func TestContentModerationUserStateClear_IsTargeted(t *testing.T) {
 	epoch, err := cache.GetContentModerationUserEpoch(ctx, 7)
 	require.NoError(t, err)
 	require.Zero(t, epoch)
+	require.True(t, server.Exists(contentModerationAuditContextPrefix+"user-7-audit"))
+	require.True(t, server.Exists(contentModerationAuditContextIndexKey(7)))
 
 	cleared, err := cache.ClearContentModerationUserState(ctx, 7)
 	require.NoError(t, err)
-	require.EqualValues(t, 5, cleared)
+	require.EqualValues(t, 6, cleared)
 	require.False(t, server.Exists(contentModerationSessionRiskIndexKey(7)))
 	require.False(t, server.Exists(contentModerationEmailDedupeIndexKey(7)))
+	require.False(t, server.Exists(contentModerationAuditContextPrefix+"user-7-audit"))
+	require.False(t, server.Exists(contentModerationAuditContextIndexKey(7)))
 	require.True(t, server.Exists(contentModerationSessionRiskIndexKey(8)))
 	require.True(t, server.Exists(contentModerationEmailDedupeIndexKey(8)))
+	require.True(t, server.Exists(contentModerationAuditContextPrefix+"user-8-audit"))
+	require.True(t, server.Exists(contentModerationAuditContextIndexKey(8)))
 	epoch, err = cache.GetContentModerationUserEpoch(ctx, 7)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, epoch)
@@ -237,6 +259,12 @@ func TestContentModerationUserStateClear_IsTargeted(t *testing.T) {
 		require.False(t, found)
 	}
 	_, found, err := cache.GetContentModerationSessionRisk(ctx, "user-8-session")
+	require.NoError(t, err)
+	require.True(t, found)
+	_, found, err = cache.GetContentModerationAuditContext(ctx, "user-7-audit")
+	require.NoError(t, err)
+	require.False(t, found)
+	_, found, err = cache.GetContentModerationAuditContext(ctx, "user-8-audit")
 	require.NoError(t, err)
 	require.True(t, found)
 	userSevenEmail, err = tryReserveContentModerationEmailForTest(ctx, cache, 7, "email-scope", 2, 10*time.Minute)

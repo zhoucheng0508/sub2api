@@ -212,10 +212,13 @@ func buildSecurityAuditRequest(c *gin.Context, apiKey *service.APIKey, subject m
 func buildSecurityAuditRequestForAccount(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, account *service.Account, protocol, model string, body []byte, stage string) securityaudit.Request {
 	legacy := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
 	request := securityaudit.Request{
-		RequestID: legacy.RequestID, SessionID: legacy.SessionID, UserID: legacy.UserID, UserEmail: legacy.UserEmail,
+		RequestID: legacy.RequestID, SessionID: legacy.SessionID, SessionSource: legacy.SessionSource,
+		UserID: legacy.UserID, UserEmail: legacy.UserEmail,
 		APIKeyID: legacy.APIKeyID, APIKeyName: legacy.APIKeyName, GroupID: cloneSecurityAuditGroupID(legacy.GroupID),
 		GroupName: legacy.GroupName, Provider: legacy.Provider, Endpoint: legacy.Endpoint,
 		Protocol: legacy.Protocol, Model: legacy.Model, Body: body, Stage: strings.TrimSpace(stage),
+		ClientHeaders: legacy.ClientHeaders, TrustedMetadataProvenance: legacy.TrustedMetadataProvenance,
+		ModerationEpoch: legacy.ModerationEpoch, ModerationEpochSet: legacy.ModerationEpochSet,
 	}
 	if account != nil {
 		request.AccountID = account.ID

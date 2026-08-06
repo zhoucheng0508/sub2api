@@ -124,6 +124,9 @@ func TestExtractContentModerationInput_OpenAIChatAgentToolLoopIsAudited(t *testi
 	require.Contains(t, input.Text, "[]")
 	require.Contains(t, input.CurrentText, "列出我的订单")
 	require.Empty(t, input.Images)
+	require.Len(t, input.Turns, 4)
+	require.True(t, input.Turns[2].ToolCall)
+	require.True(t, input.Turns[3].LinkedToUserIntent)
 }
 
 func TestExtractContentModerationInput_OpenAIChatMultiTurnExtractsLatestUser(t *testing.T) {

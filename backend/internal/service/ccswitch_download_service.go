@@ -116,7 +116,11 @@ func (s *CCSwitchDownloadService) latestRelease(ctx context.Context) (*GitHubRel
 		if result.Err != nil {
 			return nil, result.Err
 		}
-		return result.Val.(*GitHubRelease), nil
+		release, ok := result.Val.(*GitHubRelease)
+		if !ok || release == nil {
+			return nil, errors.New("cc switch release fetch returned an invalid result")
+		}
+		return release, nil
 	}
 }
 

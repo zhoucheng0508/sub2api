@@ -269,6 +269,38 @@ backend/internal/service/openai_apikey_prompt_cache.go
 官方核心接入点仅限 Chat → Responses 转换、Responses 原生字段保留和账号创建/编辑
 界面，便于后续版本重放和冲突审查。
 
+## 6.4 DeepSeek 增量审核与成本诊断
+
+本次同版本二开在 PR1-PR4 的审核闭环上增加了可灰度的增量审核路径，减少正常长对话每轮重复发送的上下文，同时保留渐进风险识别能力：
+
+- `incremental_audit_enabled` 控制增量快审与按条件完整复核，默认关闭；
+- `input_provenance_v2_enabled` 默认开启，统一提取真实最终用户请求，并把工具输出、客户端元数据和上下文摘要限制为辅助信息；
+- `deterministic_risk_v2_enabled` 默认开启，使用来源边界、词法边界、否定和防御语境识别可解释的本地确定性风险，歧义结果进入语义复核而不是固定高分拦截；
+- 正常请求优先执行增量快审；风险分、风险变化、强信号、周期轮次和管理员策略可以触发完整复核；
+- 默认完整复核阈值为 `0.40`、周期为 `10` 轮，快审、完整复核、最高风险复核输出上限分别为 `256`、`1024`、`1536` Token；
+- 快审输入默认上限为 `6000` 字符，超时降级输入为 `3000` 字符，完整复核输入默认上限为 `60000` 字符；
+- 审核目标、阶段、触发原因、前缀稳定性、缓存、Token、延迟、成本估算和本地规则诊断以脱敏结构保存和展示；完整对话、密码、Cookie、Token 和 API Key 不进入诊断字段；
+- 会话风险、结果缓存、异步补审、邮件和封禁副作用继续使用 epoch、幂等和范围隔离，避免旧任务在管理员解禁后重新产生处置。
+
+新增迁移 `196_vote_ai_content_moderation_audit_details.sql`，为
+`content_moderation_logs` 增加 `audit_details JSONB NOT NULL DEFAULT '{}'::jsonb`。
+迁移使用 `ADD COLUMN IF NOT EXISTS`，并设置 5 秒锁等待和 10 分钟语句超时。已执行的
+`194`、`195` 迁移不得改名、改内容或改变 checksum。
+
+主要隔离目录和接入文件：
+
+```text
+backend/internal/custom/voteai/auditcontext/
+backend/internal/custom/voteai/inputprovenance/
+backend/internal/custom/voteai/deterministicrisk/
+backend/internal/service/content_moderation_*.go
+frontend/src/custom/vote-ai/risk-control/IncrementalAuditSettings.vue
+frontend/src/custom/vote-ai/risk-control/AuditStageDiagnostics.vue
+backend/migrations/196_vote_ai_content_moderation_audit_details.sql
+```
+
+生产发布时先保持 `incremental_audit_enabled=false`，验证迁移、旧审核路径和诊断数据后，按“测试身份 -> 单个 Pro 上游账号 -> 多个 Pro 上游账号”逐级启用。关闭增量审核只回退快审/完整复核路由，不会自动关闭来源归一化和确定性规则 V2；两者有独立紧急开关。
+
 ## 7. 发布工作流
 
 `.github/workflows/custom-image.yml` 在推送 `custom-v<版本>-<序号>` 标签时构建
@@ -310,6 +342,7 @@ go test -tags=integration ./...
 - 模型广场显示真实模型与分组价格；
 - 管理员账号、分组和利润控制页面；
 - 内容审核代理配置和“仅审计最新输入”；
+- DeepSeek 增量审核三开关、快审/完整复核参数和审核阶段诊断；
 - TLS 指纹路由器默认 Codex CLI 路由和 OpenAI OAuth 账号 TLS 开关；
 - 桌面端、移动端、亮色和暗色布局；
 - 浏览器控制台无应用错误。
@@ -328,6 +361,8 @@ go test -tags=integration ./...
 - 只重建应用服务，不重启 PostgreSQL 和 Redis，不删除数据卷；
 - 旧镜像只能回退应用代码，不能自动回退已执行的数据库迁移；
 - 如旧应用无法兼容迁移后的数据库，必须恢复升级前 PostgreSQL 备份；
+- 上线迁移 `196` 前必须在实际恢复出的数据库副本验证首次执行、重复启动、旧记录默认值和旧应用兼容性；锁超时或迁移失败时停止发布，不得反复重启应用重试；
+- 增量审核先保持关闭；异常时先关闭增量路径，再根据诊断分别处理来源归一化或确定性规则 V2，不恢复旧的固定高分子串检测器；
 - 0.1.170 利润控制和账号倍率同步在验证前保持关闭。
 
 ## 10. 本地验收记录
@@ -345,6 +380,10 @@ go test -tags=integration ./...
 - 浏览器验证 Vote AI 首页、模型广场、`/pricing` 跳转、站内文档、后台仪表盘和分组管理正常；
 - 分组编辑界面显示“启用利润控制”；
 - 系统设置显示“启用风控中心”和内容审计配置入口；当前本地配置仍为关闭，因此风控页面按设计跳回系统设置；
+- DeepSeek 增量审核专项回归覆盖来源归一化、确定性规则、快审/完整复核路由、工具续传、缓存、Redis 故障、邮件去重、解禁、隐私脱敏和成本指标；
+- 管理端显示增量审核、来源归一化和确定性规则 V2 开关，以及快审/完整复核参数和逐阶段诊断；
+- 本地候选镜像中增量审核请求仅执行快审，审核阶段耗时约 1.1 秒；该结果只证明本地功能路径可用，不代表生产延迟和成本目标已经达成；
+- GitHub PR #8 的后端测试、`golangci-lint`、前端、安全和 shell 检查均通过；
 - 390 px 移动端视口下首页和分组页无横向溢出，浏览器控制台无应用错误。
 
 本轮 OpenAI API Key GPT-5.6 提示缓存优化补充验收：
