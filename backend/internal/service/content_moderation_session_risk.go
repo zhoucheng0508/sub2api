@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -52,12 +51,15 @@ func (cfg *ContentModerationConfig) aiSessionRiskConfig() voteairiskstate.Config
 
 func contentModerationRiskIdentity(input ContentModerationCheckInput) (sessionKey, actorKey, sessionHash string) {
 	sessionID := strings.TrimSpace(input.SessionID)
-	if input.UserID <= 0 || input.APIKeyID <= 0 || sessionID == "" {
+	if input.UserID <= 0 || input.APIKeyID <= 0 {
 		return "", "", ""
+	}
+	actorKey = opaqueModerationRiskHash("actor", fmt.Sprintf("%d\x00%d", input.UserID, input.APIKeyID))
+	if sessionID == "" {
+		return "", actorKey, ""
 	}
 	sessionHash = opaqueModerationRiskHash("session-id", sessionID)
 	sessionKey = opaqueModerationRiskHash("session", fmt.Sprintf("%d\x00%d\x00%s", input.UserID, input.APIKeyID, sessionID))
-	actorKey = opaqueModerationRiskHash("actor", fmt.Sprintf("%d\x00%d", input.UserID, input.APIKeyID))
 	return sessionKey, actorKey, sessionHash
 }
 
@@ -81,33 +83,31 @@ func moderationResultCategories(result *moderationAPIResult) []string {
 	return categories
 }
 
-func (s *ContentModerationService) getBlockedSessionRisk(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig) (voteairiskstate.State, bool) {
-	state, found := s.getSessionRisk(ctx, input, cfg)
-	return state, found && voteairiskstate.IsBlocked(state, time.Now())
+func (s *ContentModerationService) getBlockedSessionRisk(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig) (voteairiskstate.State, bool, error) {
+	state, found, err := s.getSessionRisk(ctx, input, cfg)
+	return state, found && voteairiskstate.IsBlocked(state, time.Now()), err
 }
 
-func (s *ContentModerationService) getSessionRisk(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig) (voteairiskstate.State, bool) {
+func (s *ContentModerationService) getSessionRisk(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig) (voteairiskstate.State, bool, error) {
 	if s == nil || cfg == nil || !cfg.AIChat.RiskLevelsEnabled || !cfg.AIChat.SessionRiskEnabled {
-		return voteairiskstate.State{}, false
-	}
-	store, ok := s.hashCache.(ContentModerationSessionRiskStore)
-	if !ok {
-		slog.Warn("content_moderation.session_risk_store_unavailable")
-		return voteairiskstate.State{}, false
+		return voteairiskstate.State{}, false, nil
 	}
 	sessionKey, _, _ := contentModerationRiskIdentity(input)
 	if sessionKey == "" {
-		return voteairiskstate.State{}, false
+		return voteairiskstate.State{}, false, nil
+	}
+	store, ok := s.hashCache.(ContentModerationSessionRiskStore)
+	if !ok {
+		return voteairiskstate.State{}, false, fmt.Errorf("content moderation session risk store unavailable")
 	}
 	state, found, err := store.GetContentModerationSessionRisk(ctx, sessionKey)
 	if err != nil {
-		slog.Warn("content_moderation.session_risk_get_failed", "error", err)
-		return voteairiskstate.State{}, false
+		return voteairiskstate.State{}, false, fmt.Errorf("get content moderation session risk: %w", err)
 	}
-	return state, found
+	return state, found, nil
 }
 
-func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, result *moderationAPIResult) contentModerationTierResult {
+func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, result *moderationAPIResult) (contentModerationTierResult, error) {
 	riskCfg := cfg.aiSessionRiskConfig()
 	currentScore := 0.0
 	if result != nil {
@@ -121,22 +121,21 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 	if contentModerationResultHasOnlyWeakSignals(result) {
 		out.Tier = voteairiskstate.TierLow
 		out.CumulativeScore = 0
-		return out
+		return out, nil
 	}
 	if s == nil || cfg == nil || !cfg.AIChat.SessionRiskEnabled {
-		return out
+		return out, nil
 	}
 	store, ok := s.hashCache.(ContentModerationSessionRiskStore)
 	if !ok {
-		slog.Warn("content_moderation.session_risk_store_unavailable")
-		return out
+		return out, fmt.Errorf("content moderation session risk store unavailable")
 	}
 	sessionKey, actorKey, sessionHash := contentModerationRiskIdentity(input)
-	if sessionKey == "" {
-		return out
+	if sessionKey == "" && actorKey == "" {
+		return out, nil
 	}
 	if !shouldAccumulateContentModerationRisk(result, currentScore, riskCfg.BlockThreshold) {
-		return out
+		return out, nil
 	}
 	event := voteairiskstate.Event{
 		Score:       currentScore,
@@ -146,13 +145,14 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 		SessionHash: sessionHash,
 		At:          time.Now().UTC(),
 	}
-	state, err := updateContentModerationSessionRisk(ctx, store, input.UserID, sessionKey, event, riskCfg)
-	if err != nil {
-		slog.Warn("content_moderation.session_risk_update_failed", "error", err)
-		return out
+	if sessionKey != "" {
+		state, err := updateContentModerationSessionRisk(ctx, store, input.UserID, sessionKey, event, riskCfg)
+		if err != nil {
+			return out, fmt.Errorf("update content moderation session risk: %w", err)
+		}
+		out.State = state
+		out.CumulativeScore = math.Max(currentScore, state.Score)
 	}
-	out.State = state
-	out.CumulativeScore = math.Max(currentScore, state.Score)
 	if cfg.AIChat.ActorRiskEnabled && actorKey != "" {
 		actorCfg := riskCfg
 		actorCfg.TTL = 24 * time.Hour
@@ -162,14 +162,19 @@ func (s *ContentModerationService) applyAIChatRiskState(ctx context.Context, inp
 		actorCfg.ElevatedIncrement = 0.05
 		actorState, actorErr := updateContentModerationSessionRisk(ctx, store, input.UserID, actorKey, event, actorCfg)
 		if actorErr != nil {
-			slog.Warn("content_moderation.actor_risk_update_failed", "error", actorErr)
+			return out, fmt.Errorf("update content moderation actor risk: %w", actorErr)
 		} else {
 			out.ActorBonus = voteairiskstate.ActorBonus(actorState)
+			if sessionKey == "" {
+				// Stateless clients share only a deliberately small actor-level
+				// carry-over. It cannot recreate a session cooldown or full history.
+				out.ActorBonus = math.Max(out.ActorBonus, math.Min(0.08, actorState.Score*0.08))
+			}
 		}
 	}
 	out.CumulativeScore = math.Min(1, out.CumulativeScore+out.ActorBonus)
 	out.Tier = voteairiskstate.TierForScore(out.CumulativeScore, riskCfg.ObserveThreshold, riskCfg.BlockThreshold)
-	return out
+	return out, nil
 }
 
 func updateContentModerationSessionRisk(

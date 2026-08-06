@@ -78,6 +78,25 @@ type contentModerationConfigRequest struct {
 	AISessionRiskHalfLifeMinutes      *int                                    `json:"ai_session_risk_half_life_minutes"`
 	AISessionRiskBlockCooldownMinutes *int                                    `json:"ai_session_risk_block_cooldown_minutes"`
 	AIActorRiskEnabled                *bool                                   `json:"ai_actor_risk_enabled"`
+	// CUSTOM(VOTE-AI-AUDIT-COST/CONTEXT): incremental audit configuration bridge.
+	AIIncrementalAuditEnabled          *bool    `json:"ai_incremental_audit_enabled"`
+	AIInputProvenanceV2Enabled         *bool    `json:"ai_input_provenance_v2_enabled"`
+	AIDeterministicRiskV2Enabled       *bool    `json:"ai_deterministic_risk_v2_enabled"`
+	AIRecentUserTurns                  *int     `json:"ai_recent_user_turns"`
+	AISummaryMaxChars                  *int     `json:"ai_summary_max_chars"`
+	AIFullReviewThreshold              *float64 `json:"ai_full_review_threshold"`
+	AIFullReviewRiskDelta              *float64 `json:"ai_full_review_risk_delta"`
+	AIPeriodicFullReviewTurns          *int     `json:"ai_periodic_full_review_turns"`
+	AIFullReviewMaxInputChars          *int     `json:"ai_full_review_max_input_chars"`
+	AIFastMaxOutputTokens              *int     `json:"ai_fast_max_output_tokens"`
+	AIFullMaxOutputTokens              *int     `json:"ai_full_max_output_tokens"`
+	AIMaxReviewMaxOutputTokens         *int     `json:"ai_max_review_max_output_tokens"`
+	AIAuditContextTTLMinutes           *int     `json:"ai_audit_context_ttl_minutes"`
+	AIPricingConfigured                *bool    `json:"ai_pricing_configured"`
+	AIPricingVersion                   *string  `json:"ai_pricing_version"`
+	AIUncachedInputUSDPerMillionTokens *float64 `json:"ai_uncached_input_usd_per_million_tokens"`
+	AICachedInputUSDPerMillionTokens   *float64 `json:"ai_cached_input_usd_per_million_tokens"`
+	AIOutputUSDPerMillionTokens        *float64 `json:"ai_output_usd_per_million_tokens"`
 }
 
 type contentModerationAPIKeyTestRequest struct {
@@ -124,7 +143,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	cfg, err := h.service.UpdateConfig(c.Request.Context(), service.UpdateContentModerationConfigInput{
+	input := service.UpdateContentModerationConfigInput{
 		Enabled:                           req.Enabled,
 		Mode:                              req.Mode,
 		AuditProvider:                     req.AuditProvider,
@@ -178,12 +197,38 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		AISessionRiskHalfLifeMinutes:      req.AISessionRiskHalfLifeMinutes,
 		AISessionRiskBlockCooldownMinutes: req.AISessionRiskBlockCooldownMinutes,
 		AIActorRiskEnabled:                req.AIActorRiskEnabled,
-	})
+	}
+	applyContentModerationIncrementalConfig(&input, req)
+	cfg, err := h.service.UpdateConfig(c.Request.Context(), input)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, cfg)
+}
+
+// CUSTOM(VOTE-AI-AUDIT-COST/CONTEXT): applyContentModerationIncrementalConfig keeps the customization boundary
+// explicit so newly added controls cannot be accepted by JSON and then
+// silently dropped before reaching the service.
+func applyContentModerationIncrementalConfig(input *service.UpdateContentModerationConfigInput, req contentModerationConfigRequest) {
+	input.AIIncrementalAuditEnabled = req.AIIncrementalAuditEnabled
+	input.AIInputProvenanceV2Enabled = req.AIInputProvenanceV2Enabled
+	input.AIDeterministicRiskV2Enabled = req.AIDeterministicRiskV2Enabled
+	input.AIRecentUserTurns = req.AIRecentUserTurns
+	input.AISummaryMaxChars = req.AISummaryMaxChars
+	input.AIFullReviewThreshold = req.AIFullReviewThreshold
+	input.AIFullReviewRiskDelta = req.AIFullReviewRiskDelta
+	input.AIPeriodicFullReviewTurns = req.AIPeriodicFullReviewTurns
+	input.AIFullReviewMaxInputChars = req.AIFullReviewMaxInputChars
+	input.AIFastMaxOutputTokens = req.AIFastMaxOutputTokens
+	input.AIFullMaxOutputTokens = req.AIFullMaxOutputTokens
+	input.AIMaxReviewMaxOutputTokens = req.AIMaxReviewMaxOutputTokens
+	input.AIAuditContextTTLMinutes = req.AIAuditContextTTLMinutes
+	input.AIPricingConfigured = req.AIPricingConfigured
+	input.AIPricingVersion = req.AIPricingVersion
+	input.AIUncachedInputUSDPerMillionTokens = req.AIUncachedInputUSDPerMillionTokens
+	input.AICachedInputUSDPerMillionTokens = req.AICachedInputUSDPerMillionTokens
+	input.AIOutputUSDPerMillionTokens = req.AIOutputUSDPerMillionTokens
 }
 
 func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {

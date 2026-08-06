@@ -19,9 +19,27 @@ type contentModerationRepository struct {
 
 var _ service.ContentModerationRepository = (*contentModerationRepository)(nil)
 var _ service.ContentModerationLifecycleRepository = (*contentModerationRepository)(nil)
+var _ service.ContentModerationBusinessCostReader = (*contentModerationRepository)(nil)
 
 func NewContentModerationRepository(db *sql.DB) *contentModerationRepository {
 	return &contentModerationRepository{db: db}
+}
+
+// SumBusinessActualCostSince returns user-facing business consumption for the
+// same process-lifetime window as content moderation metrics. actual_cost is
+// expressed in USD throughout the existing usage API.
+func (r *contentModerationRepository) SumBusinessActualCostSince(ctx context.Context, since time.Time) (float64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("content moderation repository database unavailable")
+	}
+	var total float64
+	if err := r.db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(actual_cost), 0)
+FROM usage_logs
+WHERE created_at >= $1`, since).Scan(&total); err != nil {
+		return 0, fmt.Errorf("sum business actual cost since %s: %w", since.UTC().Format(time.RFC3339Nano), err)
+	}
+	return total, nil
 }
 
 func (r *contentModerationRepository) CreateLog(ctx context.Context, log *service.ContentModerationLog) error {
@@ -35,6 +53,10 @@ func (r *contentModerationRepository) CreateLog(ctx context.Context, log *servic
 	thresholdSnapshot, err := json.Marshal(log.ThresholdSnapshot)
 	if err != nil {
 		return fmt.Errorf("marshal moderation thresholds: %w", err)
+	}
+	auditDetails, err := json.Marshal(log.AuditDetails)
+	if err != nil {
+		return fmt.Errorf("marshal moderation audit details: %w", err)
 	}
 	var userID any
 	if log.UserID != nil {
@@ -59,20 +81,20 @@ INSERT INTO content_moderation_logs (
     category_scores, threshold_snapshot, input_excerpt, upstream_latency_ms, error,
     violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword,
     audit_status, audit_code, audit_retryable, side_effect_status, notification_status,
-    side_effect_error
+    side_effect_error, audit_details
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14, $15,
     $16::jsonb, $17::jsonb, $18, $19, $20,
     $21, $22, $23, $24, $25,
-    $26, $27, $28, $29, $30, $31
+    $26, $27, $28, $29, $30, $31, $32::jsonb
 ) RETURNING id, created_at`,
 		log.RequestID, userID, log.UserEmail, apiKeyID, log.APIKeyName, groupID, log.GroupName,
 		log.Endpoint, log.Provider, log.Model, log.Mode, log.Action, log.Flagged, log.HighestCategory, log.HighestScore,
 		string(categoryScores), string(thresholdSnapshot), log.InputExcerpt, latency, log.Error,
 		log.ViolationCount, log.AutoBanned, log.EmailSent, nullableIntPtr(log.QueueDelayMS), log.MatchedKeyword,
 		log.AuditStatus, log.AuditCode, log.AuditRetryable, log.SideEffectStatus, log.NotificationStatus,
-		log.SideEffectError,
+		log.SideEffectError, string(auditDetails),
 	).Scan(&log.ID, &log.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert content moderation log: %w", err)
@@ -110,7 +132,7 @@ SELECT
     l.side_effect_status, l.notification_status, l.side_effect_error,
     l.violation_count, l.auto_banned, l.email_sent, COALESCE(u.status, ''),
     COALESCE(mus.moderation_owned_disabled, FALSE),
-    l.queue_delay_ms, l.matched_keyword, l.created_at
+    l.queue_delay_ms, l.matched_keyword, l.audit_details, l.created_at
 FROM content_moderation_logs l
 LEFT JOIN users u ON u.id = l.user_id
 LEFT JOIN content_moderation_user_state mus ON mus.user_id = l.user_id `+whereSQL+`
@@ -127,7 +149,7 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 	for rows.Next() {
 		var item service.ContentModerationLog
 		var userID, apiKeyID, groupID, latency, queueDelay sql.NullInt64
-		var scoresRaw, thresholdsRaw []byte
+		var scoresRaw, thresholdsRaw, auditDetailsRaw []byte
 		if err := rows.Scan(
 			&item.ID,
 			&item.RequestID,
@@ -163,6 +185,7 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 			&item.ModerationBanActive,
 			&queueDelay,
 			&item.MatchedKeyword,
+			&auditDetailsRaw,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan content moderation log: %w", err)
@@ -191,6 +214,7 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 		_ = json.Unmarshal(scoresRaw, &item.CategoryScores)
 		item.ThresholdSnapshot = map[string]float64{}
 		_ = json.Unmarshal(thresholdsRaw, &item.ThresholdSnapshot)
+		_ = json.Unmarshal(auditDetailsRaw, &item.AuditDetails)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -235,6 +259,14 @@ func (r *contentModerationRepository) UpdateLogEmailSent(ctx context.Context, id
 }
 
 func (r *contentModerationRepository) UpdateLogEffects(ctx context.Context, id int64, patch service.ContentModerationLogEffectsPatch) error {
+	var auditDetails any
+	if patch.AuditDetails != nil {
+		encoded, err := json.Marshal(patch.AuditDetails)
+		if err != nil {
+			return fmt.Errorf("marshal moderation audit details patch: %w", err)
+		}
+		auditDetails = string(encoded)
+	}
 	result, err := r.db.ExecContext(ctx, `
 UPDATE content_moderation_logs
 SET violation_count = $1,
@@ -242,9 +274,10 @@ SET violation_count = $1,
     email_sent = $3,
     side_effect_status = $4,
     notification_status = $5,
-    side_effect_error = $6
-WHERE id = $7
-`, patch.ViolationCount, patch.AutoBanned, patch.EmailSent, patch.SideEffectStatus, patch.NotificationStatus, patch.SideEffectError, id)
+    side_effect_error = $6,
+    audit_details = COALESCE($7::jsonb, audit_details)
+WHERE id = $8
+`, patch.ViolationCount, patch.AutoBanned, patch.EmailSent, patch.SideEffectStatus, patch.NotificationStatus, patch.SideEffectError, auditDetails, id)
 	if err != nil {
 		return fmt.Errorf("update content moderation log effects: %w", err)
 	}

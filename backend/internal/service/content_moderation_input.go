@@ -20,11 +20,19 @@ const (
 	maxContentModerationExtractionVisitedValues    = 65536
 	contentModerationLiteralUserMarker             = "[LITERAL_USER_MARKER]"
 	contentModerationLiteralAssistantMarker        = "[LITERAL_ASSISTANT_MARKER]"
+	contentModerationLiteralToolMarker             = "[LITERAL_TOOL_MARKER]"
+	contentModerationLiteralSystemMarker           = "[LITERAL_SYSTEM_MARKER]"
 )
 
 var untrustedModerationRoleMarkerReplacer = strings.NewReplacer(
 	"[USER]", contentModerationLiteralUserMarker,
 	"[ASSISTANT]", contentModerationLiteralAssistantMarker,
+	"[TOOL]", contentModerationLiteralToolMarker,
+	"[TOOL_CALL]", "[LITERAL_TOOL_CALL_MARKER]",
+	"[SYSTEM]", contentModerationLiteralSystemMarker,
+	"[CLIENT_SYSTEM]", "[LITERAL_CLIENT_SYSTEM_MARKER]",
+	"[CLIENT_DEVELOPER]", "[LITERAL_CLIENT_DEVELOPER_MARKER]",
+	"[CLIENT_ROLE]", "[LITERAL_CLIENT_ROLE_MARKER]",
 )
 
 type ContentModerationExtractionStatus string
@@ -179,6 +187,10 @@ func ExtractContentModerationInputOutcome(protocol string, body []byte) ContentM
 		Text:        extractedText,
 		CurrentText: currentText,
 		Images:      normalizeModerationImages(images),
+		Turns:       contentModerationTurnsFromParts(parts, currentText),
+	}
+	if protocol == ContentModerationProtocolOpenAIResponses && strings.TrimSpace(root.Get("previous_response_id").String()) != "" {
+		linkContentModerationResponsesToolContinuation(out.Turns)
 	}
 	out.Normalize()
 	if out.IsEmpty() {
@@ -190,6 +202,110 @@ func ExtractContentModerationInputOutcome(protocol string, body []byte) ContentM
 		Input:     out,
 		Status:    ContentModerationExtractionStatusSuccess,
 		Truncated: budget.truncated,
+	}
+}
+
+// A Responses request may continue an earlier tool call with only
+// previous_response_id and function_call_output in the current envelope. The
+// previous response ID establishes a conservative link to prior user intent,
+// but it is not promoted to a stable moderation session identity.
+func linkContentModerationResponsesToolContinuation(turns []ContentModerationTurn) {
+	for index := len(turns) - 1; index >= 0; index-- {
+		if turns[index].Role != "tool" || turns[index].ToolCall {
+			continue
+		}
+		turns[index].LinkedToUserIntent = true
+		return
+	}
+}
+
+// CUSTOM(VOTE-AI-AUDIT-CONTEXT): derive structured roles only from labels
+// emitted by the protocol parser. User-supplied role-like labels are escaped
+// before they reach this function and therefore cannot forge a turn role.
+func contentModerationTurnsFromParts(parts []string, currentText string) []ContentModerationTurn {
+	turns := make([]ContentModerationTurn, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		label := "USER"
+		text := part
+		if newline := strings.IndexByte(part, '\n'); newline > 0 {
+			candidate := strings.TrimSpace(part[:newline])
+			if strings.HasPrefix(candidate, "[") && strings.HasSuffix(candidate, "]") {
+				label = strings.ToUpper(strings.TrimSuffix(strings.TrimPrefix(candidate, "["), "]"))
+				text = strings.TrimSpace(part[newline+1:])
+			}
+		}
+		if text == "" {
+			continue
+		}
+		turn := ContentModerationTurn{Role: "system", Text: text}
+		switch label {
+		case "USER":
+			turn.Role = "user"
+		case "ASSISTANT":
+			turn.Role = "assistant"
+		case "TOOL":
+			turn.Role = "tool"
+		case "TOOL_CALL":
+			turn.Role = "tool"
+			turn.ToolCall = true
+		case "CLIENT_SYSTEM":
+			turn.Role = "system"
+		case "CLIENT_DEVELOPER":
+			turn.Role = "developer"
+		case "CLIENT_ROLE":
+			turn.Role = "system"
+		}
+		turn.Truncated = strings.Contains(text, "[CONTEXT OMITTED]")
+		if turn.Role == "system" || turn.Role == "developer" {
+			turn.MetadataEnvelope, turn.MetadataHint = classifyContentModerationMetadataEnvelope(text)
+		}
+		turns = append(turns, turn)
+	}
+	if len(turns) == 0 && strings.TrimSpace(currentText) != "" {
+		turns = append(turns, ContentModerationTurn{Role: "user", Text: strings.TrimSpace(currentText)})
+	}
+	if len(turns) > 0 {
+		hasToolCallSinceUser := false
+		for idx := range turns {
+			// Every parsed turn belongs to this request envelope. A tool output is
+			// linked only when the same envelope contains a preceding tool call
+			// after the latest user turn. previous_response_id continuations are
+			// linked separately after this parser returns.
+			turns[idx].Current = true
+			if turns[idx].Role == "user" {
+				hasToolCallSinceUser = false
+				continue
+			}
+			if turns[idx].ToolCall {
+				hasToolCallSinceUser = true
+				continue
+			}
+			if turns[idx].Role == "tool" && hasToolCallSinceUser {
+				turns[idx].LinkedToUserIntent = true
+			}
+		}
+	}
+	return turns
+}
+
+func classifyContentModerationMetadataEnvelope(text string) (bool, string) {
+	value := strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case strings.Contains(value, "<in-app-browser-context") && strings.Contains(value, "</in-app-browser-context>"):
+		return true, "ambient_ui"
+	case strings.Contains(value, "<environment_context") && strings.Contains(value, "</environment_context>"):
+		return true, "environment"
+	case strings.Contains(value, "<context_handoff") && strings.Contains(value, "</context_handoff>"):
+		return true, "context_handoff"
+	case strings.HasPrefix(value, "another language model started to solve this problem and produced a summary"),
+		strings.HasPrefix(value, "a previous language model started to solve this problem and produced a summary"):
+		return true, "context_handoff"
+	default:
+		return false, ""
 	}
 }
 
@@ -486,6 +602,9 @@ func classifyResponsesModerationItem(item gjson.Result) responsesModerationItemK
 	case "user":
 		return responsesModerationItemUser
 	case "assistant":
+		if hasStructuredModerationToolCall(item) {
+			return responsesModerationItemToolCall
+		}
 		return responsesModerationItemAssistant
 	case "system":
 		return responsesModerationItemClientSystem
@@ -506,6 +625,26 @@ func classifyResponsesModerationItem(item gjson.Result) responsesModerationItemK
 	return responsesModerationItemIgnored
 }
 
+func hasStructuredModerationToolCall(item gjson.Result) bool {
+	for _, field := range []string{"tool_calls", "function_call"} {
+		value := item.Get(field)
+		if value.IsObject() || (value.IsArray() && len(value.Array()) > 0) {
+			return true
+		}
+	}
+	content := item.Get("content")
+	if !content.IsArray() {
+		return false
+	}
+	for _, part := range content.Array() {
+		typ := strings.ToLower(strings.TrimSpace(part.Get("type").String()))
+		if typ == "tool_use" || isCodexToolCallContextItemType(typ) {
+			return true
+		}
+	}
+	return false
+}
+
 func collectResponsesItem(item gjson.Result, kind responsesModerationItemKind, parts *[]string, images *[]string, budget *contentModerationExtractionBudget) {
 	if item.Type == gjson.String {
 		addModerationText(parts, item.String())
@@ -513,6 +652,9 @@ func collectResponsesItem(item gjson.Result, kind responsesModerationItemKind, p
 	}
 	switch kind {
 	case responsesModerationItemToolCall:
+		collectContentValueBounded(item.Get("content"), parts, images, budget, 0)
+		collectStructuredModerationValue(item.Get("tool_calls"), parts, images, budget, 0)
+		collectStructuredModerationValue(item.Get("function_call"), parts, images, budget, 0)
 		addModerationText(parts, item.Get("name").String())
 		collectStructuredModerationValue(item.Get("arguments"), parts, images, budget, 0)
 		collectStructuredModerationValue(item.Get("input"), parts, images, budget, 0)

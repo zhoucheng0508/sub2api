@@ -55,8 +55,11 @@ describe('Vote AI upstream integration points', () => {
     expect(riskControlSource).toContain("configForm.audit_provider === 'ai_chat' ? [] : moderationTestImages.value")
     expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/RecommendedPromptControl.vue")
     expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/ModerationPerformanceSettings.vue")
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/IncrementalAuditSettings.vue")
+    expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/AuditStageDiagnostics.vue")
     expect(riskControlSource).toContain("@/custom/vote-ai/risk-control/ModerationTestOutcome.vue")
     expect(riskControlSource).toContain('ai_synchronous_budget_ms:')
+    expect(riskControlSource).toContain('ai_incremental_audit_enabled:')
     expect(riskControlSource).not.toContain('你是 API 中转网关的内容安全分类器')
   })
 

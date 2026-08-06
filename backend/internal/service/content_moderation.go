@@ -20,10 +20,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	voteaiauditcontext "github.com/Wei-Shaw/sub2api/internal/custom/voteai/auditcontext"
+	voteaideterministicrisk "github.com/Wei-Shaw/sub2api/internal/custom/voteai/deterministicrisk"
 	voteaimoderation "github.com/Wei-Shaw/sub2api/internal/custom/voteai/moderation"
 	voteairiskstate "github.com/Wei-Shaw/sub2api/internal/custom/voteai/riskstate"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 )
@@ -78,8 +81,14 @@ const (
 	ContentModerationBanOutcomeAlreadyOwned = "already_owned"
 	ContentModerationBanOutcomeIneligible   = "ineligible"
 
+	ContentModerationCostCoverageNoSamples = "no_samples"
+	ContentModerationCostCoverageUnknown   = "unknown"
+	ContentModerationCostCoveragePartial   = "partial"
+	ContentModerationCostCoverageComplete  = "complete"
+
 	contentModerationKeywordCategory           = "keyword"
 	contentModerationAuditCodeStaleCyberPolicy = "cyber_policy_stale_after_risk_reset"
+	contentModerationAuditCodeNoNewUserIntent  = "skip_no_new_user_intent"
 
 	ContentModerationKeywordModeKeywordOnly   = "keyword_only"
 	ContentModerationKeywordModeKeywordAndAPI = "keyword_and_api"
@@ -126,6 +135,7 @@ const (
 	defaultContentModerationNonHitRetentionDays   = 3
 	maxContentModerationRetentionDays             = 3650
 	maxContentModerationNonHitRetentionDays       = 3
+	maxContentModerationUSDPerMillionTokens       = 1000000
 	contentModerationKeyRateLimitFreezeDuration   = time.Minute
 	contentModerationKeyAuthFreezeDuration        = 10 * time.Minute
 	contentModerationKeyHTTPErrorFreezeDuration   = 10 * time.Second
@@ -140,17 +150,17 @@ const (
 	defaultAIChatBaseURL                          = "https://api.deepseek.com"
 	defaultAIChatModel                            = "deepseek-v4-flash"
 	defaultAIChatTimeoutMS                        = 15000
-	defaultAIChatSynchronousBudgetMS              = 4800
+	defaultAIChatSynchronousBudgetMS              = 3500
 	minAIChatSynchronousBudgetMS                  = 500
 	maxAIChatSynchronousBudgetMS                  = 5000
 	preferredAIChatNextAPIKeyBudget               = 1500 * time.Millisecond
 	minimumAIChatAPIKeyBudget                     = 500 * time.Millisecond
 	aiChatAPIKeyBudgetGuard                       = 50 * time.Millisecond
-	defaultAIChatFastInputChars                   = 12000
-	defaultAIChatFallbackInputChars               = 4000
+	defaultAIChatFastInputChars                   = 6000
+	defaultAIChatFallbackInputChars               = 3000
 	defaultAIChatConfidenceThreshold              = 0.7
-	defaultAIChatCacheTTLSeconds                  = 300
-	defaultAIChatMaxInputChars                    = 200000
+	defaultAIChatCacheTTLSeconds                  = 3600
+	defaultAIChatMaxInputChars                    = 60000
 	minAIChatMaxInputChars                        = 1000
 	defaultAIChatThinkingMode                     = "enabled"
 	defaultAIChatReasoningEffort                  = "adaptive"
@@ -158,10 +168,25 @@ const (
 	defaultAIChatSessionRiskTTLMinutes            = 120
 	defaultAIChatSessionRiskHalfLifeMinutes       = 30
 	defaultAIChatSessionRiskBlockCooldownMinutes  = 30
+	defaultAIChatRecentUserTurns                  = 2
+	defaultAIChatSummaryMaxChars                  = 800
+	defaultAIChatFullReviewThreshold              = 0.40
+	defaultAIChatFullReviewRiskDelta              = 0.15
+	defaultAIChatPeriodicFullReviewTurns          = 10
+	defaultAIChatFullReviewMaxInputChars          = 60000
+	defaultAIChatFastMaxOutputTokens              = 256
+	defaultAIChatFullMaxOutputTokens              = 1024
+	defaultAIChatMaxReviewMaxOutputTokens         = 1536
+	defaultAIChatAuditContextTTLMinutes           = 120
 	maxAIChatCacheTTLSeconds                      = 86400
 	maxAIChatSessionRiskTTLMinutes                = 1440
 	maxAIChatSessionRiskHalfLifeMinutes           = 720
 	maxAIChatSessionRiskBlockCooldownMinutes      = 1440
+	maxAIChatRecentUserTurns                      = 8
+	maxAIChatSummaryMaxChars                      = 4000
+	maxAIChatPeriodicFullReviewTurns              = 100
+	maxAIChatOutputTokens                         = 8192
+	maxAIChatAuditContextTTLMinutes               = 1440
 
 	contentModerationCleanupInterval = 24 * time.Hour
 	contentModerationCleanupTimeout  = 30 * time.Minute
@@ -246,6 +271,7 @@ type ContentModerationConfig struct {
 	ModelFilter          ContentModerationModelFilter   `json:"model_filter"`
 	UserFilter           ContentModerationUserFilter    `json:"user_filter"`
 	AccountFilter        ContentModerationAccountFilter `json:"account_filter"`
+	sideEffectsDisabled  bool
 	// CyberPolicyExcludeFromBanCount 为 true 时，cyber_policy 命中不参与自动封号计数：
 	// 当次不判定封号，且历史 cyber 行在 CountFlaggedByUserSince 中被排除。
 	// 默认 false（计入，与历史行为一致；旧配置 JSON 无此字段时反序列化为 false）。
@@ -277,9 +303,34 @@ type ContentModerationAIChatConfig struct {
 	SessionRiskHalfLifeMinutes      int      `json:"session_risk_half_life_minutes"`
 	SessionRiskBlockCooldownMinutes int      `json:"session_risk_block_cooldown_minutes"`
 	ActorRiskEnabled                bool     `json:"actor_risk_enabled"`
-	existingRiskScore               float64
-	cacheKeyAlias                   string
-	supplementalReview              bool
+	// CUSTOM(VOTE-AI-AUDIT-COST/CONTEXT): opt-in incremental auditing keeps
+	// legacy behavior unchanged until an administrator enables it.
+	IncrementalAuditEnabled    bool    `json:"incremental_audit_enabled"`
+	InputProvenanceV2Enabled   bool    `json:"input_provenance_v2_enabled"`
+	DeterministicRiskV2Enabled bool    `json:"deterministic_risk_v2_enabled"`
+	RecentUserTurns            int     `json:"recent_user_turns"`
+	SummaryMaxChars            int     `json:"summary_max_chars"`
+	FullReviewThreshold        float64 `json:"full_review_threshold"`
+	FullReviewRiskDelta        float64 `json:"full_review_risk_delta"`
+	PeriodicFullReviewTurns    int     `json:"periodic_full_review_turns"`
+	FullReviewMaxInputChars    int     `json:"full_review_max_input_chars"`
+	FastMaxOutputTokens        int     `json:"fast_max_output_tokens"`
+	FullMaxOutputTokens        int     `json:"full_max_output_tokens"`
+	MaxReviewMaxOutputTokens   int     `json:"max_review_max_output_tokens"`
+	AuditContextTTLMinutes     int     `json:"audit_context_ttl_minutes"`
+	// Pricing is intentionally nullable. A missing rate means cost is unknown,
+	// never zero. PricingVersion identifies the rate snapshot used at call time.
+	PricingVersion                   string   `json:"pricing_version,omitempty"`
+	UncachedInputUSDPerMillionTokens *float64 `json:"uncached_input_usd_per_million_tokens,omitempty"`
+	CachedInputUSDPerMillionTokens   *float64 `json:"cached_input_usd_per_million_tokens,omitempty"`
+	OutputUSDPerMillionTokens        *float64 `json:"output_usd_per_million_tokens,omitempty"`
+	existingRiskScore                float64
+	cacheKeyAlias                    string
+	supplementalReview               bool
+	auditStage                       string
+	riskStateDigest                  string
+	forceFullReview                  bool
+	inputHash                        string
 }
 
 type ContentModerationProviderProfileView struct {
@@ -335,28 +386,46 @@ type ContentModerationConfigView struct {
 
 type ContentModerationAIChatConfigView struct {
 	ContentModerationProviderProfileView
-	ConfidenceThreshold             float64 `json:"confidence_threshold"`
-	CacheEnabled                    bool    `json:"cache_enabled"`
-	CacheTTLSeconds                 int     `json:"cache_ttl_seconds"`
-	SystemPrompt                    string  `json:"system_prompt"`
-	RecommendedSystemPrompt         string  `json:"recommended_system_prompt"`
-	RecommendedPromptVersion        string  `json:"recommended_prompt_version"`
-	SystemPromptVersion             string  `json:"system_prompt_version"`
-	UsesRecommendedSystemPrompt     bool    `json:"uses_recommended_system_prompt"`
-	FailurePolicy                   string  `json:"failure_policy"`
-	MaxInputChars                   int     `json:"max_input_chars"`
-	SynchronousBudgetMS             int     `json:"synchronous_budget_ms"`
-	FastInputChars                  int     `json:"fast_input_chars"`
-	FallbackInputChars              int     `json:"fallback_input_chars"`
-	ThinkingMode                    string  `json:"thinking_mode"`
-	ReasoningEffort                 string  `json:"reasoning_effort"`
-	RiskLevelsEnabled               bool    `json:"risk_levels_enabled"`
-	ObserveThreshold                float64 `json:"observe_threshold"`
-	SessionRiskEnabled              bool    `json:"session_risk_enabled"`
-	SessionRiskTTLMinutes           int     `json:"session_risk_ttl_minutes"`
-	SessionRiskHalfLifeMinutes      int     `json:"session_risk_half_life_minutes"`
-	SessionRiskBlockCooldownMinutes int     `json:"session_risk_block_cooldown_minutes"`
-	ActorRiskEnabled                bool    `json:"actor_risk_enabled"`
+	ConfidenceThreshold              float64  `json:"confidence_threshold"`
+	CacheEnabled                     bool     `json:"cache_enabled"`
+	CacheTTLSeconds                  int      `json:"cache_ttl_seconds"`
+	SystemPrompt                     string   `json:"system_prompt"`
+	RecommendedSystemPrompt          string   `json:"recommended_system_prompt"`
+	RecommendedPromptVersion         string   `json:"recommended_prompt_version"`
+	SystemPromptVersion              string   `json:"system_prompt_version"`
+	UsesRecommendedSystemPrompt      bool     `json:"uses_recommended_system_prompt"`
+	FailurePolicy                    string   `json:"failure_policy"`
+	MaxInputChars                    int      `json:"max_input_chars"`
+	SynchronousBudgetMS              int      `json:"synchronous_budget_ms"`
+	FastInputChars                   int      `json:"fast_input_chars"`
+	FallbackInputChars               int      `json:"fallback_input_chars"`
+	ThinkingMode                     string   `json:"thinking_mode"`
+	ReasoningEffort                  string   `json:"reasoning_effort"`
+	RiskLevelsEnabled                bool     `json:"risk_levels_enabled"`
+	ObserveThreshold                 float64  `json:"observe_threshold"`
+	SessionRiskEnabled               bool     `json:"session_risk_enabled"`
+	SessionRiskTTLMinutes            int      `json:"session_risk_ttl_minutes"`
+	SessionRiskHalfLifeMinutes       int      `json:"session_risk_half_life_minutes"`
+	SessionRiskBlockCooldownMinutes  int      `json:"session_risk_block_cooldown_minutes"`
+	ActorRiskEnabled                 bool     `json:"actor_risk_enabled"`
+	IncrementalAuditEnabled          bool     `json:"incremental_audit_enabled"`
+	InputProvenanceV2Enabled         bool     `json:"input_provenance_v2_enabled"`
+	DeterministicRiskV2Enabled       bool     `json:"deterministic_risk_v2_enabled"`
+	RecentUserTurns                  int      `json:"recent_user_turns"`
+	SummaryMaxChars                  int      `json:"summary_max_chars"`
+	FullReviewThreshold              float64  `json:"full_review_threshold"`
+	FullReviewRiskDelta              float64  `json:"full_review_risk_delta"`
+	PeriodicFullReviewTurns          int      `json:"periodic_full_review_turns"`
+	FullReviewMaxInputChars          int      `json:"full_review_max_input_chars"`
+	FastMaxOutputTokens              int      `json:"fast_max_output_tokens"`
+	FullMaxOutputTokens              int      `json:"full_max_output_tokens"`
+	MaxReviewMaxOutputTokens         int      `json:"max_review_max_output_tokens"`
+	AuditContextTTLMinutes           int      `json:"audit_context_ttl_minutes"`
+	PricingConfigured                bool     `json:"pricing_configured"`
+	PricingVersion                   string   `json:"pricing_version"`
+	UncachedInputUSDPerMillionTokens *float64 `json:"uncached_input_usd_per_million_tokens"`
+	CachedInputUSDPerMillionTokens   *float64 `json:"cached_input_usd_per_million_tokens"`
+	OutputUSDPerMillionTokens        *float64 `json:"output_usd_per_million_tokens"`
 }
 
 type ContentModerationAPIKeyStatus struct {
@@ -448,54 +517,72 @@ type UpdateContentModerationConfigInput struct {
 	BaseURL       *string `json:"base_url"`
 	Model         *string `json:"model"`
 	// ProxyID nil 表示不修改；<=0 表示清除代理（恢复直连）；>0 表示指定代理。
-	ProxyID                           *int64                          `json:"proxy_id"`
-	APIKey                            *string                         `json:"api_key"`
-	APIKeys                           *[]string                       `json:"api_keys"`
-	APIKeysMode                       string                          `json:"api_keys_mode"`
-	DeleteAPIKeyHashes                *[]string                       `json:"delete_api_key_hashes"`
-	ClearAPIKey                       bool                            `json:"clear_api_key"`
-	TimeoutMS                         *int                            `json:"timeout_ms"`
-	SampleRate                        *int                            `json:"sample_rate"`
-	AllGroups                         *bool                           `json:"all_groups"`
-	GroupIDs                          *[]int64                        `json:"group_ids"`
-	RecordNonHits                     *bool                           `json:"record_non_hits"`
-	Thresholds                        *map[string]float64             `json:"thresholds"`
-	WorkerCount                       *int                            `json:"worker_count"`
-	QueueSize                         *int                            `json:"queue_size"`
-	BlockStatus                       *int                            `json:"block_status"`
-	BlockMessage                      *string                         `json:"block_message"`
-	EmailOnHit                        *bool                           `json:"email_on_hit"`
-	AutoBanEnabled                    *bool                           `json:"auto_ban_enabled"`
-	BanThreshold                      *int                            `json:"ban_threshold"`
-	ViolationWindowHours              *int                            `json:"violation_window_hours"`
-	RetryCount                        *int                            `json:"retry_count"`
-	HitRetentionDays                  *int                            `json:"hit_retention_days"`
-	NonHitRetentionDays               *int                            `json:"non_hit_retention_days"`
-	PreHashCheckEnabled               *bool                           `json:"pre_hash_check_enabled"`
-	BlockedKeywords                   *[]string                       `json:"blocked_keywords"`
-	KeywordBlockingMode               *string                         `json:"keyword_blocking_mode"`
-	ModelFilter                       *ContentModerationModelFilter   `json:"model_filter"`
-	UserFilter                        *ContentModerationUserFilter    `json:"user_filter"`
-	AccountFilter                     *ContentModerationAccountFilter `json:"account_filter"`
-	CyberPolicyExcludeFromBanCount    *bool                           `json:"cyber_policy_exclude_from_ban_count"`
-	AIConfidenceThreshold             *float64                        `json:"ai_confidence_threshold"`
-	AICacheEnabled                    *bool                           `json:"ai_cache_enabled"`
-	AICacheTTLSeconds                 *int                            `json:"ai_cache_ttl_seconds"`
-	AISystemPrompt                    *string                         `json:"ai_system_prompt"`
-	AIFailurePolicy                   *string                         `json:"ai_failure_policy"`
-	AIMaxInputChars                   *int                            `json:"ai_max_input_chars"`
-	AISynchronousBudgetMS             *int                            `json:"ai_synchronous_budget_ms"`
-	AIFastInputChars                  *int                            `json:"ai_fast_input_chars"`
-	AIFallbackInputChars              *int                            `json:"ai_fallback_input_chars"`
-	AIThinkingMode                    *string                         `json:"ai_thinking_mode"`
-	AIReasoningEffort                 *string                         `json:"ai_reasoning_effort"`
-	AIRiskLevelsEnabled               *bool                           `json:"ai_risk_levels_enabled"`
-	AIObserveThreshold                *float64                        `json:"ai_observe_threshold"`
-	AISessionRiskEnabled              *bool                           `json:"ai_session_risk_enabled"`
-	AISessionRiskTTLMinutes           *int                            `json:"ai_session_risk_ttl_minutes"`
-	AISessionRiskHalfLifeMinutes      *int                            `json:"ai_session_risk_half_life_minutes"`
-	AISessionRiskBlockCooldownMinutes *int                            `json:"ai_session_risk_block_cooldown_minutes"`
-	AIActorRiskEnabled                *bool                           `json:"ai_actor_risk_enabled"`
+	ProxyID                            *int64                          `json:"proxy_id"`
+	APIKey                             *string                         `json:"api_key"`
+	APIKeys                            *[]string                       `json:"api_keys"`
+	APIKeysMode                        string                          `json:"api_keys_mode"`
+	DeleteAPIKeyHashes                 *[]string                       `json:"delete_api_key_hashes"`
+	ClearAPIKey                        bool                            `json:"clear_api_key"`
+	TimeoutMS                          *int                            `json:"timeout_ms"`
+	SampleRate                         *int                            `json:"sample_rate"`
+	AllGroups                          *bool                           `json:"all_groups"`
+	GroupIDs                           *[]int64                        `json:"group_ids"`
+	RecordNonHits                      *bool                           `json:"record_non_hits"`
+	Thresholds                         *map[string]float64             `json:"thresholds"`
+	WorkerCount                        *int                            `json:"worker_count"`
+	QueueSize                          *int                            `json:"queue_size"`
+	BlockStatus                        *int                            `json:"block_status"`
+	BlockMessage                       *string                         `json:"block_message"`
+	EmailOnHit                         *bool                           `json:"email_on_hit"`
+	AutoBanEnabled                     *bool                           `json:"auto_ban_enabled"`
+	BanThreshold                       *int                            `json:"ban_threshold"`
+	ViolationWindowHours               *int                            `json:"violation_window_hours"`
+	RetryCount                         *int                            `json:"retry_count"`
+	HitRetentionDays                   *int                            `json:"hit_retention_days"`
+	NonHitRetentionDays                *int                            `json:"non_hit_retention_days"`
+	PreHashCheckEnabled                *bool                           `json:"pre_hash_check_enabled"`
+	BlockedKeywords                    *[]string                       `json:"blocked_keywords"`
+	KeywordBlockingMode                *string                         `json:"keyword_blocking_mode"`
+	ModelFilter                        *ContentModerationModelFilter   `json:"model_filter"`
+	UserFilter                         *ContentModerationUserFilter    `json:"user_filter"`
+	AccountFilter                      *ContentModerationAccountFilter `json:"account_filter"`
+	CyberPolicyExcludeFromBanCount     *bool                           `json:"cyber_policy_exclude_from_ban_count"`
+	AIConfidenceThreshold              *float64                        `json:"ai_confidence_threshold"`
+	AICacheEnabled                     *bool                           `json:"ai_cache_enabled"`
+	AICacheTTLSeconds                  *int                            `json:"ai_cache_ttl_seconds"`
+	AISystemPrompt                     *string                         `json:"ai_system_prompt"`
+	AIFailurePolicy                    *string                         `json:"ai_failure_policy"`
+	AIMaxInputChars                    *int                            `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS              *int                            `json:"ai_synchronous_budget_ms"`
+	AIFastInputChars                   *int                            `json:"ai_fast_input_chars"`
+	AIFallbackInputChars               *int                            `json:"ai_fallback_input_chars"`
+	AIThinkingMode                     *string                         `json:"ai_thinking_mode"`
+	AIReasoningEffort                  *string                         `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled                *bool                           `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold                 *float64                        `json:"ai_observe_threshold"`
+	AISessionRiskEnabled               *bool                           `json:"ai_session_risk_enabled"`
+	AISessionRiskTTLMinutes            *int                            `json:"ai_session_risk_ttl_minutes"`
+	AISessionRiskHalfLifeMinutes       *int                            `json:"ai_session_risk_half_life_minutes"`
+	AISessionRiskBlockCooldownMinutes  *int                            `json:"ai_session_risk_block_cooldown_minutes"`
+	AIActorRiskEnabled                 *bool                           `json:"ai_actor_risk_enabled"`
+	AIIncrementalAuditEnabled          *bool                           `json:"ai_incremental_audit_enabled"`
+	AIInputProvenanceV2Enabled         *bool                           `json:"ai_input_provenance_v2_enabled"`
+	AIDeterministicRiskV2Enabled       *bool                           `json:"ai_deterministic_risk_v2_enabled"`
+	AIRecentUserTurns                  *int                            `json:"ai_recent_user_turns"`
+	AISummaryMaxChars                  *int                            `json:"ai_summary_max_chars"`
+	AIFullReviewThreshold              *float64                        `json:"ai_full_review_threshold"`
+	AIFullReviewRiskDelta              *float64                        `json:"ai_full_review_risk_delta"`
+	AIPeriodicFullReviewTurns          *int                            `json:"ai_periodic_full_review_turns"`
+	AIFullReviewMaxInputChars          *int                            `json:"ai_full_review_max_input_chars"`
+	AIFastMaxOutputTokens              *int                            `json:"ai_fast_max_output_tokens"`
+	AIFullMaxOutputTokens              *int                            `json:"ai_full_max_output_tokens"`
+	AIMaxReviewMaxOutputTokens         *int                            `json:"ai_max_review_max_output_tokens"`
+	AIAuditContextTTLMinutes           *int                            `json:"ai_audit_context_ttl_minutes"`
+	AIPricingConfigured                *bool                           `json:"ai_pricing_configured"`
+	AIPricingVersion                   *string                         `json:"ai_pricing_version"`
+	AIUncachedInputUSDPerMillionTokens *float64                        `json:"ai_uncached_input_usd_per_million_tokens"`
+	AICachedInputUSDPerMillionTokens   *float64                        `json:"ai_cached_input_usd_per_million_tokens"`
+	AIOutputUSDPerMillionTokens        *float64                        `json:"ai_output_usd_per_million_tokens"`
 }
 
 type ContentModerationModelFilter struct {
@@ -519,23 +606,57 @@ type ContentModerationCheckInput struct {
 	UserEmail  string
 	APIKeyID   int64
 	APIKeyName string
-	SessionID  string
-	GroupID    *int64
-	GroupName  string
-	Endpoint   string
-	Provider   string
-	Model      string
-	Protocol   string
-	Body       []byte
+	// AccountID is the selected upstream account. Zero means moderation ran
+	// before account selection or an older caller did not propagate it.
+	AccountID int64
+	SessionID string
+	// SessionSource is the observable, bounded origin of SessionID: header,
+	// prompt_cache_key, or none.
+	SessionSource string
+	GroupID       *int64
+	GroupName     string
+	Endpoint      string
+	Provider      string
+	Model         string
+	Protocol      string
+	Body          []byte
+	// ClientHeaders contains only identity/fingerprint headers selected by the
+	// gateway. It must never contain credentials or cookies.
+	ClientHeaders http.Header
+	// TrustedMetadataProvenance is set only by an internal gateway adapter after
+	// it has authenticated the request provenance. Inbound headers and body
+	// fields must never set this bit by themselves.
+	TrustedMetadataProvenance bool
 
 	ModerationEpoch    int64
 	ModerationEpochSet bool
 }
 
 type ContentModerationInput struct {
-	Text        string
-	CurrentText string
-	Images      []string
+	Text            string
+	CurrentText     string
+	Images          []string
+	Turns           []ContentModerationTurn
+	AuditTargetText string
+	AuditTargetKind string
+	HasExplicitUser bool
+	TrustedClient   bool
+	TrustedSignals  []string
+	IgnoredMetadata []string
+}
+
+type ContentModerationTurn struct {
+	Role               string
+	Source             string
+	Purpose            string
+	MetadataKind       string
+	Text               string
+	ToolCall           bool
+	Truncated          bool
+	Current            bool
+	LinkedToUserIntent bool
+	MetadataEnvelope   bool
+	MetadataHint       string
 }
 
 func (in *ContentModerationInput) Normalize() {
@@ -545,6 +666,17 @@ func (in *ContentModerationInput) Normalize() {
 	in.Text = trimModerationContext(in.Text, maxModerationInputRunes)
 	in.CurrentText = trimRunes(normalizeContentModerationText(in.CurrentText), maxModerationInputRunes)
 	in.Images = normalizeModerationImages(in.Images)
+	in.AuditTargetText = strings.TrimSpace(in.AuditTargetText)
+	in.AuditTargetKind = strings.TrimSpace(in.AuditTargetKind)
+	in.TrustedSignals = normalizeContentModerationStringValues(in.TrustedSignals)
+	in.IgnoredMetadata = normalizeContentModerationStringValues(in.IgnoredMetadata)
+	for idx := range in.Turns {
+		in.Turns[idx].Role = strings.ToLower(strings.TrimSpace(in.Turns[idx].Role))
+		in.Turns[idx].Source = strings.ToLower(strings.TrimSpace(in.Turns[idx].Source))
+		in.Turns[idx].Purpose = strings.ToLower(strings.TrimSpace(in.Turns[idx].Purpose))
+		in.Turns[idx].MetadataKind = strings.ToLower(strings.TrimSpace(in.Turns[idx].MetadataKind))
+		in.Turns[idx].Text = strings.TrimSpace(in.Turns[idx].Text)
+	}
 }
 
 func (in ContentModerationInput) IsEmpty() bool {
@@ -556,7 +688,44 @@ func (in ContentModerationInput) ModerationInput() any {
 }
 
 func (in ContentModerationInput) AIChatModerationInput() any {
-	return in.moderationInputWithLimit(maxModerationInputRunes)
+	copyInput := in
+	if contentModerationHasAuditTarget(in) {
+		copyInput.Text = renderContentModerationAIChatInput(in, maxModerationInputRunes)
+	}
+	return copyInput.moderationInputWithLimit(maxModerationInputRunes)
+}
+
+func renderContentModerationAIChatInput(in ContentModerationInput, maxRunes int) string {
+	targetKind := defaultContentModerationString(strings.TrimSpace(in.AuditTargetKind), "user_request")
+	targetText := voteaiauditcontext.RedactSecrets(strings.TrimSpace(in.AuditTargetText))
+	targetBlock := fmt.Sprintf("[AUDIT-TARGET kind=%s]\n%s", targetKind, targetText)
+	if len([]rune(targetBlock)) >= maxRunes {
+		return trimModerationContext(targetBlock, maxRunes)
+	}
+
+	turns := make([]voteaiauditcontext.Turn, 0, len(in.Turns))
+	for _, turn := range in.Turns {
+		if turn.Source == "trusted_metadata" || turn.Purpose == "ignored" || turn.Purpose == "audit_target" {
+			continue
+		}
+		text := strings.TrimSpace(turn.Text)
+		if turn.Role == "tool" {
+			text = sanitizeContentModerationToolOutput(text, 1000)
+		}
+		if text == "" {
+			continue
+		}
+		turns = append(turns, voteaiauditcontext.Turn{Role: voteaiauditcontext.Role(turn.Role), Text: text})
+	}
+	history := renderContentModerationAuditTurns(turns)
+	historyLimit := max(0, maxRunes-len([]rune(targetBlock))-32)
+	if len([]rune(history)) > historyLimit {
+		history = trimModerationContext(history, historyLimit)
+	}
+	if history == "" {
+		return targetBlock
+	}
+	return "[CONVERSATION-HISTORY]\n" + history + "\n\n" + targetBlock
 }
 
 func (in ContentModerationInput) moderationInputWithLimit(maxRunes int) any {
@@ -597,61 +766,129 @@ func (in ContentModerationInput) Hash() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func (in ContentModerationInput) AuditTargetHash(policyVersion string) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte("content-moderation-target:v2\x00"))
+	_, _ = h.Write([]byte(strings.TrimSpace(policyVersion)))
+	_, _ = h.Write([]byte("\x00"))
+	_, _ = h.Write([]byte(strings.TrimSpace(in.AuditTargetKind)))
+	_, _ = h.Write([]byte("\x00"))
+	_, _ = h.Write([]byte(voteaiauditcontext.RedactSecrets(normalizeContentModerationText(in.AuditTargetText))))
+	_, _ = h.Write([]byte("\x00supporting-context\x00"))
+	_, _ = h.Write([]byte(in.auditTargetHashSupportingContext()))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// auditTargetHashSupportingContext returns at most one directly adjacent,
+// provenance-normalized turn for referential targets such as "continue".
+// Unrelated history and trusted machine metadata must not affect a global hash.
+func (in ContentModerationInput) auditTargetHashSupportingContext() string {
+	if !voteaiauditcontext.NeedsPreviousContext(in.AuditTargetText) {
+		return ""
+	}
+	targetIndex := -1
+	for index, turn := range in.Turns {
+		if strings.EqualFold(strings.TrimSpace(turn.Purpose), "audit_target") {
+			targetIndex = index
+			break
+		}
+	}
+	if targetIndex <= 0 {
+		return ""
+	}
+	for index := targetIndex - 1; index >= 0; index-- {
+		turn := in.Turns[index]
+		if !strings.EqualFold(strings.TrimSpace(turn.Purpose), "supporting_context") ||
+			strings.EqualFold(strings.TrimSpace(turn.Source), "trusted_metadata") {
+			continue
+		}
+		text := voteaiauditcontext.RedactSecrets(normalizeContentModerationText(turn.Text))
+		if text == "" {
+			continue
+		}
+		text = trimModerationContext(text, 2000)
+		return strings.ToLower(strings.TrimSpace(turn.Role)) + "\x00" +
+			strings.ToLower(strings.TrimSpace(turn.Source)) + "\x00" + text
+	}
+	return ""
+}
+
+func normalizeContentModerationStringValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 type ContentModerationDecision struct {
-	Allowed             bool               `json:"allowed"`
-	Blocked             bool               `json:"blocked"`
-	Flagged             bool               `json:"flagged"`
-	Message             string             `json:"message"`
-	StatusCode          int                `json:"status_code"`
-	InputHash           string             `json:"input_hash,omitempty"`
-	HighestCategory     string             `json:"highest_category"`
-	HighestScore        float64            `json:"highest_score"`
-	CategoryScores      map[string]float64 `json:"category_scores"`
-	Action              string             `json:"action"`
-	RiskTier            string             `json:"risk_tier,omitempty"`
-	CurrentRiskScore    float64            `json:"current_risk_score,omitempty"`
-	CumulativeRiskScore float64            `json:"cumulative_risk_score,omitempty"`
+	Allowed                 bool               `json:"allowed"`
+	Blocked                 bool               `json:"blocked"`
+	Flagged                 bool               `json:"flagged"`
+	Message                 string             `json:"message"`
+	StatusCode              int                `json:"status_code"`
+	InputHash               string             `json:"input_hash,omitempty"`
+	HighestCategory         string             `json:"highest_category"`
+	HighestScore            float64            `json:"highest_score"`
+	CategoryScores          map[string]float64 `json:"category_scores"`
+	Action                  string             `json:"action"`
+	RiskTier                string             `json:"risk_tier,omitempty"`
+	CurrentRiskScore        float64            `json:"current_risk_score,omitempty"`
+	CumulativeRiskScore     float64            `json:"cumulative_risk_score,omitempty"`
+	requestVerdictCacheable bool               `json:"-"`
 }
 
 type ContentModerationLog struct {
-	ID                  int64              `json:"id"`
-	RequestID           string             `json:"request_id"`
-	SessionID           string             `json:"-"`
-	InputHash           string             `json:"-"`
-	UserID              *int64             `json:"user_id,omitempty"`
-	UserEmail           string             `json:"user_email"`
-	APIKeyID            *int64             `json:"api_key_id,omitempty"`
-	APIKeyName          string             `json:"api_key_name"`
-	GroupID             *int64             `json:"group_id,omitempty"`
-	GroupName           string             `json:"group_name"`
-	Endpoint            string             `json:"endpoint"`
-	Provider            string             `json:"provider"`
-	Model               string             `json:"model"`
-	Mode                string             `json:"mode"`
-	Action              string             `json:"action"`
-	Flagged             bool               `json:"flagged"`
-	HighestCategory     string             `json:"highest_category"`
-	HighestScore        float64            `json:"highest_score"`
-	MatchedKeyword      string             `json:"matched_keyword"`
-	CategoryScores      map[string]float64 `json:"category_scores"`
-	ThresholdSnapshot   map[string]float64 `json:"threshold_snapshot"`
-	InputExcerpt        string             `json:"input_excerpt"`
-	UpstreamLatencyMS   *int               `json:"upstream_latency_ms,omitempty"`
-	Error               string             `json:"error"`
-	AuditStatus         string             `json:"audit_status"`
-	AuditCode           string             `json:"audit_code"`
-	AuditRetryable      bool               `json:"audit_retryable"`
-	ViolationCount      int                `json:"violation_count"`
-	AutoBanned          bool               `json:"auto_banned"`
-	EmailSent           bool               `json:"email_sent"`
-	SideEffectStatus    string             `json:"side_effect_status"`
-	NotificationStatus  string             `json:"notification_status"`
-	SideEffectError     string             `json:"side_effect_error"`
-	UserStatus          string             `json:"user_status"`
-	ModerationBanActive bool               `json:"moderation_ban_active"`
-	UnbanBlockReason    string             `json:"unban_block_reason,omitempty"`
-	QueueDelayMS        *int               `json:"queue_delay_ms,omitempty"`
-	CreatedAt           time.Time          `json:"created_at"`
+	ID                  int64                         `json:"id"`
+	RequestID           string                        `json:"request_id"`
+	SessionID           string                        `json:"-"`
+	SessionSource       string                        `json:"-"`
+	InputHash           string                        `json:"-"`
+	UserID              *int64                        `json:"user_id,omitempty"`
+	UserEmail           string                        `json:"user_email"`
+	APIKeyID            *int64                        `json:"api_key_id,omitempty"`
+	APIKeyName          string                        `json:"api_key_name"`
+	GroupID             *int64                        `json:"group_id,omitempty"`
+	GroupName           string                        `json:"group_name"`
+	Endpoint            string                        `json:"endpoint"`
+	Provider            string                        `json:"provider"`
+	Model               string                        `json:"model"`
+	Mode                string                        `json:"mode"`
+	Action              string                        `json:"action"`
+	Flagged             bool                          `json:"flagged"`
+	HighestCategory     string                        `json:"highest_category"`
+	HighestScore        float64                       `json:"highest_score"`
+	MatchedKeyword      string                        `json:"matched_keyword"`
+	CategoryScores      map[string]float64            `json:"category_scores"`
+	ThresholdSnapshot   map[string]float64            `json:"threshold_snapshot"`
+	InputExcerpt        string                        `json:"input_excerpt"`
+	UpstreamLatencyMS   *int                          `json:"upstream_latency_ms,omitempty"`
+	Error               string                        `json:"error"`
+	AuditStatus         string                        `json:"audit_status"`
+	AuditCode           string                        `json:"audit_code"`
+	AuditRetryable      bool                          `json:"audit_retryable"`
+	ViolationCount      int                           `json:"violation_count"`
+	AutoBanned          bool                          `json:"auto_banned"`
+	EmailSent           bool                          `json:"email_sent"`
+	SideEffectStatus    string                        `json:"side_effect_status"`
+	NotificationStatus  string                        `json:"notification_status"`
+	SideEffectError     string                        `json:"side_effect_error"`
+	UserStatus          string                        `json:"user_status"`
+	ModerationBanActive bool                          `json:"moderation_ban_active"`
+	UnbanBlockReason    string                        `json:"unban_block_reason,omitempty"`
+	QueueDelayMS        *int                          `json:"queue_delay_ms,omitempty"`
+	AuditDetails        ContentModerationAuditDetails `json:"audit_details"`
+	CreatedAt           time.Time                     `json:"created_at"`
 }
 
 type ContentModerationLogFilter struct {
@@ -696,10 +933,88 @@ type ContentModerationRuntimeStatus struct {
 	PreBlockAPIKeyTotalCalls     int64                           `json:"pre_block_api_key_total_calls"`
 	PreBlockAPIKeyLoads          []ContentModerationAPIKeyLoad   `json:"pre_block_api_key_loads"`
 	APIKeyStatuses               []ContentModerationAPIKeyStatus `json:"api_key_statuses"`
-	FlaggedHashCount             int64                           `json:"flagged_hash_count"`
-	LastCleanupAt                *time.Time                      `json:"last_cleanup_at,omitempty"`
-	LastCleanupDeletedHit        int64                           `json:"last_cleanup_deleted_hit"`
-	LastCleanupDeletedNonHit     int64                           `json:"last_cleanup_deleted_non_hit"`
+	// CUSTOM(VOTE-AI-AUDIT-COST/METRICS): process-lifetime counters for incremental audit cost visibility.
+	AuditFastCalls           int64                                      `json:"audit_fast_calls"`
+	AuditFullCalls           int64                                      `json:"audit_full_calls"`
+	AuditMaxCalls            int64                                      `json:"audit_max_calls"`
+	AuditResultCacheHits     int64                                      `json:"audit_result_cache_hits"`
+	AuditPromptTokens        int64                                      `json:"audit_prompt_tokens"`
+	AuditCachedInputTokens   int64                                      `json:"audit_cached_input_tokens"`
+	AuditUncachedInputTokens int64                                      `json:"audit_uncached_input_tokens"`
+	AuditOutputTokens        int64                                      `json:"audit_output_tokens"`
+	AuditUsageComplete       int64                                      `json:"audit_usage_complete"`
+	AuditUsageUnknown        int64                                      `json:"audit_usage_unknown"`
+	AuditInputChars          int64                                      `json:"audit_input_chars"`
+	MetricsStartedAt         time.Time                                  `json:"metrics_started_at"`
+	AuditEstimatedCostUSD    *float64                                   `json:"audit_estimated_cost_usd"`
+	AuditCostCoverage        string                                     `json:"audit_cost_coverage"`
+	AuditCostComplete        bool                                       `json:"audit_cost_complete"`
+	AuditCostPartial         bool                                       `json:"audit_cost_partial"`
+	AuditCostPricedSamples   int64                                      `json:"audit_cost_priced_samples"`
+	AuditCostUnpricedSamples int64                                      `json:"audit_cost_unpriced_samples"`
+	AuditCostByVersionUSD    map[string]float64                         `json:"audit_cost_by_pricing_version_usd"`
+	BusinessActualCostUSD    *float64                                   `json:"business_actual_cost_usd"`
+	AuditCostPerBusinessUSD  *float64                                   `json:"audit_cost_per_business_usd"`
+	AuditStageLatency        map[string]ContentModerationLatencySummary `json:"audit_stage_latency"`
+	AuditSessionSources      map[string]int64                           `json:"audit_session_sources"`
+	AuditPrefixContinuity    map[string]int64                           `json:"audit_prefix_continuity"`
+	FlaggedHashCount         int64                                      `json:"flagged_hash_count"`
+	LastCleanupAt            *time.Time                                 `json:"last_cleanup_at,omitempty"`
+	LastCleanupDeletedHit    int64                                      `json:"last_cleanup_deleted_hit"`
+	LastCleanupDeletedNonHit int64                                      `json:"last_cleanup_deleted_non_hit"`
+}
+
+type ContentModerationLatencySummary struct {
+	Count      int64 `json:"count"`
+	AverageMS  int64 `json:"average_ms"`
+	P95UpperMS int64 `json:"p95_upper_ms"`
+}
+
+var contentModerationLatencyBucketUpperMS = [...]int64{250, 500, 1000, 2000, 3500, 5000, 10000, 30000, 60000}
+
+type contentModerationLatencyMetrics struct {
+	count   atomic.Int64
+	totalMS atomic.Int64
+	buckets [len(contentModerationLatencyBucketUpperMS)]atomic.Int64
+}
+
+func (m *contentModerationLatencyMetrics) observe(latencyMS int) {
+	if m == nil {
+		return
+	}
+	if latencyMS < 0 {
+		latencyMS = 0
+	}
+	m.count.Add(1)
+	m.totalMS.Add(int64(latencyMS))
+	for index, upper := range contentModerationLatencyBucketUpperMS {
+		if int64(latencyMS) <= upper {
+			m.buckets[index].Add(1)
+			return
+		}
+	}
+	m.buckets[len(m.buckets)-1].Add(1)
+}
+
+func (m *contentModerationLatencyMetrics) snapshot() ContentModerationLatencySummary {
+	if m == nil {
+		return ContentModerationLatencySummary{}
+	}
+	count := m.count.Load()
+	if count <= 0 {
+		return ContentModerationLatencySummary{}
+	}
+	target := (count*95 + 99) / 100
+	cumulative := int64(0)
+	p95 := contentModerationLatencyBucketUpperMS[len(contentModerationLatencyBucketUpperMS)-1]
+	for index, upper := range contentModerationLatencyBucketUpperMS {
+		cumulative += m.buckets[index].Load()
+		if cumulative >= target {
+			p95 = upper
+			break
+		}
+	}
+	return ContentModerationLatencySummary{Count: count, AverageMS: m.totalMS.Load() / count, P95UpperMS: p95}
 }
 
 type ContentModerationUnbanUserResult struct {
@@ -718,6 +1033,7 @@ type ContentModerationLogEffectsPatch struct {
 	SideEffectStatus   string
 	NotificationStatus string
 	SideEffectError    string
+	AuditDetails       *ContentModerationAuditDetails
 }
 
 type ContentModerationUserState struct {
@@ -748,6 +1064,13 @@ type ContentModerationRepository interface {
 	UpdateLogEmailSent(ctx context.Context, id int64, sent bool) error
 }
 
+// ContentModerationBusinessCostReader is an optional, narrow capability used
+// only by runtime observability. Existing repository mocks do not need to
+// implement it.
+type ContentModerationBusinessCostReader interface {
+	SumBusinessActualCostSince(ctx context.Context, since time.Time) (float64, error)
+}
+
 type ContentModerationLifecycleRepository interface {
 	UpdateLogEffects(ctx context.Context, logID int64, patch ContentModerationLogEffectsPatch) error
 	GetModerationUserState(ctx context.Context, userID int64) (*ContentModerationUserState, error)
@@ -769,9 +1092,24 @@ type ContentModerationResultCache interface {
 	SetContentModerationResult(ctx context.Context, key string, value []byte, ttl time.Duration) error
 }
 
+// ContentModerationFlaggedHashLifecycleStore fences stale result-cache reads
+// and delayed async promotion after an administrator removes a false positive.
+type ContentModerationFlaggedHashLifecycleStore interface {
+	RecordFlaggedInputHashIfAllowed(ctx context.Context, inputHash string) (bool, error)
+	IsFlaggedInputHashSuppressed(ctx context.Context, inputHash string) (bool, error)
+}
+
 type ContentModerationSessionRiskStore interface {
 	GetContentModerationSessionRisk(ctx context.Context, key string) (voteairiskstate.State, bool, error)
 	UpdateContentModerationSessionRisk(ctx context.Context, key string, event voteairiskstate.Event, cfg voteairiskstate.Config) (voteairiskstate.State, error)
+}
+
+// CUSTOM(VOTE-AI-AUDIT-CONTEXT): optional short-lived structured state store.
+// Implementations must use opaque keys and must never persist raw conversation text.
+type ContentModerationAuditContextStore interface {
+	GetContentModerationAuditContext(ctx context.Context, key string) (voteaiauditcontext.State, bool, error)
+	UpdateContentModerationAuditContextForUser(ctx context.Context, userID int64, key string, event voteaiauditcontext.AuditEvent, cfg voteaiauditcontext.Config, ttl time.Duration) (voteaiauditcontext.State, error)
+	UpdateContentModerationAuditPrefixForUser(ctx context.Context, userID int64, key string, observation voteaiauditcontext.PrefixObservation, ttl time.Duration) (voteaiauditcontext.State, error)
 }
 
 type ContentModerationUserStateCleaner interface {
@@ -818,6 +1156,39 @@ type ContentModerationService struct {
 	preBlockBlocked          atomic.Int64
 	preBlockErrors           atomic.Int64
 	preBlockLatencyTotalMS   atomic.Int64
+	auditFastCalls           atomic.Int64
+	auditFullCalls           atomic.Int64
+	auditMaxCalls            atomic.Int64
+	auditResultCacheHits     atomic.Int64
+	auditInputChars          atomic.Int64
+	auditPromptTokens        atomic.Int64
+	auditCachedInputTokens   atomic.Int64
+	auditUncachedInputTokens atomic.Int64
+	auditOutputTokens        atomic.Int64
+	auditUsageComplete       atomic.Int64
+	auditUsageUnknown        atomic.Int64
+	auditCostPricedSamples   atomic.Int64
+	auditCostUnpricedSamples atomic.Int64
+	metricsStartedUnixNano   atomic.Int64
+	auditCostMu              sync.RWMutex
+	auditEstimatedCostUSD    float64
+	auditCostByVersionUSD    map[string]float64
+	auditSessionHeader       atomic.Int64
+	auditSessionPromptCache  atomic.Int64
+	auditSessionNone         atomic.Int64
+	auditFastLatency         contentModerationLatencyMetrics
+	auditFullLatency         contentModerationLatencyMetrics
+	auditMaxLatency          contentModerationLatencyMetrics
+	auditPrefixContinuous    atomic.Int64
+	auditPrefixBreaks        atomic.Int64
+	auditPrefixBreakPolicy   atomic.Int64
+	auditPrefixBreakModel    atomic.Int64
+	auditPrefixBreakHistory  atomic.Int64
+	auditPrefixBreakTruncate atomic.Int64
+	auditPrefixBreakCompact  atomic.Int64
+	auditPrefixBreakSession  atomic.Int64
+	auditPrefixBreakKey      atomic.Int64
+	auditPrefixBreakUnknown  atomic.Int64
 	lastCleanupUnix          atomic.Int64
 	lastCleanupDeletedHit    atomic.Int64
 	lastCleanupDeletedNonHit atomic.Int64
@@ -828,15 +1199,18 @@ type ContentModerationService struct {
 	keyHealthMu              sync.Mutex
 	keyHealth                map[string]*contentModerationKeyHealth
 	moderationUserStateLocks [64]sync.RWMutex
+	requestVerdictFlight     contentModerationRequestVerdictFlight
 }
 
 type contentModerationRuntimeSnapshot struct {
-	riskControlEnabled   bool
-	config               *ContentModerationConfig
-	keywordMatcher       *contentModerationKeywordMatcher
-	configDigest         [sha256.Size]byte
-	accountScopeFallback bool
-	loadedAt             time.Time
+	riskControlEnabled       bool
+	config                   *ContentModerationConfig
+	keywordMatcher           *contentModerationKeywordMatcher
+	configDigest             [sha256.Size]byte
+	runtimeGeneration        [sha256.Size]byte
+	accountScopeFallback     bool
+	engineFingerprintSignals []openaipkg.EngineFingerprintSignal
+	loadedAt                 time.Time
 }
 
 type contentModerationTask struct {
@@ -845,6 +1219,7 @@ type contentModerationTask struct {
 	inputHash        string
 	log              *ContentModerationLog
 	config           *ContentModerationConfig
+	configGeneration [sha256.Size]byte
 	recordHash       bool
 	applySideEffects bool
 	supplemental     bool
@@ -904,20 +1279,22 @@ func newContentModerationService(
 	accountScopeRepo ContentModerationAccountScopeRepository,
 ) *ContentModerationService {
 	svc := &ContentModerationService{
-		settingRepo:          settingRepo,
-		repo:                 repo,
-		hashCache:            hashCache,
-		accountScopeRepo:     accountScopeRepo,
-		groupRepo:            groupRepo,
-		userRepo:             userRepo,
-		proxyRepo:            proxyRepo,
-		authCacheInvalidator: authCacheInvalidator,
-		emailService:         emailService,
-		httpClient:           servertiming.InstrumentClient(nil),
-		workerCount:          maxContentModerationWorkerCount,
-		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
-		keyHealth:            make(map[string]*contentModerationKeyHealth),
+		settingRepo:           settingRepo,
+		repo:                  repo,
+		hashCache:             hashCache,
+		accountScopeRepo:      accountScopeRepo,
+		groupRepo:             groupRepo,
+		userRepo:              userRepo,
+		proxyRepo:             proxyRepo,
+		authCacheInvalidator:  authCacheInvalidator,
+		emailService:          emailService,
+		httpClient:            servertiming.InstrumentClient(nil),
+		workerCount:           maxContentModerationWorkerCount,
+		asyncQueue:            make(chan contentModerationTask, maxContentModerationQueueSize),
+		keyHealth:             make(map[string]*contentModerationKeyHealth),
+		auditCostByVersionUSD: make(map[string]float64),
 	}
+	svc.metricsStartedUnixNano.Store(time.Now().UTC().UnixNano())
 	if settingRepo != nil && repo != nil {
 		for i := 0; i < svc.workerCount; i++ {
 			go svc.worker(i)
@@ -1074,6 +1451,64 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.AIActorRiskEnabled != nil {
 		cfg.AIChat.ActorRiskEnabled = *input.AIActorRiskEnabled
 	}
+	if input.AIIncrementalAuditEnabled != nil {
+		cfg.AIChat.IncrementalAuditEnabled = *input.AIIncrementalAuditEnabled
+	}
+	if input.AIInputProvenanceV2Enabled != nil {
+		cfg.AIChat.InputProvenanceV2Enabled = *input.AIInputProvenanceV2Enabled
+	}
+	if input.AIDeterministicRiskV2Enabled != nil {
+		cfg.AIChat.DeterministicRiskV2Enabled = *input.AIDeterministicRiskV2Enabled
+	}
+	if input.AIRecentUserTurns != nil {
+		cfg.AIChat.RecentUserTurns = *input.AIRecentUserTurns
+	}
+	if input.AISummaryMaxChars != nil {
+		cfg.AIChat.SummaryMaxChars = *input.AISummaryMaxChars
+	}
+	if input.AIFullReviewThreshold != nil {
+		cfg.AIChat.FullReviewThreshold = *input.AIFullReviewThreshold
+	}
+	if input.AIFullReviewRiskDelta != nil {
+		cfg.AIChat.FullReviewRiskDelta = *input.AIFullReviewRiskDelta
+	}
+	if input.AIPeriodicFullReviewTurns != nil {
+		cfg.AIChat.PeriodicFullReviewTurns = *input.AIPeriodicFullReviewTurns
+	}
+	if input.AIFullReviewMaxInputChars != nil {
+		cfg.AIChat.FullReviewMaxInputChars = *input.AIFullReviewMaxInputChars
+	}
+	if input.AIFastMaxOutputTokens != nil {
+		cfg.AIChat.FastMaxOutputTokens = *input.AIFastMaxOutputTokens
+	}
+	if input.AIFullMaxOutputTokens != nil {
+		cfg.AIChat.FullMaxOutputTokens = *input.AIFullMaxOutputTokens
+	}
+	if input.AIMaxReviewMaxOutputTokens != nil {
+		cfg.AIChat.MaxReviewMaxOutputTokens = *input.AIMaxReviewMaxOutputTokens
+	}
+	if input.AIAuditContextTTLMinutes != nil {
+		cfg.AIChat.AuditContextTTLMinutes = *input.AIAuditContextTTLMinutes
+	}
+	if input.AIPricingConfigured != nil && !*input.AIPricingConfigured {
+		cfg.AIChat.PricingVersion = ""
+		cfg.AIChat.UncachedInputUSDPerMillionTokens = nil
+		cfg.AIChat.CachedInputUSDPerMillionTokens = nil
+		cfg.AIChat.OutputUSDPerMillionTokens = nil
+	} else {
+		if input.AIPricingVersion != nil {
+			cfg.AIChat.PricingVersion = strings.TrimSpace(*input.AIPricingVersion)
+		}
+		if input.AIUncachedInputUSDPerMillionTokens != nil {
+			cfg.AIChat.UncachedInputUSDPerMillionTokens = cloneFloat64Ptr(input.AIUncachedInputUSDPerMillionTokens)
+		}
+		if input.AICachedInputUSDPerMillionTokens != nil {
+			cfg.AIChat.CachedInputUSDPerMillionTokens = cloneFloat64Ptr(input.AICachedInputUSDPerMillionTokens)
+		}
+		if input.AIOutputUSDPerMillionTokens != nil {
+			cfg.AIChat.OutputUSDPerMillionTokens = cloneFloat64Ptr(input.AIOutputUSDPerMillionTokens)
+		}
+	}
 	if input.HitRetentionDays != nil {
 		cfg.HitRetentionDays = *input.HitRetentionDays
 	}
@@ -1170,7 +1605,7 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if err := s.settingRepo.Set(ctx, SettingKeyContentModerationConfig, string(raw)); err != nil {
 		return nil, fmt.Errorf("save content moderation config: %w", err)
 	}
-	s.replaceRuntimeConfig(cfg, raw)
+	s.replaceRuntimeConfig(cfg)
 	// 代理选择可能已变化，丢弃已解析的代理 URL 缓存，下次调用即时生效。
 	s.moderationProxyCache.Store(nil)
 	return s.configView(cfg), nil
@@ -1469,6 +1904,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 	}
 	content := extraction.Input
 	content.Normalize()
+	normalizeContentModerationProvenance(input, runtimeSnapshot, &content)
 	slog.Info("content_moderation.input_extracted",
 		"user_id", input.UserID,
 		"api_key_id", input.APIKeyID,
@@ -1476,26 +1912,97 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"endpoint", input.Endpoint,
 		"protocol", input.Protocol,
 		"text_runes", len([]rune(content.Text)),
+		"audit_target_kind", content.AuditTargetKind,
+		"audit_target_runes", len([]rune(content.AuditTargetText)),
+		"has_explicit_user", content.HasExplicitUser,
+		"trusted_client", content.TrustedClient,
+		"trusted_signals", content.TrustedSignals,
+		"ignored_metadata", content.IgnoredMetadata,
 		"image_count", len(content.Images),
 		"extraction_truncated", extraction.Truncated)
-	hashText := content.Hash()
+	hashText := content.AuditTargetHash(contentModerationAuditPolicyVersion(cfg))
+	if cfg.AuditProvider == ContentModerationProviderAIChat {
+		cfg = cloneContentModerationConfig(cfg)
+		cfg.AIChat.inputHash = hashText
+	}
+	verdictKey := contentModerationRequestVerdictCacheKey(input, cfg, content, hashText, contentModerationRequestVerdictExecutionMode(cfg, nil, true))
+	if !s.contentModerationCachedVerdictAllowed(ctx, hashText) {
+		verdictKey = ""
+	}
+	if verdictKey != "" {
+		if cached, hit, cacheErr := s.getContentModerationRequestVerdict(ctx, verdictKey); cacheErr != nil {
+			slog.Warn("content_moderation.request_verdict_cache_get_failed",
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"request_id", input.RequestID,
+				"error", cacheErr)
+		} else if hit {
+			slog.Info("content_moderation.request_verdict_cache_hit",
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"request_id", input.RequestID)
+			return cached, nil
+		}
+	}
+	if cfg.AuditProvider == ContentModerationProviderAIChat && !contentModerationHasAuditTarget(content) {
+		state, found, riskErr := s.getSessionRisk(ctx, input, cfg)
+		if riskErr != nil {
+			slog.Warn("content_moderation.session_risk_get_failed", "user_id", input.UserID, "error", riskErr)
+			if cfg.Mode == ContentModerationModePreBlock && cfg.AIChat.FailurePolicy == ContentModerationFailurePolicyBlock {
+				s.recordPreBlockSyncMetric(0, ContentModerationActionError)
+				return contentModerationUnavailableDecision(), nil
+			}
+		}
+		blockedByCooldown := cfg.Mode == ContentModerationModePreBlock && found && voteairiskstate.IsBlocked(state, time.Now())
+		localDecision := allow
+		var scores map[string]float64
+		if blockedByCooldown {
+			scores = map[string]float64{contentModerationSessionRiskCategory: state.Score}
+			localDecision = &ContentModerationDecision{
+				Allowed:             false,
+				Blocked:             true,
+				Flagged:             true,
+				Message:             cfg.BlockMessage,
+				StatusCode:          cfg.BlockStatus,
+				HighestCategory:     contentModerationSessionRiskCategory,
+				HighestScore:        state.Score,
+				CategoryScores:      scores,
+				Action:              ContentModerationActionBlock,
+				RiskTier:            voteairiskstate.TierHigh,
+				CumulativeRiskScore: state.Score,
+			}
+		}
+		decision := s.localContentModerationVerdictIdempotent(ctx, input, cfg, verdictKey, localDecision, func(workCtx context.Context) *ContentModerationDecision {
+			slog.Info("content_moderation.skip_no_new_user_intent",
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"endpoint", input.Endpoint,
+				"protocol", input.Protocol,
+				"existing_cooldown", blockedByCooldown)
+			if !blockedByCooldown {
+				if cfg.RecordNonHits {
+					log := s.buildLog(input, cfg, ContentModerationActionSkip, false, "", 0, nil, content.ExcerptText(), nil, nil, "")
+					log.AuditCode = contentModerationAuditCodeNoNewUserIntent
+					populateContentModerationAuditDetails(log, cfg, content, nil, nil, false)
+					s.enqueueRecord(input, cfg, log, hashText, false, false)
+				}
+				if cfg.Mode == ContentModerationModePreBlock {
+					s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
+				}
+				return localDecision
+			}
+			log := s.buildLog(input, cfg, ContentModerationActionBlock, true, contentModerationSessionRiskCategory, state.Score, scores, content.ExcerptText(), nil, nil, "")
+			s.enqueueRecord(input, cfg, log, hashText, false, false)
+			s.recordPreBlockSyncMetric(0, ContentModerationActionBlock)
+			return localDecision
+		})
+		return decision, nil
+	}
 	if cfg.Mode == ContentModerationModePreBlock {
 		if cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
-			if keyword, hit := runtimeSnapshot.matchBlockedKeyword(content.CurrentText); hit {
-				s.recordPreBlockSyncMetric(0, ContentModerationActionKeywordBlock)
-				slog.Info("content_moderation.keyword_block",
-					"user_id", input.UserID,
-					"api_key_id", input.APIKeyID,
-					"group_id", contentModerationLogGroupID(input.GroupID),
-					"endpoint", input.Endpoint,
-					"protocol", input.Protocol,
-					"keyword_blocking_mode", cfg.KeywordBlockingMode,
-					"keyword", keyword)
+			if keyword, hit := runtimeSnapshot.matchBlockedKeyword(content.AuditTargetText); hit {
 				scores := map[string]float64{contentModerationKeywordCategory: 1.0}
-				log := s.buildLog(input, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1.0, scores, content.ExcerptText(), nil, nil, "")
-				log.MatchedKeyword = keyword
-				s.enqueueRecord(input, cfg, log, hashText, false, true)
-				return &ContentModerationDecision{
+				localDecision := &ContentModerationDecision{
 					Allowed:         false,
 					Blocked:         true,
 					Flagged:         true,
@@ -1505,18 +2012,37 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 					HighestScore:    1.0,
 					CategoryScores:  scores,
 					Action:          ContentModerationActionKeywordBlock,
-				}, nil
+				}
+				decision := s.localContentModerationVerdictIdempotent(ctx, input, cfg, verdictKey, localDecision, func(context.Context) *ContentModerationDecision {
+					s.recordPreBlockSyncMetric(0, ContentModerationActionKeywordBlock)
+					slog.Info("content_moderation.keyword_block",
+						"user_id", input.UserID,
+						"api_key_id", input.APIKeyID,
+						"group_id", contentModerationLogGroupID(input.GroupID),
+						"endpoint", input.Endpoint,
+						"protocol", input.Protocol,
+						"keyword_blocking_mode", cfg.KeywordBlockingMode,
+						"keyword", keyword)
+					log := s.buildLog(input, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1.0, scores, content.ExcerptText(), nil, nil, "")
+					log.MatchedKeyword = keyword
+					s.enqueueRecord(input, cfg, log, hashText, false, true)
+					return localDecision
+				})
+				return decision, nil
 			}
 		}
 		if cfg.KeywordBlockingMode == ContentModerationKeywordModeKeywordOnly {
-			s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
-			slog.Info("content_moderation.skip_api_keyword_only",
-				"user_id", input.UserID,
-				"api_key_id", input.APIKeyID,
-				"group_id", contentModerationLogGroupID(input.GroupID),
-				"endpoint", input.Endpoint,
-				"protocol", input.Protocol)
-			return allow, nil
+			decision := s.localContentModerationVerdictIdempotent(ctx, input, cfg, verdictKey, allow, func(context.Context) *ContentModerationDecision {
+				s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
+				slog.Info("content_moderation.skip_api_keyword_only",
+					"user_id", input.UserID,
+					"api_key_id", input.APIKeyID,
+					"group_id", contentModerationLogGroupID(input.GroupID),
+					"endpoint", input.Endpoint,
+					"protocol", input.Protocol)
+				return allow
+			})
+			return decision, nil
 		}
 	}
 	if cfg.PreHashCheckEnabled && s.hashCache != nil {
@@ -1525,24 +2051,12 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			slog.Warn("content_moderation.hash_check_failed", "user_id", input.UserID, "endpoint", input.Endpoint, "error", err)
 		}
 		if matched {
-			if cfg.Mode == ContentModerationModePreBlock {
-				s.recordPreBlockSyncMetric(0, ContentModerationActionHashBlock)
-			}
-			slog.Info("content_moderation.hash_block",
-				"user_id", input.UserID,
-				"api_key_id", input.APIKeyID,
-				"group_id", contentModerationLogGroupID(input.GroupID),
-				"endpoint", input.Endpoint,
-				"protocol", input.Protocol,
-				"input_hash", hashText)
 			message := cfg.BlockMessage
 			if message != "" {
 				message = fmt.Sprintf("%s（hash: %s）", message, hashText)
 			}
 			scores := map[string]float64{"hash": 1.0}
-			log := s.buildLog(input, cfg, ContentModerationActionHashBlock, true, "hash", 1.0, scores, content.ExcerptText(), nil, nil, "")
-			s.enqueueRecord(input, cfg, log, hashText, false, false)
-			return &ContentModerationDecision{
+			localDecision := &ContentModerationDecision{
 				Allowed:    false,
 				Blocked:    true,
 				Flagged:    true,
@@ -1550,39 +2064,62 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				StatusCode: cfg.BlockStatus,
 				InputHash:  hashText,
 				Action:     ContentModerationActionHashBlock,
-			}, nil
+			}
+			decision := s.localContentModerationVerdictIdempotent(ctx, input, cfg, verdictKey, localDecision, func(context.Context) *ContentModerationDecision {
+				if cfg.Mode == ContentModerationModePreBlock {
+					s.recordPreBlockSyncMetric(0, ContentModerationActionHashBlock)
+				}
+				slog.Info("content_moderation.hash_block",
+					"user_id", input.UserID,
+					"api_key_id", input.APIKeyID,
+					"group_id", contentModerationLogGroupID(input.GroupID),
+					"endpoint", input.Endpoint,
+					"protocol", input.Protocol,
+					"input_hash", hashText)
+				log := s.buildLog(input, cfg, ContentModerationActionHashBlock, true, "hash", 1.0, scores, content.ExcerptText(), nil, nil, "")
+				s.enqueueRecord(input, cfg, log, hashText, false, false)
+				return localDecision
+			})
+			return decision, nil
 		}
 	}
 	if !cfg.shouldSample(hashText) {
-		if cfg.Mode == ContentModerationModePreBlock {
-			s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
-		}
-		slog.Info("content_moderation.skip_sample_rate",
-			"user_id", input.UserID,
-			"api_key_id", input.APIKeyID,
-			"group_id", contentModerationLogGroupID(input.GroupID),
-			"endpoint", input.Endpoint,
-			"protocol", input.Protocol,
-			"sample_rate", cfg.SampleRate)
-		return allow, nil
+		decision := s.localContentModerationVerdictIdempotent(ctx, input, cfg, verdictKey, allow, func(context.Context) *ContentModerationDecision {
+			if cfg.Mode == ContentModerationModePreBlock {
+				s.recordPreBlockSyncMetric(0, ContentModerationActionAllow)
+			}
+			slog.Info("content_moderation.skip_sample_rate",
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"group_id", contentModerationLogGroupID(input.GroupID),
+				"endpoint", input.Endpoint,
+				"protocol", input.Protocol,
+				"sample_rate", cfg.SampleRate)
+			return allow
+		})
+		return decision, nil
 	}
 	if len(cfg.apiKeys()) == 0 {
-		if cfg.Mode == ContentModerationModePreBlock {
-			s.recordPreBlockSyncMetric(0, ContentModerationActionError)
-		}
-		slog.Warn("content_moderation.skip_no_audit_api_keys",
-			"user_id", input.UserID,
-			"api_key_id", input.APIKeyID,
-			"group_id", contentModerationLogGroupID(input.GroupID),
-			"endpoint", input.Endpoint,
-			"protocol", input.Protocol)
-		errMessage := "audit_no_usable_key: no usable audit API keys configured"
-		log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, nil, content.ExcerptText(), nil, nil, errMessage)
-		_ = s.repo.CreateLog(ctx, log)
+		fallback := allow
 		if cfg.Mode == ContentModerationModePreBlock && cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.FailurePolicy == ContentModerationFailurePolicyBlock {
-			return contentModerationUnavailableDecision(), nil
+			fallback = contentModerationUnavailableDecision()
 		}
-		return allow, nil
+		decision := s.localContentModerationVerdictIdempotent(ctx, input, cfg, verdictKey, fallback, func(workCtx context.Context) *ContentModerationDecision {
+			if cfg.Mode == ContentModerationModePreBlock {
+				s.recordPreBlockSyncMetric(0, ContentModerationActionError)
+			}
+			slog.Warn("content_moderation.skip_no_audit_api_keys",
+				"user_id", input.UserID,
+				"api_key_id", input.APIKeyID,
+				"group_id", contentModerationLogGroupID(input.GroupID),
+				"endpoint", input.Endpoint,
+				"protocol", input.Protocol)
+			errMessage := "audit_no_usable_key: no usable audit API keys configured"
+			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, nil, content.ExcerptText(), nil, nil, errMessage)
+			_ = s.repo.CreateLog(workCtx, log)
+			return fallback
+		})
+		return decision, nil
 	}
 	if cfg.Mode == ContentModerationModeObserve {
 		slog.Info("content_moderation.enqueue_observe",
@@ -1592,15 +2129,25 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"endpoint", input.Endpoint,
 			"protocol", input.Protocol,
 			"queue_len", len(s.asyncQueue))
-		s.enqueueAsync(input, cfg, content, hashText, false)
+		decision := s.enqueueContentModerationObserveIdempotent(ctx, input, cfg, content, hashText, verdictKey)
+		if decision != nil {
+			return decision, nil
+		}
 		return allow, nil
 	}
 
-	return s.checkSync(ctx, input, cfg, content, hashText, nil, true), nil
+	return s.checkSyncIdempotent(ctx, input, cfg, content, hashText, nil, true), nil
 }
 
 func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
+	if cfg != nil && cfg.AuditProvider == ContentModerationProviderAIChat {
+		inputHash := strings.TrimSpace(hashText)
+		if inputHash != "" && cfg.AIChat.inputHash != inputHash {
+			cfg = cloneContentModerationConfig(cfg)
+			cfg.AIChat.inputHash = inputHash
+		}
+	}
 	trackPreBlock := queueDelay == nil && allowBlock && cfg != nil && cfg.Mode == ContentModerationModePreBlock
 	if trackPreBlock {
 		s.preBlockActive.Add(1)
@@ -1608,7 +2155,14 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 	}
 	existingRiskScore := 0.0
 	if cfg.AuditProvider == ContentModerationProviderAIChat {
-		state, found := s.getSessionRisk(ctx, input, cfg)
+		state, found, riskErr := s.getSessionRisk(ctx, input, cfg)
+		if riskErr != nil {
+			slog.Warn("content_moderation.session_risk_get_failed", "user_id", input.UserID, "error", riskErr)
+			if trackPreBlock && cfg.AIChat.FailurePolicy == ContentModerationFailurePolicyBlock {
+				s.recordPreBlockSyncMetric(0, ContentModerationActionError)
+				return contentModerationUnavailableDecision()
+			}
+		}
 		if found {
 			existingRiskScore = state.Score
 		}
@@ -1624,20 +2178,34 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 				s.recordPreBlockSyncMetric(0, ContentModerationActionBlock)
 			}
 			return &ContentModerationDecision{
-				Allowed:             false,
-				Blocked:             true,
-				Flagged:             true,
-				Message:             cfg.BlockMessage,
-				StatusCode:          cfg.BlockStatus,
-				HighestCategory:     contentModerationSessionRiskCategory,
-				HighestScore:        state.Score,
-				CategoryScores:      scores,
-				Action:              ContentModerationActionBlock,
-				RiskTier:            voteairiskstate.TierHigh,
-				CumulativeRiskScore: state.Score,
+				Allowed:                 false,
+				Blocked:                 true,
+				Flagged:                 true,
+				Message:                 cfg.BlockMessage,
+				StatusCode:              cfg.BlockStatus,
+				HighestCategory:         contentModerationSessionRiskCategory,
+				HighestScore:            state.Score,
+				CategoryScores:          scores,
+				Action:                  ContentModerationActionBlock,
+				RiskTier:                voteairiskstate.TierHigh,
+				CumulativeRiskScore:     state.Score,
+				requestVerdictCacheable: true,
 			}
 		}
 	}
+	localRisk := voteaideterministicrisk.None()
+	if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.DeterministicRiskV2Enabled {
+		s.recordContentModerationSessionSource(normalizeContentModerationSessionSource(input.SessionSource, input.SessionID))
+		localRisk = evaluateContentModerationDeterministicRisk(content)
+	} else if cfg.AuditProvider == ContentModerationProviderAIChat {
+		s.recordContentModerationSessionSource(normalizeContentModerationSessionSource(input.SessionSource, input.SessionID))
+	}
+	if localRisk.Level == voteaideterministicrisk.LevelCandidate {
+		cfg = cloneContentModerationConfig(cfg)
+		cfg.AIChat.forceFullReview = true
+		cfg.AIChat.auditStage = string(voteaimoderation.StageFull)
+	}
+
 	start := time.Now()
 	moderationInput := content.ModerationInput()
 	if cfg.AuditProvider == ContentModerationProviderAIChat {
@@ -1645,6 +2213,10 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		if existingRiskScore > 0 {
 			cfg = cloneContentModerationConfig(cfg)
 			cfg.AIChat.existingRiskScore = existingRiskScore
+		}
+		if targetChars := len([]rune(content.AuditTargetText)); targetChars > cfg.AIChat.MaxInputChars {
+			cfg = cloneContentModerationConfig(cfg)
+			cfg.AIChat.MaxInputChars = max(targetChars, len([]rune(aiChatTextFromModerationInput(moderationInput))))
 		}
 	}
 	auditCtx := ctx
@@ -1654,7 +2226,34 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		auditCtx, cancelAudit = context.WithTimeout(ctx, budget)
 	}
 	defer cancelAudit()
-	result, err := s.callModeration(auditCtx, cfg, moderationInput, trackPreBlock)
+	result := moderationAPIResultFromDeterministicRisk(localRisk)
+	var incrementalPlan *contentModerationIncrementalPlan
+	var err error
+	if result != nil {
+		// Confirmed V2 matches are resolved locally with structured diagnostics.
+		if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.IncrementalAuditEnabled {
+			incrementalPlan = s.updateLocalDeterministicAuditContext(auditCtx, input, cfg, content, result)
+		}
+	} else if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.IncrementalAuditEnabled {
+		result, incrementalPlan, err = s.callIncrementalAIChatAudit(auditCtx, input, cfg, content, trackPreBlock)
+	} else {
+		legacyStarted := time.Now()
+		result, err = s.callModeration(auditCtx, cfg, moderationInput, trackPreBlock)
+		if cfg.AuditProvider == ContentModerationProviderAIChat {
+			legacyLatency := int(time.Since(legacyStarted).Milliseconds())
+			if err != nil {
+				s.recordContentModerationAuditFailure(contentModerationConfiguredAuditStage(cfg), legacyLatency, voteaimoderation.AttemptedInputChars(err))
+			} else if result != nil {
+				contentModerationSetStageDetails(
+					result,
+					contentModerationSuccessfulStageDetails(contentModerationConfiguredAuditStage(cfg), result, legacyLatency),
+				)
+				s.recordContentModerationStageLatency(result.Stage, legacyLatency, result)
+				s.recordContentModerationAuditUsage(result, len([]rune(aiChatTextFromModerationInput(moderationInput))), cfg)
+			}
+		}
+	}
+	annotateModerationResultWithDeterministicRisk(result, localRisk)
 	latency := int(time.Since(start).Milliseconds())
 	if err != nil {
 		if trackPreBlock {
@@ -1676,11 +2275,12 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		}
 		failClosed := allowBlock && cfg.Mode == ContentModerationModePreBlock && cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.FailurePolicy == ContentModerationFailurePolicyBlock
 		log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, nil, content.ExcerptText(), &latency, queueDelay, contentModerationAuditErrorText(err))
+		populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
 		_ = s.repo.CreateLog(ctx, log)
 		if failClosed {
 			return contentModerationUnavailableDecision()
 		}
-		if trackPreBlock && cfg.AuditProvider == ContentModerationProviderAIChat &&
+		if trackPreBlock && !cfg.AIChat.supplementalReview && cfg.AuditProvider == ContentModerationProviderAIChat &&
 			(errors.Is(err, voteaimoderation.ErrAuditTimeout) || errors.Is(err, voteaimoderation.ErrTemporary) || errors.Is(err, context.DeadlineExceeded)) {
 			// Preserve the synchronous latency budget, then complete a full review in
 			// the worker pool so session/hash risk still benefits future requests.
@@ -1706,8 +2306,27 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 				s.recordPreBlockSyncMetric(latency, ContentModerationActionError)
 			}
 			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, reviewError)
+			populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
 			_ = s.repo.CreateLog(ctx, log)
 			return contentModerationUnavailableDecision()
+		}
+		if cfg.AIChat.supplementalReview {
+			// A supplemental task is the final bounded attempt. Persist one
+			// explicit failure row and stop; re-enqueueing here would create an
+			// unbounded chain while the audit provider remains unhealthy.
+			finalReviewError := reviewError + ": supplemental_review_final_failure"
+			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, finalReviewError)
+			populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
+			s.persistContentModerationLog(ctx, cfg, log, "", false, false)
+			_, highestCategory, highestScore := evaluateModerationScores(result.CategoryScores, cfg.activeThresholds())
+			return &ContentModerationDecision{
+				Allowed:         true,
+				Flagged:         false,
+				HighestCategory: highestCategory,
+				HighestScore:    highestScore,
+				CategoryScores:  result.CategoryScores,
+				Action:          ContentModerationActionError,
+			}
 		}
 		if !s.enqueueAsync(input, cfg, content, hashText, true) {
 			// The provisional result is intentionally side-effect free. If the
@@ -1716,6 +2335,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			// a successfully completed allow decision.
 			droppedReviewError := reviewError + ": supplemental_queue_unavailable"
 			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, droppedReviewError)
+			populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
 			s.persistContentModerationLog(ctx, cfg, log, "", false, false)
 		}
 		if trackPreBlock {
@@ -1741,9 +2361,48 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 	riskTier := ""
 	currentRiskScore := highestScore
 	cumulativeRiskScore := highestScore
+	sideEffectsAllowed := !cfg.sideEffectsDisabled
+	if !sideEffectsAllowed {
+		result.HashPromotionVeto = true
+		result.HashPromotionReason = "configuration_generation_changed"
+	}
+	if cfg.AuditProvider == ContentModerationProviderAIChat && strings.TrimSpace(hashText) != "" {
+		allowed, suppressionErr := s.contentModerationHashPromotionAllowed(ctx, hashText)
+		if suppressionErr != nil {
+			sideEffectsAllowed = false
+			result.HashPromotionVeto = true
+			result.HashPromotionReason = "promotion_state_unavailable"
+			slog.Warn("content_moderation.hash_promotion_check_failed", "user_id", input.UserID, "error", suppressionErr)
+		} else if !allowed {
+			sideEffectsAllowed = false
+			result.HashPromotionVeto = true
+			result.HashPromotionReason = "administrator_suppression"
+		}
+	}
 	if cfg.AuditProvider == ContentModerationProviderAIChat {
 		if cfg.AIChat.RiskLevelsEnabled {
-			tierResult := s.applyAIChatRiskState(ctx, input, cfg, result)
+			tierResult := contentModerationTierResult{
+				Tier:            voteairiskstate.TierForScore(result.CategoryScores["ai_risk"], cfg.AIChat.ObserveThreshold, cfg.AIChat.ConfidenceThreshold),
+				CurrentScore:    result.CategoryScores["ai_risk"],
+				CumulativeScore: result.CategoryScores["ai_risk"],
+			}
+			if sideEffectsAllowed {
+				var riskErr error
+				tierResult, riskErr = s.applyAIChatRiskState(ctx, input, cfg, result)
+				if riskErr != nil {
+					slog.Warn("content_moderation.session_risk_update_failed", "user_id", input.UserID, "error", riskErr)
+					if trackPreBlock && cfg.AIChat.FailurePolicy == ContentModerationFailurePolicyBlock {
+						s.recordPreBlockSyncMetric(latency, ContentModerationActionError)
+						log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, "session_risk_update_failed: "+trimRunes(riskErr.Error(), 400))
+						populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, false)
+						_ = s.repo.CreateLog(ctx, log)
+						return contentModerationUnavailableDecision()
+					}
+				}
+			} else if contentModerationResultHasOnlyWeakSignals(result) {
+				tierResult.Tier = voteairiskstate.TierLow
+				tierResult.CumulativeScore = 0
+			}
 			riskTier = tierResult.Tier
 			currentRiskScore = tierResult.CurrentScore
 			cumulativeRiskScore = tierResult.CumulativeScore
@@ -1792,41 +2451,53 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		"highest_score", highestScore,
 		"latency_ms", latency,
 		"queue_delay_ms", queueDelay)
-	if flagged || action == ContentModerationActionObserve || cfg.AIChat.supplementalReview || cfg.RecordNonHits {
+	if flagged || action == ContentModerationActionObserve || cfg.AIChat.supplementalReview || cfg.RecordNonHits || !sideEffectsAllowed || result.LocalRuleLevel == string(voteaideterministicrisk.LevelCandidate) {
+		recordHash := sideEffectsAllowed && contentModerationShouldPromoteHash(cfg, content, result, flagged)
 		log := s.buildLog(input, cfg, action, flagged, highestCategory, highestScore, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, "")
+		populateContentModerationAuditDetails(log, cfg, content, result, incrementalPlan, recordHash)
+		if !sideEffectsAllowed {
+			if result.HashPromotionReason == "administrator_suppression" {
+				markContentModerationHashPromotionSuppressed(log)
+			} else {
+				log.AuditDetails.HashState = "candidate"
+				log.AuditDetails.HashPromotionReason = defaultContentModerationString(result.HashPromotionReason, "promotion_state_unavailable")
+			}
+		}
 		if queueDelay == nil && cfg.Mode == ContentModerationModePreBlock {
-			s.enqueueRecord(input, cfg, log, hashText, flagged, flagged)
+			s.enqueueRecord(input, cfg, log, hashText, recordHash, sideEffectsAllowed && flagged)
 		} else {
-			s.persistContentModerationLog(ctx, cfg, log, hashText, flagged, flagged)
+			s.persistContentModerationLog(ctx, cfg, log, hashText, recordHash, sideEffectsAllowed && flagged)
 		}
 	}
 	if blocked {
 		return &ContentModerationDecision{
-			Allowed:             false,
-			Blocked:             true,
-			Flagged:             true,
-			Message:             cfg.BlockMessage,
-			StatusCode:          cfg.BlockStatus,
-			HighestCategory:     highestCategory,
-			HighestScore:        highestScore,
-			CategoryScores:      result.CategoryScores,
-			Action:              action,
-			RiskTier:            riskTier,
-			CurrentRiskScore:    currentRiskScore,
-			CumulativeRiskScore: cumulativeRiskScore,
+			Allowed:                 false,
+			Blocked:                 true,
+			Flagged:                 true,
+			Message:                 cfg.BlockMessage,
+			StatusCode:              cfg.BlockStatus,
+			HighestCategory:         highestCategory,
+			HighestScore:            highestScore,
+			CategoryScores:          result.CategoryScores,
+			Action:                  action,
+			RiskTier:                riskTier,
+			CurrentRiskScore:        currentRiskScore,
+			CumulativeRiskScore:     cumulativeRiskScore,
+			requestVerdictCacheable: true,
 		}
 	}
 	return &ContentModerationDecision{
-		Allowed:             true,
-		Flagged:             flagged,
-		Message:             "",
-		HighestCategory:     highestCategory,
-		HighestScore:        highestScore,
-		CategoryScores:      result.CategoryScores,
-		Action:              action,
-		RiskTier:            riskTier,
-		CurrentRiskScore:    currentRiskScore,
-		CumulativeRiskScore: cumulativeRiskScore,
+		Allowed:                 true,
+		Flagged:                 flagged,
+		Message:                 "",
+		HighestCategory:         highestCategory,
+		HighestScore:            highestScore,
+		CategoryScores:          result.CategoryScores,
+		Action:                  action,
+		RiskTier:                riskTier,
+		CurrentRiskScore:        currentRiskScore,
+		CumulativeRiskScore:     cumulativeRiskScore,
+		requestVerdictCacheable: true,
 	}
 }
 
@@ -1856,6 +2527,31 @@ func contentModerationAuditErrorText(err error) string {
 		code = "audit_temporary_failure"
 	}
 	return code + ": " + trimRunes(err.Error(), 500)
+}
+
+func contentModerationShouldPromoteHash(cfg *ContentModerationConfig, content ContentModerationInput, result *moderationAPIResult, flagged bool) bool {
+	if cfg == nil || result == nil || !flagged || result.ReviewIncomplete || result.HashPromotionVeto {
+		return false
+	}
+	// Referential targets are not semantically self-contained. Even a correct
+	// full review of "continue" must not create a cross-session permanent hash.
+	if voteaiauditcontext.NeedsPreviousContext(content.AuditTargetText) {
+		return false
+	}
+	if cfg.AuditProvider != ContentModerationProviderAIChat {
+		return true
+	}
+	if !cfg.AIChat.InputProvenanceV2Enabled || !contentModerationHasAuditTarget(content) {
+		return false
+	}
+	if result.LocalDecision && result.HashPromotionEligible {
+		return true
+	}
+	if result.ResultCacheHit || (result.Stage != voteaimoderation.StageFull && result.Stage != voteaimoderation.StageMax) {
+		return false
+	}
+	return result.CategoryScores["ai_risk"] >= cfg.AIChat.ConfidenceThreshold &&
+		voteaiauditcontext.HasStrongSignal(result.Signals)
 }
 
 func (s *ContentModerationService) recordPreBlockSyncMetric(latencyMS int, action string) {
@@ -1909,20 +2605,23 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 	}
 	input.Body = nil
 	var taskCfg *ContentModerationConfig
-	if supplemental && cfg != nil {
+	if cfg != nil {
 		taskCfg = cloneContentModerationConfig(cfg)
+	}
+	if supplemental && taskCfg != nil {
 		taskCfg.AIChat.cacheKeyAlias = originalCacheKeyAlias
 		taskCfg.AIChat.ReasoningEffort = "high"
 		taskCfg.AIChat.existingRiskScore = 0
 		taskCfg.AIChat.supplementalReview = true
 	}
 	task := contentModerationTask{
-		input:        input,
-		content:      content,
-		inputHash:    hashText,
-		config:       taskCfg,
-		supplemental: supplemental,
-		enqueuedAt:   time.Now(),
+		input:            input,
+		content:          content,
+		inputHash:        hashText,
+		config:           taskCfg,
+		configGeneration: s.contentModerationAsyncTaskGeneration(cfg),
+		supplemental:     supplemental,
+		enqueuedAt:       time.Now(),
 	}
 	select {
 	case s.asyncQueue <- task:
@@ -1961,6 +2660,7 @@ func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInp
 		inputHash:        inputHash,
 		log:              log,
 		config:           cloneContentModerationConfig(cfg),
+		configGeneration: s.contentModerationAsyncTaskGeneration(cfg),
 		recordHash:       recordHash,
 		applySideEffects: applySideEffects,
 		enqueuedAt:       time.Now(),
@@ -2017,37 +2717,186 @@ func (s *ContentModerationService) processAsyncTask(ctx context.Context, cfg *Co
 			"supplemental", task.supplemental)
 		return
 	}
+	taskCfg := task.config
+	if taskCfg == nil {
+		taskCfg = cfg
+	}
+	configChanged := false
+	scopeSideEffectsDisabled := false
+	scopeSideEffectsReason := ""
+	if s.settingRepo != nil {
+		runtimeSnapshot, err := s.loadFreshRuntimeSnapshot(ctx)
+		if err != nil || runtimeSnapshot == nil || runtimeSnapshot.config == nil {
+			s.asyncErrors.Add(1)
+			slog.Warn("content_moderation.async_runtime_refresh_failed",
+				"worker_id", workerID,
+				"user_id", task.input.UserID,
+				"request_id", task.input.RequestID,
+				"error", err)
+			return
+		}
+		liveCfg := runtimeSnapshot.config
+		providerExecutionPending := task.log == nil
+		if !runtimeSnapshot.riskControlEnabled || !liveCfg.Enabled || liveCfg.Mode == ContentModerationModeOff ||
+			(providerExecutionPending && len(liveCfg.apiKeys()) == 0) {
+			slog.Info("content_moderation.async_task_skipped_runtime_disabled",
+				"worker_id", workerID,
+				"user_id", task.input.UserID,
+				"request_id", task.input.RequestID)
+			return
+		}
+		if !liveCfg.includesGroup(task.input.GroupID) || !liveCfg.includesModel(task.input.Model) || !liveCfg.includesUser(task.input.UserID) {
+			slog.Info("content_moderation.async_task_skipped_runtime_scope",
+				"worker_id", workerID,
+				"user_id", task.input.UserID,
+				"request_id", task.input.RequestID)
+			return
+		}
+		if taskCfg == nil || taskCfg.AuditProvider != liveCfg.AuditProvider {
+			slog.Info("content_moderation.async_task_skipped_provider_changed",
+				"worker_id", workerID,
+				"user_id", task.input.UserID,
+				"request_id", task.input.RequestID)
+			return
+		}
+		liveAccountFilter := normalizeContentModerationAccountFilter(liveCfg.AccountFilter)
+		if liveAccountFilter.Type != ContentModerationScopeFilterAll {
+			if task.input.AccountID <= 0 {
+				slog.Warn("content_moderation.async_task_account_scope_identity_unavailable",
+					"worker_id", workerID,
+					"user_id", task.input.UserID,
+					"request_id", task.input.RequestID,
+					"provider_execution_pending", providerExecutionPending,
+					"scope_reason", "account_scope_identity_unavailable")
+				if providerExecutionPending {
+					return
+				}
+				scopeSideEffectsDisabled = true
+				scopeSideEffectsReason = "account_scope_identity_unavailable"
+			} else {
+				scopeAccountID, scopeErr := s.contentModerationAsyncScopeAccountID(ctx, task.input.AccountID)
+				if scopeErr != nil {
+					slog.Warn("content_moderation.async_task_account_scope_resolution_failed",
+						"worker_id", workerID,
+						"user_id", task.input.UserID,
+						"request_id", task.input.RequestID,
+						"account_id", task.input.AccountID,
+						"error", scopeErr)
+					return
+				}
+				if !liveCfg.includesAccount(scopeAccountID) {
+					slog.Info("content_moderation.async_task_skipped_runtime_account_scope",
+						"worker_id", workerID,
+						"user_id", task.input.UserID,
+						"request_id", task.input.RequestID,
+						"account_id", task.input.AccountID,
+						"scope_account_id", scopeAccountID)
+					return
+				}
+			}
+		}
+		taskGeneration := task.configGeneration
+		if taskGeneration == ([sha256.Size]byte{}) {
+			taskGeneration = contentModerationRuntimeGeneration(taskCfg, runtimeSnapshot.engineFingerprintSignals)
+		}
+		liveGeneration := runtimeSnapshot.runtimeGeneration
+		if liveGeneration == ([sha256.Size]byte{}) {
+			liveGeneration = contentModerationRuntimeGeneration(liveCfg, runtimeSnapshot.engineFingerprintSignals)
+		}
+		configChanged = taskGeneration != liveGeneration
+		taskCfg = contentModerationAsyncExecutionConfig(taskCfg, liveCfg)
+		if taskCfg == nil {
+			return
+		}
+		taskCfg.sideEffectsDisabled = taskCfg.sideEffectsDisabled || configChanged || scopeSideEffectsDisabled
+	}
 	if task.log != nil {
 		s.asyncActive.Add(1)
 		defer s.asyncActive.Add(-1)
 		queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
 		task.log.QueueDelayMS = &queueDelay
-		taskCfg := task.config
-		if taskCfg == nil {
-			taskCfg = cfg
+		sideEffectsSuppressed := configChanged || scopeSideEffectsDisabled
+		recordHash := task.recordHash && !sideEffectsSuppressed
+		applySideEffects := task.applySideEffects && !sideEffectsSuppressed
+		if scopeSideEffectsReason != "" {
+			task.log.AuditDetails.HashState = "candidate"
+			task.log.AuditDetails.HashPromotionReason = scopeSideEffectsReason
+		} else if configChanged && (task.recordHash || task.applySideEffects) {
+			task.log.AuditDetails.HashState = "candidate"
+			task.log.AuditDetails.HashPromotionReason = "configuration_generation_changed"
 		}
-		s.persistContentModerationLog(ctx, taskCfg, task.log, task.inputHash, task.recordHash, task.applySideEffects)
+		s.persistContentModerationLog(ctx, taskCfg, task.log, task.inputHash, recordHash, applySideEffects)
 		s.asyncProcessed.Add(1)
 		return
 	}
-	if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || len(cfg.apiKeys()) == 0 {
+	if taskCfg == nil || !taskCfg.Enabled || taskCfg.Mode == ContentModerationModeOff || len(taskCfg.apiKeys()) == 0 {
 		return
 	}
-	if !cfg.includesGroup(task.input.GroupID) {
+	if !taskCfg.includesGroup(task.input.GroupID) {
 		return
 	}
-	if !cfg.includesModel(task.input.Model) {
+	if !taskCfg.includesModel(task.input.Model) {
 		return
 	}
-	taskCfg := cfg
-	if task.supplemental && task.config != nil {
-		taskCfg = task.config
+	if task.log == nil && !task.supplemental && taskCfg.Mode == ContentModerationModeObserve && !task.enqueuedAt.IsZero() {
+		maxQueueWait := contentModerationObserveMaxQueueWait(taskCfg)
+		if maxQueueWait <= 0 || time.Since(task.enqueuedAt) > maxQueueWait {
+			s.asyncDropped.Add(1)
+			s.asyncProcessed.Add(1)
+			slog.Warn("content_moderation.stale_observe_task_dropped",
+				"worker_id", workerID,
+				"user_id", task.input.UserID,
+				"request_id", task.input.RequestID,
+				"queue_delay_ms", time.Since(task.enqueuedAt).Milliseconds())
+			return
+		}
 	}
 	s.asyncActive.Add(1)
 	defer s.asyncActive.Add(-1)
 	queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
-	_ = s.checkSync(ctx, task.input, taskCfg, task.content, task.inputHash, &queueDelay, false)
+	_ = s.checkSyncIdempotent(ctx, task.input, taskCfg, task.content, task.inputHash, &queueDelay, false)
 	s.asyncProcessed.Add(1)
+}
+
+func contentModerationAsyncExecutionConfig(taskCfg, liveCfg *ContentModerationConfig) *ContentModerationConfig {
+	if taskCfg == nil || liveCfg == nil || taskCfg.AuditProvider != liveCfg.AuditProvider {
+		return nil
+	}
+	executionCfg := cloneContentModerationConfig(taskCfg)
+	if executionCfg.AuditProvider == ContentModerationProviderAIChat {
+		executionCfg.AIChat.BaseURL = liveCfg.AIChat.BaseURL
+		executionCfg.AIChat.ProxyID = cloneInt64Ptr(liveCfg.AIChat.ProxyID)
+		executionCfg.AIChat.APIKeys = append([]string(nil), liveCfg.apiKeys()...)
+		return executionCfg
+	}
+	executionCfg.BaseURL = liveCfg.BaseURL
+	executionCfg.ProxyID = cloneInt64Ptr(liveCfg.ProxyID)
+	executionCfg.APIKey = ""
+	executionCfg.APIKeys = append([]string(nil), liveCfg.apiKeys()...)
+	return executionCfg
+}
+
+func (s *ContentModerationService) contentModerationAsyncScopeAccountID(ctx context.Context, accountID int64) (int64, error) {
+	if accountID <= 0 {
+		return 0, errors.New("selected moderation account is unavailable")
+	}
+	if s == nil || s.accountScopeRepo == nil {
+		return accountID, nil
+	}
+	accounts, err := s.accountScopeRepo.GetByIDs(ctx, []int64{accountID})
+	if err != nil {
+		return 0, fmt.Errorf("resolve selected moderation account scope: %w", err)
+	}
+	for _, account := range accounts {
+		if account == nil || account.ID != accountID {
+			continue
+		}
+		if account.ParentAccountID != nil && *account.ParentAccountID > 0 {
+			return *account.ParentAccountID, nil
+		}
+		return account.ID, nil
+	}
+	return 0, fmt.Errorf("selected moderation account %d was not found", accountID)
 }
 
 func (s *ContentModerationService) captureContentModerationEpoch(ctx context.Context, input *ContentModerationCheckInput) {
@@ -2389,6 +3238,24 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 		t := time.Unix(unix, 0)
 		lastCleanupAt = &t
 	}
+	metricsStartedAt := s.contentModerationMetricsStartedAt()
+	costSnapshot := s.contentModerationAuditCostSnapshot()
+	usageUnknown := s.auditUsageUnknown.Load()
+	costCoverage := contentModerationCostCoverage(costSnapshot.priced, costSnapshot.unpriced, usageUnknown)
+	var estimatedCostUSD *float64
+	if costSnapshot.priced > 0 {
+		estimatedCostUSD = cloneFloat64Ptr(&costSnapshot.estimatedUSD)
+	}
+	businessActualCostUSD, businessCostErr := s.contentModerationBusinessCostUSD(ctx, metricsStartedAt)
+	if businessCostErr != nil {
+		slog.Warn("content_moderation.business_cost_query_failed", "since", metricsStartedAt, "error", businessCostErr)
+		businessActualCostUSD = nil
+	}
+	var auditCostPerBusinessUSD *float64
+	if estimatedCostUSD != nil && businessActualCostUSD != nil && *businessActualCostUSD > 0 {
+		ratio := *estimatedCostUSD / *businessActualCostUSD
+		auditCostPerBusinessUSD = &ratio
+	}
 	return &ContentModerationRuntimeStatus{
 		Enabled:                      cfg.Enabled,
 		RiskControlEnabled:           riskEnabled,
@@ -2415,10 +3282,53 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 		PreBlockAPIKeyTotalCalls:     s.preBlockAPIKeyTotalCalls(cfg.apiKeys()),
 		PreBlockAPIKeyLoads:          s.preBlockAPIKeyLoads(cfg.apiKeys()),
 		APIKeyStatuses:               s.apiKeyStatuses(cfg.apiKeys()),
-		FlaggedHashCount:             flaggedHashCount,
-		LastCleanupAt:                lastCleanupAt,
-		LastCleanupDeletedHit:        s.lastCleanupDeletedHit.Load(),
-		LastCleanupDeletedNonHit:     s.lastCleanupDeletedNonHit.Load(),
+		AuditFastCalls:               s.auditFastCalls.Load(),
+		AuditFullCalls:               s.auditFullCalls.Load(),
+		AuditMaxCalls:                s.auditMaxCalls.Load(),
+		AuditResultCacheHits:         s.auditResultCacheHits.Load(),
+		AuditPromptTokens:            s.auditPromptTokens.Load(),
+		AuditCachedInputTokens:       s.auditCachedInputTokens.Load(),
+		AuditUncachedInputTokens:     s.auditUncachedInputTokens.Load(),
+		AuditOutputTokens:            s.auditOutputTokens.Load(),
+		AuditUsageComplete:           s.auditUsageComplete.Load(),
+		AuditUsageUnknown:            usageUnknown,
+		AuditInputChars:              s.auditInputChars.Load(),
+		MetricsStartedAt:             metricsStartedAt,
+		AuditEstimatedCostUSD:        estimatedCostUSD,
+		AuditCostCoverage:            costCoverage,
+		AuditCostComplete:            costCoverage == ContentModerationCostCoverageComplete,
+		AuditCostPartial:             costCoverage == ContentModerationCostCoveragePartial,
+		AuditCostPricedSamples:       costSnapshot.priced,
+		AuditCostUnpricedSamples:     costSnapshot.unpriced,
+		AuditCostByVersionUSD:        costSnapshot.byVersionUSD,
+		BusinessActualCostUSD:        businessActualCostUSD,
+		AuditCostPerBusinessUSD:      auditCostPerBusinessUSD,
+		AuditStageLatency: map[string]ContentModerationLatencySummary{
+			string(voteaimoderation.StageFast): s.auditFastLatency.snapshot(),
+			string(voteaimoderation.StageFull): s.auditFullLatency.snapshot(),
+			string(voteaimoderation.StageMax):  s.auditMaxLatency.snapshot(),
+		},
+		AuditSessionSources: map[string]int64{
+			ContentModerationSessionSourceHeader:         s.auditSessionHeader.Load(),
+			ContentModerationSessionSourcePromptCacheKey: s.auditSessionPromptCache.Load(),
+			ContentModerationSessionSourceNone:           s.auditSessionNone.Load(),
+		},
+		AuditPrefixContinuity: map[string]int64{
+			"continuous":        s.auditPrefixContinuous.Load(),
+			"breaks":            s.auditPrefixBreaks.Load(),
+			"policy_changed":    s.auditPrefixBreakPolicy.Load(),
+			"model_changed":     s.auditPrefixBreakModel.Load(),
+			"history_rewritten": s.auditPrefixBreakHistory.Load(),
+			"history_truncated": s.auditPrefixBreakTruncate.Load(),
+			"compaction_epoch":  s.auditPrefixBreakCompact.Load(),
+			"session_changed":   s.auditPrefixBreakSession.Load(),
+			"audit_key_changed": s.auditPrefixBreakKey.Load(),
+			"unknown":           s.auditPrefixBreakUnknown.Load(),
+		},
+		FlaggedHashCount:         flaggedHashCount,
+		LastCleanupAt:            lastCleanupAt,
+		LastCleanupDeletedHit:    s.lastCleanupDeletedHit.Load(),
+		LastCleanupDeletedNonHit: s.lastCleanupDeletedNonHit.Load(),
 	}, nil
 }
 
@@ -2513,6 +3423,15 @@ func (s *ContentModerationService) loadRuntimeSnapshot(ctx context.Context) (*co
 	return s.refreshRuntimeSnapshot(ctx)
 }
 
+func (s *ContentModerationService) loadFreshRuntimeSnapshot(ctx context.Context) (*contentModerationRuntimeSnapshot, error) {
+	if s == nil || s.settingRepo == nil {
+		return nil, errors.New("content moderation setting repository unavailable")
+	}
+	s.runtimeRefreshMu.Lock()
+	defer s.runtimeRefreshMu.Unlock()
+	return s.refreshRuntimeSnapshot(ctx)
+}
+
 func (s *ContentModerationService) runtimeSnapshotTTL() time.Duration {
 	if s != nil && s.runtimeCacheTTL > 0 {
 		return s.runtimeCacheTTL
@@ -2550,19 +3469,23 @@ func (s *ContentModerationService) refreshRuntimeSnapshot(ctx context.Context) (
 	values, err := s.settingRepo.GetMultiple(ctx, []string{
 		SettingKeyRiskControlEnabled,
 		SettingKeyContentModerationConfig,
+		SettingKeyCodexCLIOnlyEngineFingerprintSignals,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get content moderation runtime settings: %w", err)
 	}
 	rawConfig := values[SettingKeyContentModerationConfig]
-	configDigest := sha256.Sum256([]byte(rawConfig))
+	rawEngineFingerprintSignals := values[SettingKeyCodexCLIOnlyEngineFingerprintSignals]
+	configDigest := sha256.Sum256([]byte(rawConfig + "\x00" + rawEngineFingerprintSignals))
 	if current := s.runtimeSnapshot.Load(); current != nil && !current.accountScopeFallback && current.configDigest == configDigest {
 		snapshot := &contentModerationRuntimeSnapshot{
-			riskControlEnabled: values[SettingKeyRiskControlEnabled] == "true",
-			config:             current.config,
-			keywordMatcher:     current.keywordMatcher,
-			configDigest:       configDigest,
-			loadedAt:           time.Now(),
+			riskControlEnabled:       values[SettingKeyRiskControlEnabled] == "true",
+			config:                   current.config,
+			keywordMatcher:           current.keywordMatcher,
+			configDigest:             configDigest,
+			runtimeGeneration:        current.runtimeGeneration,
+			engineFingerprintSignals: append([]openaipkg.EngineFingerprintSignal(nil), current.engineFingerprintSignals...),
+			loadedAt:                 time.Now(),
 		}
 		s.runtimeSnapshot.Store(snapshot)
 		s.runtimeRefreshRetryAt.Store(0)
@@ -2588,20 +3511,27 @@ func (s *ContentModerationService) refreshRuntimeSnapshot(ctx context.Context) (
 	} else {
 		cfg.AccountFilter = normalizedAccountFilter
 	}
+	engineFingerprintSignals, validFingerprintSignals := openaipkg.ParseEngineFingerprintSignals(rawEngineFingerprintSignals)
+	if strings.TrimSpace(rawEngineFingerprintSignals) == "" || !validFingerprintSignals {
+		slog.Warn("content_moderation.invalid_engine_fingerprint_signals_fallback_default")
+		engineFingerprintSignals = append([]openaipkg.EngineFingerprintSignal(nil), openaipkg.DefaultEngineFingerprintSignals...)
+	}
 	snapshot := &contentModerationRuntimeSnapshot{
-		riskControlEnabled:   values[SettingKeyRiskControlEnabled] == "true",
-		config:               cfg,
-		keywordMatcher:       newContentModerationKeywordMatcher(cfg.BlockedKeywords),
-		configDigest:         configDigest,
-		accountScopeFallback: normalizeErr != nil,
-		loadedAt:             time.Now(),
+		riskControlEnabled:       values[SettingKeyRiskControlEnabled] == "true",
+		config:                   cfg,
+		keywordMatcher:           newContentModerationKeywordMatcher(cfg.BlockedKeywords),
+		configDigest:             configDigest,
+		runtimeGeneration:        contentModerationRuntimeGeneration(cfg, engineFingerprintSignals),
+		accountScopeFallback:     normalizeErr != nil,
+		engineFingerprintSignals: append([]openaipkg.EngineFingerprintSignal(nil), engineFingerprintSignals...),
+		loadedAt:                 time.Now(),
 	}
 	s.runtimeSnapshot.Store(snapshot)
 	s.runtimeRefreshRetryAt.Store(0)
 	return snapshot, nil
 }
 
-func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationConfig, raw []byte) {
+func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationConfig) {
 	if s == nil || cfg == nil {
 		return
 	}
@@ -2613,8 +3543,6 @@ func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationCo
 	}
 	config := cloneContentModerationConfig(cfg)
 	keywordMatcher := newContentModerationKeywordMatcher(cfg.BlockedKeywords)
-	configDigest := sha256.Sum256(raw)
-
 	s.runtimeRefreshMu.Lock()
 	defer s.runtimeRefreshMu.Unlock()
 	current := s.runtimeSnapshot.Load()
@@ -2622,11 +3550,14 @@ func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationCo
 		return
 	}
 	s.runtimeSnapshot.Store(&contentModerationRuntimeSnapshot{
-		riskControlEnabled: current.riskControlEnabled,
-		config:             config,
-		keywordMatcher:     keywordMatcher,
-		configDigest:       configDigest,
-		loadedAt:           time.Now(),
+		riskControlEnabled:       current.riskControlEnabled,
+		config:                   config,
+		keywordMatcher:           keywordMatcher,
+		configDigest:             [sha256.Size]byte{},
+		runtimeGeneration:        contentModerationRuntimeGeneration(config, current.engineFingerprintSignals),
+		accountScopeFallback:     current.accountScopeFallback,
+		engineFingerprintSignals: append([]openaipkg.EngineFingerprintSignal(nil), current.engineFingerprintSignals...),
+		loadedAt:                 time.Now(),
 	})
 }
 
@@ -2657,6 +3588,11 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 	}
 	if !isValidContentModerationScopeFilterType(cfg.AccountFilter.Type) {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_ACCOUNT_FILTER", "账号过滤类型必须是 all、include 或 exclude")
+	}
+	if normalizeContentModerationProvider(cfg.AuditProvider) == ContentModerationProviderAIChat {
+		if err := validateContentModerationIncrementalConfig(cfg); err != nil {
+			return err
+		}
 	}
 	cfg.normalize()
 	switch cfg.Mode {
@@ -2697,14 +3633,90 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 	return nil
 }
 
-func (s *ContentModerationService) callModeration(ctx context.Context, cfg *ContentModerationConfig, input any, trackKeyLoad ...bool) (*moderationAPIResult, error) {
-	// CUSTOM(VOTE-AI-AI-AUDIT): explicit credential-theft combinations must not
-	// be bypassed by a stale semantic result cache or a third-party false negative.
-	if cfg != nil && cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.ReasoningEffort == "adaptive" {
-		if result := voteaimoderation.DetectHighConfidenceRisk(aiChatTextFromModerationInput(input)); result != nil {
-			return moderationAPIResultFromAIChat(result), nil
+func validateContentModerationIncrementalConfig(cfg *ContentModerationConfig) error {
+	if cfg == nil {
+		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_CONFIG", "内容审计配置不能为空")
+	}
+	if cfg.AIChat.IncrementalAuditEnabled && !cfg.AIChat.InputProvenanceV2Enabled {
+		return infraerrors.BadRequest("INVALID_AI_INCREMENTAL_PROVENANCE", "启用增量上下文审核前必须启用输入来源归一化 V2")
+	}
+	if cfg.AIChat.IncrementalAuditEnabled {
+		if cfg.AIChat.RecentUserTurns < 1 || cfg.AIChat.RecentUserTurns > maxAIChatRecentUserTurns {
+			return infraerrors.BadRequest("INVALID_AI_RECENT_USER_TURNS", "最近用户轮数必须在 1-8 之间")
+		}
+		if cfg.AIChat.SummaryMaxChars < 1 || cfg.AIChat.SummaryMaxChars > maxAIChatSummaryMaxChars {
+			return infraerrors.BadRequest("INVALID_AI_SUMMARY_MAX_CHARS", "风险摘要最大字符数必须在 1-4000 之间")
+		}
+		if cfg.AIChat.FullReviewThreshold < 0.01 || cfg.AIChat.FullReviewThreshold > 1 ||
+			cfg.AIChat.FullReviewThreshold >= cfg.AIChat.ConfidenceThreshold {
+			return infraerrors.BadRequest("INVALID_AI_FULL_REVIEW_THRESHOLD", "完整复核阈值必须低于高风险拦截阈值")
+		}
+		if cfg.AIChat.FullReviewRiskDelta < 0.01 || cfg.AIChat.FullReviewRiskDelta > 1 {
+			return infraerrors.BadRequest("INVALID_AI_FULL_REVIEW_RISK_DELTA", "风险上升触发差值必须在 0.01-1 之间")
+		}
+		if cfg.AIChat.PeriodicFullReviewTurns < 1 || cfg.AIChat.PeriodicFullReviewTurns > maxAIChatPeriodicFullReviewTurns {
+			return infraerrors.BadRequest("INVALID_AI_PERIODIC_FULL_REVIEW_TURNS", "周期完整复核轮数必须在 1-100 之间")
+		}
+		if cfg.AIChat.FullReviewMaxInputChars < minAIChatMaxInputChars ||
+			cfg.AIChat.FullReviewMaxInputChars > cfg.AIChat.MaxInputChars {
+			return infraerrors.BadRequest("INVALID_AI_FULL_REVIEW_MAX_INPUT_CHARS", "完整复核最大字符数必须在 1000 与 AI 审核最大字符数之间")
+		}
+		for name, value := range map[string]int{
+			"fast": cfg.AIChat.FastMaxOutputTokens,
+			"full": cfg.AIChat.FullMaxOutputTokens,
+			"max":  cfg.AIChat.MaxReviewMaxOutputTokens,
+		} {
+			if value < 1 || value > maxAIChatOutputTokens {
+				return infraerrors.BadRequest("INVALID_AI_"+strings.ToUpper(name)+"_MAX_OUTPUT_TOKENS", "审核输出 Token 上限必须在 1-8192 之间")
+			}
+		}
+		if cfg.AIChat.AuditContextTTLMinutes < 1 || cfg.AIChat.AuditContextTTLMinutes > maxAIChatAuditContextTTLMinutes {
+			return infraerrors.BadRequest("INVALID_AI_AUDIT_CONTEXT_TTL", "增量审核状态 TTL 必须在 1-1440 分钟之间")
 		}
 	}
+	if err := validateContentModerationPricingConfig(cfg.AIChat); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateContentModerationPricingConfig(cfg ContentModerationAIChatConfig) error {
+	rates := []*float64{
+		cfg.UncachedInputUSDPerMillionTokens,
+		cfg.CachedInputUSDPerMillionTokens,
+		cfg.OutputUSDPerMillionTokens,
+	}
+	configuredRates := 0
+	for _, rate := range rates {
+		if rate == nil {
+			continue
+		}
+		configuredRates++
+		if *rate < 0 || *rate > maxContentModerationUSDPerMillionTokens {
+			return infraerrors.BadRequest("INVALID_AI_AUDIT_PRICING_RATE", "DeepSeek 审核单价必须在 0-1000000 USD/百万 Token 之间")
+		}
+	}
+	version := strings.TrimSpace(cfg.PricingVersion)
+	if configuredRates == 0 && version == "" {
+		return nil
+	}
+	if configuredRates != len(rates) {
+		return infraerrors.BadRequest("INCOMPLETE_AI_AUDIT_PRICING", "必须同时配置未缓存输入、缓存输入和输出单价")
+	}
+	if version == "" || len(version) > 100 {
+		return infraerrors.BadRequest("INVALID_AI_AUDIT_PRICING_VERSION", "审核费率版本不能为空且不能超过 100 个字符")
+	}
+	return nil
+}
+
+func contentModerationPricingConfigured(cfg ContentModerationAIChatConfig) bool {
+	return strings.TrimSpace(cfg.PricingVersion) != "" &&
+		cfg.UncachedInputUSDPerMillionTokens != nil &&
+		cfg.CachedInputUSDPerMillionTokens != nil &&
+		cfg.OutputUSDPerMillionTokens != nil
+}
+
+func (s *ContentModerationService) callModeration(ctx context.Context, cfg *ContentModerationConfig, input any, trackKeyLoad ...bool) (*moderationAPIResult, error) {
 	attempts := cfg.activeRetryCount() + 1
 	if attempts <= 0 {
 		attempts = 1
@@ -2716,7 +3728,7 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 	aiChatAudit := cfg != nil && cfg.AuditProvider == ContentModerationProviderAIChat
 	triedKeyHashes := make(map[string]struct{}, min(attempts, len(cfg.apiKeys())))
 	cacheKey := ""
-	if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.CacheEnabled {
+	if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.CacheEnabled && s.contentModerationAIResultCacheAllowed(ctx, cfg) {
 		if content := aiChatTextFromModerationInput(input); content != "" {
 			cacheKey = contentModerationAIResultCacheKey(cfg, content)
 			if resultCache, ok := s.hashCache.(ContentModerationResultCache); ok {
@@ -2725,6 +3737,9 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 				} else if hit {
 					var cached moderationAPIResult
 					if json.Unmarshal(raw, &cached) == nil {
+						cached.ResultCacheHit = true
+						cached.Usage = nil
+						cached.AuditKeyHash = ""
 						return &cached, nil
 					}
 				}
@@ -2928,22 +3943,34 @@ func (s *ContentModerationService) callAIChatAuditOnce(ctx context.Context, cfg 
 	if err != nil {
 		return nil, err
 	}
-	result, err := voteaimoderation.Audit(reqCtx, client, voteaimoderation.Config{
-		BaseURL:             cfg.AIChat.BaseURL,
-		Model:               cfg.AIChat.Model,
-		SystemPrompt:        cfg.AIChat.SystemPrompt,
-		MaxInputChars:       cfg.AIChat.MaxInputChars,
-		FastInputChars:      cfg.AIChat.FastInputChars,
-		FallbackInputChars:  cfg.AIChat.FallbackInputChars,
-		EscalationThreshold: cfg.AIChat.ConfidenceThreshold,
-		ExistingRiskScore:   cfg.AIChat.existingRiskScore,
-		ThinkingMode:        cfg.AIChat.ThinkingMode,
-		ReasoningEffort:     cfg.AIChat.ReasoningEffort,
-	}, apiKey, content, httpStatus)
+	adapterConfig := voteaimoderation.Config{
+		BaseURL:                  cfg.AIChat.BaseURL,
+		Model:                    cfg.AIChat.Model,
+		SystemPrompt:             cfg.AIChat.SystemPrompt,
+		MaxInputChars:            cfg.AIChat.MaxInputChars,
+		FastInputChars:           cfg.AIChat.FastInputChars,
+		FallbackInputChars:       cfg.AIChat.FallbackInputChars,
+		FastMaxOutputTokens:      cfg.AIChat.FastMaxOutputTokens,
+		FullMaxOutputTokens:      cfg.AIChat.FullMaxOutputTokens,
+		MaxReviewMaxOutputTokens: cfg.AIChat.MaxReviewMaxOutputTokens,
+		StageOutputLimitsEnabled: cfg.AIChat.IncrementalAuditEnabled,
+		EscalationThreshold:      cfg.AIChat.ConfidenceThreshold,
+		ExistingRiskScore:        cfg.AIChat.existingRiskScore,
+		ThinkingMode:             cfg.AIChat.ThinkingMode,
+		ReasoningEffort:          cfg.AIChat.ReasoningEffort,
+	}
+	var result *voteaimoderation.Result
+	if stage := voteaimoderation.ReviewStage(strings.TrimSpace(cfg.AIChat.auditStage)); stage != "" {
+		result, err = voteaimoderation.AuditStage(reqCtx, client, adapterConfig, apiKey, content, stage, httpStatus)
+	} else {
+		result, err = voteaimoderation.Audit(reqCtx, client, adapterConfig, apiKey, content, httpStatus)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return moderationAPIResultFromAIChat(result), nil
+	converted := moderationAPIResultFromAIChat(result)
+	converted.AuditKeyHash = moderationAPIKeyHash(apiKey)
+	return converted, nil
 }
 
 func moderationAPIResultFromAIChat(result *voteaimoderation.Result) *moderationAPIResult {
@@ -2962,6 +3989,9 @@ func moderationAPIResultFromAIChat(result *voteaimoderation.Result) *moderationA
 		Reason:           result.Reason,
 		ReviewIncomplete: result.ReviewIncomplete,
 		ReviewError:      result.ReviewError,
+		Usage:            result.Usage,
+		InputChars:       result.InputChars,
+		Stage:            result.Stage,
 	}
 }
 
@@ -2974,6 +4004,7 @@ func contentModerationAIResultCacheKey(cfg *ContentModerationConfig, input any) 
 		return ""
 	}
 	return voteaimoderation.CacheKey(
+		"result-cache:v4",
 		cfg.AIChat.BaseURL,
 		cfg.AIChat.Model,
 		cfg.AIChat.SystemPrompt,
@@ -2985,7 +4016,42 @@ func contentModerationAIResultCacheKey(cfg *ContentModerationConfig, input any) 
 		fmt.Sprintf("fallback=%d", cfg.AIChat.FallbackInputChars),
 		fmt.Sprintf("escalate=%.4f", cfg.AIChat.ConfidenceThreshold),
 		fmt.Sprintf("existing=%.4f", cfg.AIChat.existingRiskScore),
+		"stage="+defaultContentModerationString(strings.TrimSpace(cfg.AIChat.auditStage), "legacy"),
+		"policy="+contentModerationAuditPolicyVersion(cfg),
+		"risk="+strings.TrimSpace(cfg.AIChat.riskStateDigest),
+		fmt.Sprintf("fast_output=%d", cfg.AIChat.FastMaxOutputTokens),
+		fmt.Sprintf("full_output=%d", cfg.AIChat.FullMaxOutputTokens),
+		fmt.Sprintf("max_output=%d", cfg.AIChat.MaxReviewMaxOutputTokens),
 	)
+}
+
+func (s *ContentModerationService) contentModerationAIResultCacheAllowed(ctx context.Context, cfg *ContentModerationConfig) bool {
+	if s == nil || cfg == nil || strings.TrimSpace(cfg.AIChat.inputHash) == "" {
+		return true
+	}
+	lifecycle, ok := s.hashCache.(ContentModerationFlaggedHashLifecycleStore)
+	if !ok {
+		return true
+	}
+	suppressed, err := lifecycle.IsFlaggedInputHashSuppressed(ctx, cfg.AIChat.inputHash)
+	if err != nil {
+		// An administrator suppression is a correctness fence. If Redis cannot
+		// confirm it, bypass the old result cache and obtain a fresh verdict.
+		slog.Warn("content_moderation.flagged_hash_suppression_check_failed", "error", err)
+		return false
+	}
+	return !suppressed
+}
+
+func (s *ContentModerationService) contentModerationCachedVerdictAllowed(ctx context.Context, inputHash string) bool {
+	allowed, err := s.contentModerationHashPromotionAllowed(ctx, inputHash)
+	if err != nil {
+		// Suppression is an administrator correctness fence. When its state cannot
+		// be confirmed, bypass cached verdicts and obtain a fresh provider result.
+		slog.Warn("content_moderation.flagged_hash_suppression_check_failed", "error", err)
+		return false
+	}
+	return allowed
 }
 
 func aiChatTextFromModerationInput(input any) string {
@@ -3090,6 +4156,7 @@ func (s *ContentModerationService) buildLog(input ContentModerationCheckInput, c
 	return &ContentModerationLog{
 		RequestID:          input.RequestID,
 		SessionID:          strings.TrimSpace(input.SessionID),
+		SessionSource:      normalizeContentModerationSessionSource(input.SessionSource, input.SessionID),
 		UserID:             userID,
 		UserEmail:          input.UserEmail,
 		APIKeyID:           apiKeyID,
@@ -3206,6 +4273,23 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 		return
 	}
 	log.InputHash = strings.TrimSpace(hashText)
+	log.AuditDetails.InputHash = log.InputHash
+	if (recordHash || applySideEffects) && log.InputHash != "" {
+		allowed, err := s.contentModerationHashPromotionAllowed(ctx, hashText)
+		if err != nil {
+			slog.Warn("content_moderation.hash_promotion_check_failed", "user_id", contentModerationEmailUserID(log), "error", err)
+			recordHash = false
+			applySideEffects = false
+			log.AuditDetails.HashState = "candidate"
+			log.AuditDetails.HashPromotionReason = "promotion_state_unavailable"
+		} else if !allowed {
+			recordHash = false
+			applySideEffects = false
+			markContentModerationHashPromotionSuppressed(log)
+		} else if recordHash {
+			log.AuditDetails.HashState = "confirmed"
+		}
+	}
 	if applySideEffects {
 		log.SideEffectStatus = ContentModerationSideEffectStatusPending
 		log.NotificationStatus = ContentModerationNotificationStatusPending
@@ -3234,9 +4318,24 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 	if recordHash {
 		if s.hashCache == nil {
 			tracker.failure("record_hash", errors.New("content moderation hash cache is unavailable"))
+		} else if lifecycle, ok := s.hashCache.(ContentModerationFlaggedHashLifecycleStore); ok {
+			allowed, err := lifecycle.RecordFlaggedInputHashIfAllowed(ctx, hashText)
+			if err != nil {
+				slog.Warn("content_moderation.record_hash_failed", "user_id", contentModerationEmailUserID(log), "endpoint", log.Endpoint, "error", err)
+				tracker.failure("record_hash", err)
+				applySideEffects = false
+			} else if !allowed {
+				recordHash = false
+				applySideEffects = false
+				markContentModerationHashPromotionSuppressed(log)
+				tracker.success()
+			} else {
+				tracker.success()
+			}
 		} else if err := s.hashCache.RecordFlaggedInputHash(ctx, hashText); err != nil {
 			slog.Warn("content_moderation.record_hash_failed", "user_id", contentModerationEmailUserID(log), "endpoint", log.Endpoint, "error", err)
 			tracker.failure("record_hash", err)
+			applySideEffects = false
 		} else {
 			tracker.success()
 		}
@@ -3262,12 +4361,33 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 		SideEffectStatus:   log.SideEffectStatus,
 		NotificationStatus: log.NotificationStatus,
 		SideEffectError:    log.SideEffectError,
+		AuditDetails:       &log.AuditDetails,
 	}
 	if lifecycleRepo != nil {
 		if err := lifecycleRepo.UpdateLogEffects(ctx, log.ID, patch); err != nil {
 			slog.Warn("content_moderation.update_log_effects_failed", "log_id", log.ID, "error", err)
 		}
 	}
+}
+
+func (s *ContentModerationService) contentModerationHashPromotionAllowed(ctx context.Context, inputHash string) (bool, error) {
+	if s == nil || s.hashCache == nil || strings.TrimSpace(inputHash) == "" {
+		return true, nil
+	}
+	lifecycle, ok := s.hashCache.(ContentModerationFlaggedHashLifecycleStore)
+	if !ok {
+		return true, nil
+	}
+	suppressed, err := lifecycle.IsFlaggedInputHashSuppressed(ctx, inputHash)
+	return !suppressed, err
+}
+
+func markContentModerationHashPromotionSuppressed(log *ContentModerationLog) {
+	if log == nil {
+		return
+	}
+	log.AuditDetails.HashState = "suppressed"
+	log.AuditDetails.HashPromotionReason = "administrator_suppression"
 }
 
 func (s *ContentModerationService) applyFlaggedAccountSideEffects(ctx context.Context, cfg *ContentModerationConfig, log *ContentModerationLog) (string, error) {
@@ -3495,6 +4615,19 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 			SessionRiskHalfLifeMinutes:      defaultAIChatSessionRiskHalfLifeMinutes,
 			SessionRiskBlockCooldownMinutes: defaultAIChatSessionRiskBlockCooldownMinutes,
 			ActorRiskEnabled:                true,
+			IncrementalAuditEnabled:         false,
+			InputProvenanceV2Enabled:        true,
+			DeterministicRiskV2Enabled:      true,
+			RecentUserTurns:                 defaultAIChatRecentUserTurns,
+			SummaryMaxChars:                 defaultAIChatSummaryMaxChars,
+			FullReviewThreshold:             defaultAIChatFullReviewThreshold,
+			FullReviewRiskDelta:             defaultAIChatFullReviewRiskDelta,
+			PeriodicFullReviewTurns:         defaultAIChatPeriodicFullReviewTurns,
+			FullReviewMaxInputChars:         defaultAIChatFullReviewMaxInputChars,
+			FastMaxOutputTokens:             defaultAIChatFastMaxOutputTokens,
+			FullMaxOutputTokens:             defaultAIChatFullMaxOutputTokens,
+			MaxReviewMaxOutputTokens:        defaultAIChatMaxReviewMaxOutputTokens,
+			AuditContextTTLMinutes:          defaultAIChatAuditContextTTLMinutes,
 		},
 		BaseURL:              defaultContentModerationBaseURL,
 		Model:                defaultContentModerationModel,
@@ -3543,6 +4676,9 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 	clone.APIKeys = append([]string(nil), cfg.APIKeys...)
 	clone.AIChat.ProxyID = cloneInt64Ptr(cfg.AIChat.ProxyID)
 	clone.AIChat.APIKeys = append([]string(nil), cfg.AIChat.APIKeys...)
+	clone.AIChat.UncachedInputUSDPerMillionTokens = cloneFloat64Ptr(cfg.AIChat.UncachedInputUSDPerMillionTokens)
+	clone.AIChat.CachedInputUSDPerMillionTokens = cloneFloat64Ptr(cfg.AIChat.CachedInputUSDPerMillionTokens)
+	clone.AIChat.OutputUSDPerMillionTokens = cloneFloat64Ptr(cfg.AIChat.OutputUSDPerMillionTokens)
 	clone.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	clone.BlockedKeywords = append([]string(nil), cfg.BlockedKeywords...)
 	clone.Thresholds = cloneFloatMap(cfg.Thresholds)
@@ -3559,6 +4695,50 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 		AccountIDs: append([]int64(nil), cfg.AccountFilter.AccountIDs...),
 	}
 	return &clone
+}
+
+func contentModerationConfigGeneration(cfg *ContentModerationConfig) [sha256.Size]byte {
+	if cfg == nil {
+		return [sha256.Size]byte{}
+	}
+	normalized := cloneContentModerationConfig(cfg)
+	normalized.normalize()
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return [sha256.Size]byte{}
+	}
+	return sha256.Sum256(raw)
+}
+
+func contentModerationRuntimeGeneration(
+	cfg *ContentModerationConfig,
+	engineFingerprintSignals []openaipkg.EngineFingerprintSignal,
+) [sha256.Size]byte {
+	if cfg == nil {
+		return [sha256.Size]byte{}
+	}
+	normalized := cloneContentModerationConfig(cfg)
+	normalized.normalize()
+	rawConfig, configErr := json.Marshal(normalized)
+	rawSignals, signalsErr := json.Marshal(engineFingerprintSignals)
+	if configErr != nil || signalsErr != nil {
+		return [sha256.Size]byte{}
+	}
+	payload := make([]byte, 0, len(rawConfig)+1+len(rawSignals))
+	payload = append(payload, rawConfig...)
+	payload = append(payload, 0)
+	payload = append(payload, rawSignals...)
+	return sha256.Sum256(payload)
+}
+
+func (s *ContentModerationService) contentModerationAsyncTaskGeneration(cfg *ContentModerationConfig) [sha256.Size]byte {
+	signals := openaipkg.DefaultEngineFingerprintSignals
+	if s != nil {
+		if snapshot := s.runtimeSnapshot.Load(); snapshot != nil {
+			signals = snapshot.engineFingerprintSignals
+		}
+	}
+	return contentModerationRuntimeGeneration(cfg, signals)
 }
 
 func (cfg *ContentModerationConfig) normalize() {
@@ -3846,6 +5026,46 @@ func (cfg *ContentModerationConfig) normalizeAIChat() {
 	if cfg.AIChat.SessionRiskBlockCooldownMinutes < 0 || cfg.AIChat.SessionRiskBlockCooldownMinutes > maxAIChatSessionRiskBlockCooldownMinutes {
 		cfg.AIChat.SessionRiskBlockCooldownMinutes = defaultAIChatSessionRiskBlockCooldownMinutes
 	}
+	if cfg.AIChat.RecentUserTurns <= 0 || cfg.AIChat.RecentUserTurns > maxAIChatRecentUserTurns {
+		cfg.AIChat.RecentUserTurns = defaultAIChatRecentUserTurns
+	}
+	if cfg.AIChat.SummaryMaxChars <= 0 || cfg.AIChat.SummaryMaxChars > maxAIChatSummaryMaxChars {
+		cfg.AIChat.SummaryMaxChars = defaultAIChatSummaryMaxChars
+	}
+	if cfg.AIChat.FullReviewThreshold <= 0 || cfg.AIChat.FullReviewThreshold >= cfg.AIChat.ConfidenceThreshold {
+		cfg.AIChat.FullReviewThreshold = min(defaultAIChatFullReviewThreshold, cfg.AIChat.ConfidenceThreshold/2)
+		if cfg.AIChat.FullReviewThreshold < 0.01 && cfg.AIChat.ConfidenceThreshold > 0.01 {
+			cfg.AIChat.FullReviewThreshold = 0.01
+		}
+	}
+	if cfg.AIChat.FullReviewRiskDelta <= 0 || cfg.AIChat.FullReviewRiskDelta > 1 {
+		cfg.AIChat.FullReviewRiskDelta = defaultAIChatFullReviewRiskDelta
+	}
+	if cfg.AIChat.PeriodicFullReviewTurns <= 0 || cfg.AIChat.PeriodicFullReviewTurns > maxAIChatPeriodicFullReviewTurns {
+		cfg.AIChat.PeriodicFullReviewTurns = defaultAIChatPeriodicFullReviewTurns
+	}
+	if cfg.AIChat.FullReviewMaxInputChars < minAIChatMaxInputChars || cfg.AIChat.FullReviewMaxInputChars > cfg.AIChat.MaxInputChars {
+		cfg.AIChat.FullReviewMaxInputChars = min(defaultAIChatFullReviewMaxInputChars, cfg.AIChat.MaxInputChars)
+	}
+	if cfg.AIChat.FastMaxOutputTokens <= 0 || cfg.AIChat.FastMaxOutputTokens > maxAIChatOutputTokens {
+		cfg.AIChat.FastMaxOutputTokens = defaultAIChatFastMaxOutputTokens
+	}
+	if cfg.AIChat.FullMaxOutputTokens <= 0 || cfg.AIChat.FullMaxOutputTokens > maxAIChatOutputTokens {
+		cfg.AIChat.FullMaxOutputTokens = defaultAIChatFullMaxOutputTokens
+	}
+	if cfg.AIChat.MaxReviewMaxOutputTokens <= 0 || cfg.AIChat.MaxReviewMaxOutputTokens > maxAIChatOutputTokens {
+		cfg.AIChat.MaxReviewMaxOutputTokens = defaultAIChatMaxReviewMaxOutputTokens
+	}
+	if cfg.AIChat.AuditContextTTLMinutes <= 0 || cfg.AIChat.AuditContextTTLMinutes > maxAIChatAuditContextTTLMinutes {
+		cfg.AIChat.AuditContextTTLMinutes = defaultAIChatAuditContextTTLMinutes
+	}
+	cfg.AIChat.PricingVersion = strings.TrimSpace(cfg.AIChat.PricingVersion)
+	if !cfg.AIChat.InputProvenanceV2Enabled {
+		// Provenance normalization is the security boundary that identifies the
+		// sole audit target. Never run incremental review without it, including
+		// when loading an older or manually edited persisted configuration.
+		cfg.AIChat.IncrementalAuditEnabled = false
+	}
 }
 
 func normalizeContentModerationProvider(provider string) string {
@@ -4112,6 +5332,24 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 			SessionRiskHalfLifeMinutes:           cfg.AIChat.SessionRiskHalfLifeMinutes,
 			SessionRiskBlockCooldownMinutes:      cfg.AIChat.SessionRiskBlockCooldownMinutes,
 			ActorRiskEnabled:                     cfg.AIChat.ActorRiskEnabled,
+			IncrementalAuditEnabled:              cfg.AIChat.IncrementalAuditEnabled,
+			InputProvenanceV2Enabled:             cfg.AIChat.InputProvenanceV2Enabled,
+			DeterministicRiskV2Enabled:           cfg.AIChat.DeterministicRiskV2Enabled,
+			RecentUserTurns:                      cfg.AIChat.RecentUserTurns,
+			SummaryMaxChars:                      cfg.AIChat.SummaryMaxChars,
+			FullReviewThreshold:                  cfg.AIChat.FullReviewThreshold,
+			FullReviewRiskDelta:                  cfg.AIChat.FullReviewRiskDelta,
+			PeriodicFullReviewTurns:              cfg.AIChat.PeriodicFullReviewTurns,
+			FullReviewMaxInputChars:              cfg.AIChat.FullReviewMaxInputChars,
+			FastMaxOutputTokens:                  cfg.AIChat.FastMaxOutputTokens,
+			FullMaxOutputTokens:                  cfg.AIChat.FullMaxOutputTokens,
+			MaxReviewMaxOutputTokens:             cfg.AIChat.MaxReviewMaxOutputTokens,
+			AuditContextTTLMinutes:               cfg.AIChat.AuditContextTTLMinutes,
+			PricingConfigured:                    contentModerationPricingConfigured(cfg.AIChat),
+			PricingVersion:                       cfg.AIChat.PricingVersion,
+			UncachedInputUSDPerMillionTokens:     cloneFloat64Ptr(cfg.AIChat.UncachedInputUSDPerMillionTokens),
+			CachedInputUSDPerMillionTokens:       cloneFloat64Ptr(cfg.AIChat.CachedInputUSDPerMillionTokens),
+			OutputUSDPerMillionTokens:            cloneFloat64Ptr(cfg.AIChat.OutputUSDPerMillionTokens),
 		},
 		BaseURL:                        cfg.activeBaseURL(),
 		Model:                          cfg.activeModel(),
@@ -4440,13 +5678,25 @@ type moderationAPIResponse struct {
 }
 
 type moderationAPIResult struct {
-	Flagged          bool               `json:"flagged"`
-	CategoryScores   map[string]float64 `json:"category_scores"`
-	Categories       []string           `json:"ai_categories"`
-	Signals          []string           `json:"signals"`
-	Reason           string             `json:"reason,omitempty"`
-	ReviewIncomplete bool               `json:"-"`
-	ReviewError      string             `json:"-"`
+	Flagged               bool                                            `json:"flagged"`
+	CategoryScores        map[string]float64                              `json:"category_scores"`
+	Categories            []string                                        `json:"ai_categories"`
+	Signals               []string                                        `json:"signals"`
+	Reason                string                                          `json:"reason,omitempty"`
+	ReviewIncomplete      bool                                            `json:"-"`
+	ReviewError           string                                          `json:"-"`
+	Stage                 voteaimoderation.ReviewStage                    `json:"audit_stage,omitempty"`
+	Usage                 *voteaimoderation.Usage                         `json:"-"`
+	InputChars            int                                             `json:"-"`
+	AuditKeyHash          string                                          `json:"-"`
+	ResultCacheHit        bool                                            `json:"-"`
+	LocalDecision         bool                                            `json:"-"`
+	HashPromotionEligible bool                                            `json:"-"`
+	HashPromotionVeto     bool                                            `json:"-"`
+	HashPromotionReason   string                                          `json:"-"`
+	LocalRuleLevel        string                                          `json:"local_rule_level,omitempty"`
+	LocalRuleMatch        *voteaideterministicrisk.DeterministicRiskMatch `json:"local_rule_match,omitempty"`
+	StageDetails          []ContentModerationAuditStageDetails            `json:"-"`
 }
 
 func evaluateModerationScores(scores map[string]float64, thresholds map[string]float64) (bool, string, float64) {
@@ -4826,6 +6076,14 @@ func cloneInt64Ptr(in *int64) *int64 {
 	}
 	v := *in
 	return &v
+}
+
+func cloneFloat64Ptr(in *float64) *float64 {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func trimRunes(text string, max int) string {

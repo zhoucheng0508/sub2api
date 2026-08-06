@@ -84,15 +84,19 @@ return #members
 	contentModerationUserStateClearScript = redis.NewScript(`
 local risk_members = redis.call('SMEMBERS', KEYS[1])
 local email_members = redis.call('SMEMBERS', KEYS[2])
+local audit_members = redis.call('SMEMBERS', KEYS[3])
 for _, key in ipairs(risk_members) do
   redis.call('DEL', key)
 end
 for _, key in ipairs(email_members) do
   redis.call('DEL', key)
 end
-redis.call('DEL', KEYS[1], KEYS[2])
-redis.call('INCR', KEYS[3])
-return #risk_members + #email_members
+for _, key in ipairs(audit_members) do
+  redis.call('DEL', key)
+end
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+redis.call('INCR', KEYS[4])
+return #risk_members + #email_members + #audit_members
 `)
 )
 
@@ -226,6 +230,7 @@ func (c *contentModerationHashCache) ClearContentModerationUserState(ctx context
 	keys := []string{
 		contentModerationSessionRiskIndexKey(userID),
 		contentModerationEmailDedupeIndexKey(userID),
+		contentModerationAuditContextIndexKey(userID),
 		contentModerationUserEpochKey(userID),
 	}
 	return contentModerationUserStateClearScript.Run(ctx, c.rdb, keys).Int64()

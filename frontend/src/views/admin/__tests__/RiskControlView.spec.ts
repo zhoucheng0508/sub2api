@@ -23,6 +23,8 @@ const {
   listAccounts,
   getAccountById,
   testAPIKeys,
+  deleteFlaggedHash,
+  clearFlaggedHashes,
   unbanUser,
   showError,
   showSuccess,
@@ -39,6 +41,8 @@ const {
   listAccounts: vi.fn(),
   getAccountById: vi.fn(),
   testAPIKeys: vi.fn(),
+  deleteFlaggedHash: vi.fn(),
+  clearFlaggedHashes: vi.fn(),
   unbanUser: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -53,8 +57,8 @@ vi.mock('@/api/admin', () => ({
       getStatus,
       listLogs,
       testAPIKeys,
-      deleteFlaggedHash: vi.fn(),
-      clearFlaggedHashes: vi.fn(),
+      deleteFlaggedHash,
+      clearFlaggedHashes,
       unbanUser,
     },
     groups: {
@@ -100,6 +104,9 @@ vi.mock('vue-i18n', async () => {
         }
         if (key === 'admin.riskControl.aiPromptCurrentVersion' || key === 'admin.riskControl.aiPromptRecommendedVersion') {
           return `${key}:${params?.version}`
+        }
+        if (key === 'admin.riskControl.auditTokenSummary') {
+          return `input=${params?.prompt};cached=${params?.cached};uncached=${params?.uncached};output=${params?.output}`
         }
         return key.replace(/\{(\w+)\}/g, (_, token) => String(params?.[token] ?? `{${token}}`))
       },
@@ -191,6 +198,17 @@ const aiChatConfig = (
     session_risk_half_life_minutes: 30,
     session_risk_block_cooldown_minutes: 30,
     actor_risk_enabled: true,
+    incremental_audit_enabled: false,
+    recent_user_turns: 2,
+    summary_max_chars: 800,
+    full_review_threshold: 0.4,
+    full_review_risk_delta: 0.15,
+    periodic_full_review_turns: 10,
+    full_review_max_input_chars: 60000,
+    fast_max_output_tokens: 256,
+    full_max_output_tokens: 1024,
+    max_review_max_output_tokens: 1536,
+    audit_context_ttl_minutes: 120,
     ...overrides,
   },
 })
@@ -221,6 +239,16 @@ const runtimeStatus = () => ({
   pre_block_api_key_total_calls: 0,
   pre_block_api_key_loads: [],
   api_key_statuses: [],
+  audit_fast_calls: 0,
+  audit_full_calls: 0,
+  audit_max_calls: 0,
+  audit_result_cache_hits: 0,
+  audit_prompt_tokens: 0,
+  audit_cached_input_tokens: 0,
+  audit_uncached_input_tokens: 0,
+  audit_output_tokens: 0,
+  audit_usage_unknown: 0,
+  audit_input_chars: 0,
   flagged_hash_count: 0,
   last_cleanup_deleted_hit: 0,
   last_cleanup_deleted_non_hit: 0,
@@ -324,6 +352,8 @@ describe('admin RiskControlView', () => {
     listAccounts.mockReset()
     getAccountById.mockReset()
     testAPIKeys.mockReset()
+    deleteFlaggedHash.mockReset()
+    clearFlaggedHashes.mockReset()
     unbanUser.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
@@ -343,6 +373,8 @@ describe('admin RiskControlView', () => {
       restored: true,
       risk_state_cleared: true,
     })
+    deleteFlaggedHash.mockResolvedValue({ deleted: true })
+    clearFlaggedHashes.mockResolvedValue({ deleted: 0 })
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
       ...payload,
@@ -493,6 +525,228 @@ describe('admin RiskControlView', () => {
     }))
   })
 
+  it('loads and saves incremental audit settings and blocks invalid advanced values', async () => {
+    getConfig.mockResolvedValue(aiChatConfig({
+      incremental_audit_enabled: true,
+      input_provenance_v2_enabled: true,
+      deterministic_risk_v2_enabled: true,
+      recent_user_turns: 3,
+      summary_max_chars: 1000,
+      full_review_threshold: 0.45,
+      full_review_risk_delta: 0.2,
+      periodic_full_review_turns: 12,
+      full_review_max_input_chars: 80000,
+      fast_max_output_tokens: 320,
+      full_max_output_tokens: 1280,
+      max_review_max_output_tokens: 1792,
+      audit_context_ttl_minutes: 180,
+      pricing_configured: true,
+      pricing_version: 'deepseek-2026-08',
+      uncached_input_usd_per_million_tokens: 0.28,
+      cached_input_usd_per_million_tokens: 0.028,
+      output_usd_per_million_tokens: 0.42,
+    }))
+    getStatus.mockResolvedValue({
+      ...runtimeStatus(),
+      audit_fast_calls: 80,
+      audit_full_calls: 15,
+      audit_max_calls: 5,
+      audit_result_cache_hits: 20,
+      audit_prompt_tokens: 1000,
+      audit_cached_input_tokens: 750,
+      audit_uncached_input_tokens: 250,
+      audit_estimated_cost_usd: 0.125,
+      business_actual_cost_usd: 5,
+      audit_cost_per_business_usd: 0.025,
+      audit_cost_coverage: 'complete',
+      audit_cost_priced_samples: 100,
+      audit_cost_unpriced_samples: 0,
+    })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get<HTMLInputElement>('[data-test="ai-recent-user-turns"]').element.value).toBe('3')
+    expect(wrapper.get<HTMLInputElement>('[data-test="ai-full-review-max-input-chars"]').element.value).toBe('80000')
+    expect(wrapper.get('[data-test="audit-fast-calls"]').text()).toBe('80')
+    expect(wrapper.get('[data-test="audit-result-cache-rate"]').text()).toBe('16.7%')
+    expect(wrapper.get('[data-test="audit-token-cache-rate"]').text()).toBe('75.0%')
+    expect(wrapper.get<HTMLInputElement>('[data-test="ai-pricing-version"]').element.value).toBe('deepseek-2026-08')
+    expect(wrapper.get('[data-test="audit-estimated-cost-usd"]').text()).toBe('USD 0.125000')
+    expect(wrapper.get('[data-test="audit-cost-coverage"]').text()).toBe('admin.riskControl.aiRuntimeCostCoverage.complete')
+
+    await wrapper.get('[data-test="ai-periodic-full-review-turns"]').setValue('101')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('admin.riskControl.aiPeriodicFullReviewTurnsInvalid')
+
+    await wrapper.get('[data-test="ai-periodic-full-review-turns"]').setValue('15')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      ai_incremental_audit_enabled: true,
+      ai_input_provenance_v2_enabled: true,
+      ai_deterministic_risk_v2_enabled: true,
+      ai_recent_user_turns: 3,
+      ai_summary_max_chars: 1000,
+      ai_full_review_threshold: 0.45,
+      ai_full_review_risk_delta: 0.2,
+      ai_periodic_full_review_turns: 15,
+      ai_full_review_max_input_chars: 80000,
+      ai_fast_max_output_tokens: 320,
+      ai_full_max_output_tokens: 1280,
+      ai_max_review_max_output_tokens: 1792,
+      ai_audit_context_ttl_minutes: 180,
+      ai_pricing_configured: true,
+      ai_pricing_version: 'deepseek-2026-08',
+      ai_uncached_input_usd_per_million_tokens: 0.28,
+      ai_cached_input_usd_per_million_tokens: 0.028,
+      ai_output_usd_per_million_tokens: 0.42,
+    }))
+  })
+
+  it('does not coerce empty AI pricing rates to zero after switching providers', async () => {
+    getConfig.mockResolvedValue(aiChatConfig({
+      pricing_configured: true,
+      pricing_version: 'deepseek-2026-08',
+      uncached_input_usd_per_million_tokens: null,
+      cached_input_usd_per_million_tokens: null,
+      output_usd_per_million_tokens: null,
+    }))
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.providerOpenAI').trigger('click')
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('admin.riskControl.aiPricingRateInvalid')
+  })
+
+  it('blocks saving when incremental auditing is enabled without provenance V2', async () => {
+    getConfig.mockResolvedValue(aiChatConfig({
+      incremental_audit_enabled: true,
+      input_provenance_v2_enabled: false,
+    }))
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="incremental-provenance-warning"]').text()).toBe('admin.riskControl.aiIncrementalRequiresProvenance')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('admin.riskControl.aiIncrementalRequiresProvenance')
+  })
+
+  it('keeps incremental auditing disabled and supplies safe defaults for legacy config', async () => {
+    const legacyConfig = aiChatConfig()
+    delete legacyConfig.ai_chat!.incremental_audit_enabled
+    delete legacyConfig.ai_chat!.input_provenance_v2_enabled
+    delete legacyConfig.ai_chat!.deterministic_risk_v2_enabled
+    delete legacyConfig.ai_chat!.recent_user_turns
+    delete legacyConfig.ai_chat!.summary_max_chars
+    delete legacyConfig.ai_chat!.full_review_threshold
+    delete legacyConfig.ai_chat!.full_review_risk_delta
+    delete legacyConfig.ai_chat!.periodic_full_review_turns
+    delete legacyConfig.ai_chat!.full_review_max_input_chars
+    delete legacyConfig.ai_chat!.fast_max_output_tokens
+    delete legacyConfig.ai_chat!.full_max_output_tokens
+    delete legacyConfig.ai_chat!.max_review_max_output_tokens
+    delete legacyConfig.ai_chat!.audit_context_ttl_minutes
+    getConfig.mockResolvedValue(legacyConfig)
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="incremental-audit-status"]').text()).toBe('common.disabled')
+    expect(wrapper.get<HTMLInputElement>('[data-test="ai-recent-user-turns"]').element.value).toBe('2')
+    expect(wrapper.get<HTMLInputElement>('[data-test="ai-summary-max-chars"]').element.value).toBe('800')
+
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      ai_incremental_audit_enabled: false,
+      ai_input_provenance_v2_enabled: true,
+      ai_deterministic_risk_v2_enabled: true,
+      ai_recent_user_turns: 2,
+      ai_summary_max_chars: 800,
+      ai_full_review_threshold: 0.4,
+      ai_full_review_risk_delta: 0.15,
+      ai_periodic_full_review_turns: 10,
+      ai_full_review_max_input_chars: 60000,
+      ai_fast_max_output_tokens: 256,
+      ai_full_max_output_tokens: 1024,
+      ai_max_review_max_output_tokens: 1536,
+      ai_audit_context_ttl_minutes: 120,
+    }))
+  })
+
   it('renders structured trial risk fields and submits the active performance profile', async () => {
     getConfig.mockResolvedValue(aiChatConfig())
     testAPIKeys.mockResolvedValue({
@@ -543,6 +797,10 @@ describe('admin RiskControlView', () => {
       ai_risk_levels_enabled: true,
       ai_observe_threshold: 0.35,
     }))
+    const trialPayload = testAPIKeys.mock.calls.at(-1)?.[0]
+    expect(trialPayload).not.toHaveProperty('ai_incremental_audit_enabled')
+    expect(trialPayload).not.toHaveProperty('ai_recent_user_turns')
+    expect(trialPayload).not.toHaveProperty('ai_fast_max_output_tokens')
     expect(wrapper.get('[data-test="audit-test-risk-tier"]').text()).toContain('auditRiskTier.high')
     expect(wrapper.get('[data-test="audit-test-signals"]').text()).toContain('progressive_escalation')
     expect(wrapper.get('[data-test="audit-review-incomplete"]').text()).toContain('supplemental review timeout')
@@ -908,6 +1166,484 @@ describe('admin RiskControlView', () => {
     expect(wrapper.text()).not.toContain('admin.riskControl.auditStatusError')
     expect(wrapper.text()).toContain('admin.riskControl.sideEffectStatus.not_applicable')
     expect(wrapper.text()).toContain('admin.riskControl.notificationStatus.not_required')
+  })
+
+  it('shows complete per-request audit usage, provenance, and cache diagnostics', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          audit_stage: 'full',
+          escalation_reasons: ['periodic_review'],
+          session_source: 'prompt_cache_key',
+          turn_count: 8,
+          input_chars: 12000,
+          prompt_tokens: 4000,
+          cached_input_tokens: 3000,
+          uncached_input_tokens: 1000,
+          output_tokens: 200,
+          sub2api_result_cache_hit: false,
+          provider_prefix_cache_ratio: 0.75,
+          review_complete: true,
+          audit_target_kind: 'user_request',
+          audit_target_source: 'end_user',
+          has_explicit_user_turn: true,
+          trusted_client: false,
+          audit_target_excerpt: 'redacted target',
+          supporting_context_excerpt: 'redacted context',
+          trusted_signals: ['strict_client_identity', 'originator_codex_cli'],
+          ignored_metadata: ['ambient_ui'],
+          audit_key_hash: 'audit-key-hash',
+          input_hash: 'a'.repeat(64),
+          hash_scope: 'policy:v2',
+          hash_state: 'confirmed',
+          hash_promotion_reason: 'full_review_confirmed',
+          policy_version: 'vote-ai-risk-v2',
+          prefix_epoch: 3,
+          prefix_continuity: false,
+          prefix_break_reason: 'history_rewritten',
+          input_truncated: true,
+          local_rule_level: 'confirmed',
+          local_rule_match: {
+            rule_id: 'auth-bypass-action',
+            rule_version: 'v2.1',
+            level: 'confirmed',
+            target_kind: 'user_request',
+            target_source: 'end_user',
+            matched_intent: ['bypass'],
+            matched_target: ['account'],
+            matched_action: ['generate_script'],
+            matched_excerpt: '脱敏规则摘要',
+            lexical_types: ['intent', 'action'],
+            negation_detected: false,
+            defensive_detected: false,
+            metadata_excluded: ['ambient_ui'],
+          },
+          stages: [
+            {
+              stage: 'fast',
+              provider_called: true,
+              result_cache_hit: false,
+              usage_known: true,
+              failed: false,
+              input_chars: 12000,
+              latency_ms: 850,
+              prompt_tokens: 4000,
+              cached_input_tokens: 3000,
+              uncached_input_tokens: 1000,
+              output_tokens: 200,
+            },
+            {
+              stage: 'full',
+              provider_called: false,
+              result_cache_hit: true,
+              usage_known: false,
+              failed: false,
+            },
+          ],
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    const text = wrapper.text()
+    expect(text).toContain('redacted target')
+    expect(text).toContain('redacted context')
+    expect(text).toContain('prompt_cache_key / 8')
+    expect(text).toContain('12,000')
+    expect(text).toContain('input=4,000;cached=3,000;uncached=1,000;output=200')
+    expect(text).toContain('75.0%')
+    expect(text).toContain('admin.riskControl.cacheMiss')
+    expect(text).toContain('admin.riskControl.auditReviewComplete')
+    expect(text).toContain('admin.riskControl.auditExplicitUserTurn')
+    expect(text).toContain('admin.riskControl.auditTrustedClient')
+    expect(wrapper.get('[data-test="audit-diagnostic-usage-completeness"]').text()).toContain('admin.riskControl.usageComplete')
+    expect(wrapper.get('[data-test="audit-diagnostic-input-hash"]').text()).toContain('a'.repeat(64))
+    expect(wrapper.get('[data-test="audit-diagnostic-policy-version"]').text()).toContain('vote-ai-risk-v2')
+    expect(wrapper.get('[data-test="audit-diagnostic-audit-key-hash"]').text()).toContain('audit-key-hash')
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix"]').text()).toContain('3 / common.no')
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix-break-reason"]').text()).toContain('history_rewritten')
+    expect(wrapper.get('[data-test="audit-diagnostic-input-truncated"]').text()).toContain('common.yes')
+    expect(wrapper.get('[data-test="audit-diagnostic-explicit-user"]').text()).toContain('common.yes')
+    expect(wrapper.get('[data-test="audit-diagnostic-trusted-client"]').text()).toContain('common.no')
+    expect(wrapper.get('[data-test="audit-diagnostic-trusted-signals"]').text()).toContain('strict_client_identity')
+    expect(wrapper.get('[data-test="audit-diagnostic-ignored-metadata"]').text()).toContain('ambient_ui')
+    expect(wrapper.get('[data-test="audit-diagnostic-local-rule-identity"]').text()).toContain('auth-bypass-action / v2.1')
+    expect(wrapper.get('[data-test="audit-diagnostic-local-rule-level"]').text()).toContain('confirmed')
+    expect(wrapper.get('[data-test="audit-diagnostic-local-rule-intent"]').text()).toContain('bypass')
+    expect(wrapper.get('[data-test="audit-diagnostic-local-rule-target"]').text()).toContain('account')
+    expect(wrapper.get('[data-test="audit-diagnostic-local-rule-action"]').text()).toContain('generate_script')
+    expect(wrapper.get('[data-test="audit-diagnostic-local-rule-excerpt"]').text()).toContain('脱敏规则摘要')
+    expect(wrapper.get('[data-test="audit-diagnostic-lexical-types"]').text()).toContain('intent, action')
+    expect(wrapper.get('[data-test="audit-diagnostic-negation-detected"]').text()).toContain('common.no')
+    expect(wrapper.get('[data-test="audit-diagnostic-defensive-detected"]').text()).toContain('common.no')
+    expect(wrapper.get('[data-test="audit-stage-fast"]').text()).toContain('admin.riskControl.usageComplete')
+    expect(wrapper.get('[data-test="audit-stage-full"]').text()).toContain('admin.riskControl.cacheHit')
+  })
+
+  it('shows the first prefix sample as a baseline instead of a break', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          audit_stage: 'full',
+          audit_target_excerpt: 'baseline target',
+          prefix_epoch: 1,
+          prefix_baseline: true,
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix"]').text()).toContain('1 / admin.riskControl.auditPrefixBaseline')
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix-break-reason"]').text()).toContain('admin.riskControl.auditPrefixBaseline')
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix"]').text()).not.toContain('common.no')
+  })
+
+  it('does not present partial audit token usage as zero or a cache percentage', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          audit_stage: 'fast',
+          session_source: 'none',
+          prompt_tokens: 100,
+          cached_input_tokens: 80,
+          output_tokens: 10,
+          usage_unknown: false,
+          audit_target_excerpt: 'partial usage target',
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    const text = wrapper.text()
+    expect(text).toContain('admin.riskControl.usageUnknown')
+    expect(text).toContain('common.unknown')
+    expect(text).not.toContain('input=100;cached=80')
+    expect(text).not.toContain('80.0%')
+  })
+
+  it('shows legacy audit diagnostics as unknown instead of invented zero or false values', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          audit_stage: 'fast',
+          audit_target_excerpt: 'legacy audit target',
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    expect(wrapper.get('[data-test="audit-diagnostic-session"]').text()).toContain('common.unknown / common.unknown')
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix"]').text()).toContain('common.unknown / common.unknown')
+    expect(wrapper.get('[data-test="audit-diagnostic-input-truncated"]').text()).toContain('common.unknown')
+    expect(wrapper.get('[data-test="audit-diagnostic-explicit-user"]').text()).toContain('common.unknown')
+    expect(wrapper.get('[data-test="audit-diagnostic-trusted-client"]').text()).toContain('common.unknown')
+    expect(wrapper.get('[data-test="audit-diagnostic-usage-completeness"]').text()).toContain('common.unknown')
+    expect(wrapper.get('[data-test="supporting-context"]').text()).toContain('common.unknown')
+    expect(wrapper.get('[data-test="audit-diagnostic-session"]').text()).not.toContain('none / 0')
+    expect(wrapper.get('[data-test="audit-diagnostic-prefix"]').text()).not.toContain('0 / common.no')
+  })
+
+  it('shows known false provenance and truncation diagnostics as no', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          audit_stage: 'fast',
+          audit_target_excerpt: 'current audit target',
+          has_explicit_user_turn: false,
+          trusted_client: false,
+          input_truncated: false,
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    expect(wrapper.get('[data-test="audit-diagnostic-explicit-user"]').text()).toContain('common.no')
+    expect(wrapper.get('[data-test="audit-diagnostic-trusted-client"]').text()).toContain('common.no')
+    expect(wrapper.get('[data-test="audit-diagnostic-input-truncated"]').text()).toContain('common.no')
+  })
+
+  it('accepts complete legacy provider usage even when stage details are absent', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          audit_stage: 'full',
+          provider_applicable: true,
+          result_cache_applicable: true,
+          review_applicable: true,
+          prompt_tokens: 100,
+          cached_input_tokens: 80,
+          uncached_input_tokens: 20,
+          output_tokens: 5,
+          usage_unknown: false,
+          sub2api_result_cache_hit: false,
+          review_complete: true,
+          audit_target_excerpt: 'legacy provider usage',
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    expect(wrapper.get('[data-test="audit-diagnostic-tokens"]').text()).toContain('input=100;cached=80;uncached=20;output=5')
+    expect(wrapper.get('[data-test="audit-diagnostic-usage-completeness"]').text()).toContain('admin.riskControl.usageComplete')
+    expect(wrapper.get('[data-test="audit-diagnostic-cache"]').text()).toContain('admin.riskControl.cacheMiss')
+  })
+
+  it('shows provider, cache, and review diagnostics as not applicable for local skips', async () => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        action: 'skip',
+        audit_status: 'skipped',
+        audit_code: 'no_new_user_intent',
+        audit_details: {
+          provider_applicable: false,
+          result_cache_applicable: false,
+          review_applicable: false,
+          sub2api_result_cache_hit: false,
+          review_complete: false,
+          audit_target_excerpt: 'metadata-only request',
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    expect(wrapper.get('[data-test="audit-diagnostic-tokens"]').text()).toContain('admin.riskControl.auditStageNoProviderUsage')
+    expect(wrapper.get('[data-test="audit-diagnostic-usage-completeness"]').text()).toContain('admin.riskControl.auditStageNotApplicable')
+    expect(wrapper.get('[data-test="audit-diagnostic-cache"]').text()).toContain('admin.riskControl.auditStageNotApplicable')
+    expect(wrapper.get('[data-test="audit-diagnostic-review-complete"]').text()).toContain('admin.riskControl.auditStageNotApplicable')
+  })
+
+  it.each([
+    {
+      label: 'empty JSON',
+      auditDetails: {},
+    },
+    {
+      label: 'serialized zero-value booleans',
+      auditDetails: {
+        sub2api_result_cache_hit: false,
+        review_complete: false,
+        has_explicit_user_turn: false,
+        trusted_client: false,
+      },
+    },
+  ])('does not expand $label audit details from historical rows', async ({ auditDetails }) => {
+    listLogs.mockResolvedValue({
+      items: [moderationLog({ audit_details: auditDetails })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    expect(wrapper.text()).toContain('test input')
+    expect(wrapper.find('[data-test="supporting-context"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="audit-stage-details"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="audit-diagnostic-cache"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('admin.riskControl.auditDiagnostics')
+  })
+
+  it('deletes the current record hash only after confirmation', async () => {
+    const inputHash = 'b'.repeat(64)
+    listLogs.mockResolvedValue({
+      items: [moderationLog({
+        audit_details: {
+          input_hash: inputHash,
+          audit_target_excerpt: 'false positive target',
+        },
+      })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('[data-test="open-input-detail"]').trigger('click')
+
+    const deleteButton = wrapper.get('[data-test="input-detail-delete-flagged-hash"]')
+    expect(deleteButton.attributes('disabled')).toBeUndefined()
+    await deleteButton.trigger('click')
+    expect(deleteFlaggedHash).not.toHaveBeenCalled()
+
+    await deleteButton.trigger('click')
+    await flushPromises()
+    expect(confirmSpy).toHaveBeenCalledTimes(2)
+    expect(deleteFlaggedHash).toHaveBeenCalledWith(inputHash)
+    expect(showSuccess).toHaveBeenCalledWith('admin.riskControl.flaggedHashDeleted')
+
+    confirmSpy.mockRestore()
   })
 
   it('uses restore and clear risk as the default moderation unban mode', async () => {

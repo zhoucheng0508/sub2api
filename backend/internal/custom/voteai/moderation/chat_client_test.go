@@ -55,6 +55,47 @@ func TestParseResultNormalizesCategoriesAndReason(t *testing.T) {
 	}
 }
 
+func TestParseResultRedactsProviderControlledReason(t *testing.T) {
+	t.Parallel()
+	providerSecret := strings.Join([]string{"sk", "provider", "secret-123456789"}, "-")
+	result, err := ParseResult(`{"flagged":true,"risk_score":0.8,"categories":["credential_theft"],"reason":"Authorization: Bearer ` + providerSecret + ` user@example.com"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{providerSecret, "user@example.com"} {
+		if strings.Contains(result.Reason, secret) {
+			t.Fatalf("provider reason leaked %q: %q", secret, result.Reason)
+		}
+	}
+	if !strings.Contains(result.Reason, "[REDACTED]") {
+		t.Fatalf("provider reason was not redacted: %q", result.Reason)
+	}
+}
+
+func TestAuditRedactsProviderErrorBody(t *testing.T) {
+	t.Parallel()
+	providerSecret := strings.Join([]string{"sk", "provider", "secret-123456789"}, "-")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"api_key: ` + providerSecret + `"}`))
+	}))
+	defer server.Close()
+
+	_, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL: server.URL,
+		Model:   "deepseek-v4-flash",
+	}, "audit-key", "test input", nil)
+	if err == nil {
+		t.Fatal("expected provider status error")
+	}
+	if strings.Contains(err.Error(), providerSecret) {
+		t.Fatalf("provider error leaked a credential: %q", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("provider error was not redacted: %q", err)
+	}
+}
+
 func TestNormalizeAndClassifySystemPrompt(t *testing.T) {
 	t.Parallel()
 	if got := NormalizeSystemPrompt(""); got != RecommendedSystemPrompt {
@@ -250,7 +291,7 @@ func TestUserTurnsTreatEscapedRoleMarkersAsLiteralContent(t *testing.T) {
 	}
 }
 
-func TestAdaptiveReasoningLocallyBlocksProgressiveCredentialBypass(t *testing.T) {
+func TestAdaptiveReasoningRoutesProgressiveCredentialBypassThroughSemanticAudit(t *testing.T) {
 	t.Parallel()
 
 	history := strings.Join([]string{
@@ -274,15 +315,15 @@ func TestAdaptiveReasoningLocallyBlocksProgressiveCredentialBypass(t *testing.T)
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				http.Error(w, "semantic audit should not be called", http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":true,\"risk_score\":0.95,\"categories\":[\"credential_theft\"],\"signals\":[\"auth_bypass\",\"progressive_escalation\"],\"reason\":\"semantic review confirmed\"}"}}]}`))
 			}))
 			defer server.Close()
 
 			result, err := Audit(context.Background(), server.Client(), Config{
 				BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "enabled", ReasoningEffort: "adaptive",
 			}, "test-key", history+"\n\n[USER]\n"+lastTurn, nil)
-			if err != nil || result == nil || !result.Flagged || calls != 0 {
-				t.Fatalf("progressive bypass was not locally blocked: result=%#v calls=%d err=%v", result, calls, err)
+			if err != nil || result == nil || !result.Flagged || calls != 1 {
+				t.Fatalf("progressive bypass did not complete semantic review: result=%#v calls=%d err=%v", result, calls, err)
 			}
 		})
 	}
@@ -337,6 +378,138 @@ func TestAuditUsesChatCompletionsAndKeepsUserContentUntrusted(t *testing.T) {
 	}
 	if status != http.StatusOK || !result.Flagged || result.RiskScore != 0.88 {
 		t.Fatalf("unexpected result: status=%d result=%#v", status, result)
+	}
+}
+
+func TestAuditReturnsDeepSeekUsageWithoutInventingMissingValues(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"reason\":\"benign\"}"}}],
+			"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}
+		}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "disabled",
+	}, "test-key", "ordinary request", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Usage == nil {
+		t.Fatal("usage was not returned with the moderation result")
+	}
+	assertUsageInt(t, "prompt tokens", result.Usage.PromptTokens, 100)
+	assertUsageInt(t, "completion tokens", result.Usage.CompletionTokens, 10)
+	assertUsageInt(t, "total tokens", result.Usage.TotalTokens, 110)
+	assertUsageInt(t, "cached prompt tokens", result.Usage.CachedPromptTokens, 80)
+	assertUsageInt(t, "uncached prompt tokens", result.Usage.UncachedPromptTokens, 20)
+	if result.Usage.CacheCreationPromptTokens != nil {
+		t.Fatalf("missing cache creation tokens must remain unknown, got %d", *result.Usage.CacheCreationPromptTokens)
+	}
+}
+
+func TestParseUsageSupportsCompatibleCacheDetails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		raw         string
+		wantCached  int
+		wantCreated int
+	}{
+		{
+			name:       "OpenAI prompt token details",
+			raw:        `{"prompt_tokens":50,"prompt_tokens_details":{"cached_tokens":0}}`,
+			wantCached: 0,
+		},
+		{
+			name:        "input token details aliases",
+			raw:         `{"prompt_tokens":50,"input_tokens_details":{"cached_tokens":31,"cache_creation_tokens":7}}`,
+			wantCached:  31,
+			wantCreated: 7,
+		},
+		{
+			name:        "top level cache aliases",
+			raw:         `{"prompt_tokens":50,"cache_read_input_tokens":29,"cache_write_input_tokens":8}`,
+			wantCached:  29,
+			wantCreated: 8,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			usage := parseUsage(json.RawMessage(tt.raw))
+			if usage == nil {
+				t.Fatal("usage was not parsed")
+			}
+			assertUsageInt(t, "cached prompt tokens", usage.CachedPromptTokens, tt.wantCached)
+			if tt.wantCreated == 0 && !strings.Contains(tt.raw, "cache_creation") && !strings.Contains(tt.raw, "cache_write") {
+				if usage.CacheCreationPromptTokens != nil {
+					t.Fatalf("cache creation tokens should be unknown, got %d", *usage.CacheCreationPromptTokens)
+				}
+			} else {
+				assertUsageInt(t, "cache creation prompt tokens", usage.CacheCreationPromptTokens, tt.wantCreated)
+			}
+			if usage.UncachedPromptTokens != nil {
+				t.Fatalf("missing uncached prompt tokens must remain unknown, got %d", *usage.UncachedPromptTokens)
+			}
+		})
+	}
+}
+
+func TestAuditIgnoresMalformedUsageWithoutFailingModeration(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"reason\":\"benign\"}"}}],
+			"usage":"not-an-object"
+		}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash",
+	}, "test-key", "ordinary request", nil)
+	if err != nil || result == nil || result.Flagged {
+		t.Fatalf("malformed telemetry changed moderation: result=%#v err=%v", result, err)
+	}
+	if result.Usage != nil {
+		t.Fatalf("malformed usage should be unknown: %#v", result.Usage)
+	}
+}
+
+func TestAuditUsageMissingAndExplicitZeroRemainDistinct(t *testing.T) {
+	t.Parallel()
+	responses := []string{
+		`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"reason\":\"benign\"}"}}]}`,
+		`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"reason\":\"benign\"}"}}],"usage":{"prompt_tokens":0}}`,
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(responses[calls]))
+		calls++
+	}))
+	defer server.Close()
+
+	first, err := Audit(context.Background(), server.Client(), Config{BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash"}, "test-key", "first", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Audit(context.Background(), server.Client(), Config{BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash"}, "test-key", "second", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Usage != nil {
+		t.Fatalf("omitted usage must remain unknown: %#v", first.Usage)
+	}
+	if second.Usage == nil {
+		t.Fatal("explicit usage object was lost")
+	}
+	assertUsageInt(t, "explicit zero prompt tokens", second.Usage.PromptTokens, 0)
+	if second.Usage.CompletionTokens != nil || second.Usage.TotalTokens != nil || second.Usage.CachedPromptTokens != nil {
+		t.Fatalf("omitted token details must remain unknown: %#v", second.Usage)
 	}
 }
 
@@ -439,6 +612,107 @@ func TestNormalizeThinkingSettingsUsesDeepSeekOfficialEfforts(t *testing.T) {
 				t.Fatalf("got mode=%q effort=%q tokens=%d", mode, effort, tokens)
 			}
 		})
+	}
+}
+
+func TestAdaptiveOutputTokenBudgetsPreserveLegacyWhenStageLimitsDisabled(t *testing.T) {
+	t.Parallel()
+	if got := adaptiveMaxOutputTokens(Config{}, ""); got != 256 {
+		t.Fatalf("legacy fast budget = %d", got)
+	}
+	if got := adaptiveMaxOutputTokens(Config{}, "high"); got != 4096 {
+		t.Fatalf("legacy full-review budget = %d", got)
+	}
+	if got := adaptiveMaxOutputTokens(Config{}, "max"); got != 8192 {
+		t.Fatalf("legacy max-review budget = %d", got)
+	}
+
+	stageDefaults := Config{StageOutputLimitsEnabled: true}
+	if got := adaptiveMaxOutputTokens(stageDefaults, ""); got != 256 {
+		t.Fatalf("stage default fast budget = %d", got)
+	}
+	if got := adaptiveMaxOutputTokens(stageDefaults, "high"); got != 1024 {
+		t.Fatalf("stage default full-review budget = %d", got)
+	}
+	if got := adaptiveMaxOutputTokens(stageDefaults, "max"); got != 1536 {
+		t.Fatalf("stage default max-review budget = %d", got)
+	}
+
+	cfg := Config{
+		FastMaxOutputTokens:      111,
+		FullMaxOutputTokens:      222,
+		MaxReviewMaxOutputTokens: 333,
+		StageOutputLimitsEnabled: true,
+	}
+	if got := adaptiveMaxOutputTokens(cfg, ""); got != 111 {
+		t.Fatalf("configured fast budget = %d", got)
+	}
+	if got := adaptiveMaxOutputTokens(cfg, "high"); got != 222 {
+		t.Fatalf("configured full-review budget = %d", got)
+	}
+	if got := adaptiveMaxOutputTokens(cfg, "max"); got != 333 {
+		t.Fatalf("configured max-review budget = %d", got)
+	}
+}
+
+func TestAuditStageUsesFixedReasoningAndOutputBudgets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		stage        ReviewStage
+		wantThinking string
+		wantEffort   string
+		wantTokens   int
+	}{
+		{stage: StageFast, wantThinking: "disabled", wantTokens: 111},
+		{stage: StageFull, wantThinking: "enabled", wantEffort: "high", wantTokens: 222},
+		{stage: StageMax, wantThinking: "enabled", wantEffort: "max", wantTokens: 333},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(string(tt.stage), func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request chatRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				if request.Thinking.Type != tt.wantThinking || request.ReasoningEffort != tt.wantEffort || request.MaxTokens != tt.wantTokens {
+					t.Fatalf("stage %s sent thinking=%q effort=%q tokens=%d", tt.stage, request.Thinking.Type, request.ReasoningEffort, request.MaxTokens)
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"reason\":\"benign\"}"}}]}`))
+			}))
+			defer server.Close()
+
+			result, err := AuditStage(context.Background(), server.Client(), Config{
+				BaseURL:                  server.URL + "/v1",
+				Model:                    "deepseek-v4-flash",
+				ThinkingMode:             "disabled",
+				ReasoningEffort:          "adaptive",
+				FastMaxOutputTokens:      111,
+				FullMaxOutputTokens:      222,
+				MaxReviewMaxOutputTokens: 333,
+				StageOutputLimitsEnabled: true,
+			}, "test-key", "ordinary request", tt.stage, nil)
+			if err != nil || result == nil || result.Flagged || result.Stage != tt.stage {
+				t.Fatalf("stage result=%#v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestAuditStageRejectsUnknownStageWithoutNetworkRequest(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+	}))
+	defer server.Close()
+
+	result, err := AuditStage(context.Background(), server.Client(), Config{
+		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash",
+	}, "test-key", "ordinary request", ReviewStage("unknown"), nil)
+	if err == nil || result != nil || calls != 0 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
 	}
 }
 
@@ -567,12 +841,64 @@ func TestAdaptiveReasoningEscalatesStrongSignalToHigh(t *testing.T) {
 	}
 }
 
-func TestAdaptiveReasoningHardBlocksUnambiguousProgressiveCredentialTheft(t *testing.T) {
+func TestAdaptiveReasoningUsesConfiguredBudgetsAndAggregatesUsage(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		t.Fatal("unambiguous high-risk request must be blocked before calling the audit model")
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if request.MaxTokens != 111 {
+				t.Fatalf("fast output budget = %d", request.MaxTokens)
+			}
+			_, _ = w.Write([]byte(`{
+				"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.3,\"categories\":[],\"signals\":[],\"reason\":\"review needed\"}"}}],
+				"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6}
+			}`))
+			return
+		}
+		if request.MaxTokens != 222 {
+			t.Fatalf("full-review output budget = %d", request.MaxTokens)
+		}
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.1,\"categories\":[],\"signals\":[],\"reason\":\"reviewed\"}"}}],
+			"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23,"prompt_cache_hit_tokens":15,"prompt_cache_miss_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	result, err := Audit(context.Background(), server.Client(), Config{
+		BaseURL:                  server.URL + "/v1",
+		Model:                    "deepseek-v4-flash",
+		ThinkingMode:             "enabled",
+		ReasoningEffort:          "adaptive",
+		FastMaxOutputTokens:      111,
+		FullMaxOutputTokens:      222,
+		MaxReviewMaxOutputTokens: 333,
+		StageOutputLimitsEnabled: true,
+	}, "test-key", "ambiguous request", nil)
+	if err != nil || result == nil || result.Flagged || calls != 2 {
+		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+	if result.Usage == nil {
+		t.Fatal("adaptive usage was not returned")
+	}
+	assertUsageInt(t, "aggregated prompt tokens", result.Usage.PromptTokens, 30)
+	assertUsageInt(t, "aggregated completion tokens", result.Usage.CompletionTokens, 5)
+	assertUsageInt(t, "aggregated total tokens", result.Usage.TotalTokens, 35)
+	assertUsageInt(t, "aggregated cached tokens", result.Usage.CachedPromptTokens, 19)
+	assertUsageInt(t, "aggregated uncached tokens", result.Usage.UncachedPromptTokens, 11)
+}
+
+func TestAdaptiveReasoningDoesNotRestoreLegacyLocalCredentialBlock(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":true,\"risk_score\":0.95,\"categories\":[\"credential_theft\",\"policy_evasion\"],\"signals\":[\"auth_bypass\",\"credential_access\",\"secret_extraction\",\"progressive_escalation\"],\"reason\":\"semantic review confirmed\"}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -581,7 +907,7 @@ func TestAdaptiveReasoningHardBlocksUnambiguousProgressiveCredentialTheft(t *tes
 	result, err := Audit(context.Background(), server.Client(), Config{
 		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", ThinkingMode: "enabled", ReasoningEffort: "adaptive",
 	}, "test-key", content, nil)
-	if err != nil || !result.Flagged || result.RiskScore < 0.9 || calls != 0 {
+	if err != nil || !result.Flagged || result.RiskScore < 0.9 || calls != 1 {
 		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
 	}
 }
@@ -676,6 +1002,11 @@ func TestAdaptiveFastPassTrimsInputAndReviewUsesFullContext(t *testing.T) {
 	}, "test-key", content, nil)
 	if err != nil || result.Flagged || calls != 2 {
 		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
+	}
+	prompt := NormalizeSystemPrompt("")
+	wantInputChars := auditRequestInputChars(prompt, trimContextIfLimited(content, 120)) + auditRequestInputChars(prompt, content)
+	if result.InputChars != wantInputChars {
+		t.Fatalf("input chars=%d want=%d", result.InputChars, wantInputChars)
 	}
 }
 
@@ -932,6 +1263,11 @@ func TestAuditTemporaryFailureFallsBackWithShortContextAndThinkingDisabled(t *te
 	if err != nil || result.Flagged || calls != 2 {
 		t.Fatalf("result=%#v calls=%d err=%v", result, calls, err)
 	}
+	prompt := NormalizeSystemPrompt("")
+	wantInputChars := auditRequestInputChars(prompt, trimContextIfLimited(content, 1000)) + auditRequestInputChars(prompt, trimContextIfLimited(content, 80))
+	if result.InputChars != wantInputChars {
+		t.Fatalf("fallback input chars=%d want=%d", result.InputChars, wantInputChars)
+	}
 }
 
 func TestAuditTimeoutFallsBackWhileParentDeadlineRemains(t *testing.T) {
@@ -1081,6 +1417,16 @@ func conversationFromRequest(request chatRequest) string {
 		return ""
 	}
 	return content[start+len(prefix) : end]
+}
+
+func assertUsageInt(t *testing.T, name string, got *int, want int) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s is unknown, want %d", name, want)
+	}
+	if *got != want {
+		t.Fatalf("%s = %d, want %d", name, *got, want)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
