@@ -32,8 +32,8 @@ type ContentModerationAuditDetails struct {
 	TrustedClient            *bool                                           `json:"trusted_client,omitempty"`
 	AuditKeyHash             string                                          `json:"audit_key_hash,omitempty"`
 	PrefixEpoch              int                                             `json:"prefix_epoch,omitempty"`
-	PrefixContinuity         bool                                            `json:"prefix_continuity,omitempty"`
-	PrefixBaseline           bool                                            `json:"prefix_baseline,omitempty"`
+	PrefixContinuity         *bool                                           `json:"prefix_continuity,omitempty"`
+	PrefixBaseline           *bool                                           `json:"prefix_baseline,omitempty"`
 	PrefixBreakReason        string                                          `json:"prefix_break_reason,omitempty"`
 	InputTruncated           *bool                                           `json:"input_truncated,omitempty"`
 	AuditTargetKind          string                                          `json:"audit_target_kind,omitempty"`
@@ -114,8 +114,8 @@ func populateContentModerationAuditDetails(
 		details.EscalationReasons = append([]string(nil), plan.escalationReasons...)
 		details.TurnCount = plan.state.TurnCount
 		details.PrefixEpoch = plan.state.PrefixEpoch
-		details.PrefixContinuity = plan.state.PrefixContinuity
-		details.PrefixBaseline = plan.state.PrefixBaseline
+		details.PrefixContinuity = auditBoolPtr(plan.state.PrefixContinuity)
+		details.PrefixBaseline = auditBoolPtr(plan.state.PrefixBaseline)
 		details.PrefixBreakReason = plan.state.PrefixBreakReason
 		details.InputTruncated = auditBoolPtr(plan.inputTruncated)
 		details.InputChars = plan.inputChars

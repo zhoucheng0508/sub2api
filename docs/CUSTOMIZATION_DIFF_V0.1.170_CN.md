@@ -301,6 +301,31 @@ backend/migrations/196_vote_ai_content_moderation_audit_details.sql
 
 生产发布时先保持 `incremental_audit_enabled=false`，验证迁移、旧审核路径和诊断数据后，按“测试身份 -> 单个 Pro 上游账号 -> 多个 Pro 上游账号”逐级启用。关闭增量审核只回退快审/完整复核路由，不会自动关闭来源归一化和确定性规则 V2；两者有独立紧急开关。
 
+## 6.5 DeepSeek 审核成本与稳定性优化
+
+在增量上下文审核首次生产测试后，本轮同版本修复继续收紧输入和状态边界：
+
+- 普通低风险请求优先发送当前审核目标；仅在请求依赖上下文或存在会话风险时附带最近历史；
+- 纯周期完整复核使用最近 10 个用户轮次的紧凑轨迹，强信号、累计风险、风险上升、
+  截断风险和强制复核仍使用最大 60,000 字符的完整历史；
+- 低风险且没有类别或信号的模型理由只保留在审核日志，不再写入短期会话风险状态；
+- 调整确定性风险证据门，避免把被引用、被报告或明确防御性的高风险词语机械拼接成执行意图；
+- DeepSeek 主请求接近超时时可进行有预算的并行降级，并保持整体同步审核截止时间；
+- 审核异常按配置执行 fail-closed，不能因降级失败进入业务号池；
+- `false`、`0` 等有效诊断值保留原类型，不再在管理端显示为“未知”。
+
+主要改动仍位于既有隔离目录和接入文件：
+
+```text
+backend/internal/custom/voteai/auditcontext/
+backend/internal/custom/voteai/deterministicrisk/
+backend/internal/custom/voteai/inputprovenance/
+backend/internal/custom/voteai/moderation/
+backend/internal/service/content_moderation*.go
+```
+
+该修复不新增数据库迁移，不修改用户余额、计费、账号调度、代理绑定或业务模型请求。
+
 ## 7. 发布工作流
 
 `.github/workflows/custom-image.yml` 在推送 `custom-v<版本>-<序号>` 标签时构建
@@ -396,5 +421,19 @@ go test -tags=integration ./...
 - Mock 首次请求包含稳定缓存键、`prompt_cache_options.mode=explicit` 和 2 个显式断点，`service_tier=fast` 按现有策略规范化为 `priority`；
 - Mock 返回 `unsupported_parameter: prompt_cache_options` 后只发生一次兼容重试，重试移除系统自动字段，同时保留模型、消息角色、文本、顺序和 `service_tier=priority`；
 - 隔离验收容器、网络、临时数据库、Mock 脚本和抓包已删除；未创建 PR、未推送、未部署生产，也未产生外部 API 费用。
+
+本轮 DeepSeek 审核成本与稳定性补充验收：
+
+- 后端完整 unit-tag 测试通过，仅跳过依赖 OpenAI 官方外部 API 的 3 个既有子用例；
+- 前端二开测试 83/83、生产构建通过；
+- 正常/防御请求 17/17 放行，明确高风险请求 9/9 在业务号池前拦截；
+- 长对话矩阵 10/10 断言通过，渐进诱导在第 7～8 轮拦截，不同 Session 无串扰；
+- 100 次正常请求全部成功，审核异常为 0，P95 为 2,206 ms，完整复核比例 13%；
+- 相比旧基线总 Token 降低 72.19%，估算审核成本降低 71.36%；
+- 综合 DeepSeek 输入缓存率 77.90%，长会话完整复核最高 81.50%，固定块覆盖率 100%；
+- 两个独立 DeepSeek Key 均通过真实健康检查，相同 4,403 Token 前缀在两把 Key 上
+  各采样 3 次，每次缓存 4,224 Token，缓存率均为 95.93%；
+- 本地 Docker、管理员 Web 页面、邮件去重、解禁 epoch、故障切换和结果缓存均通过；
+- 测试完成后账号和审核配置已恢复，临时网关 Key 已清理，生产环境未在本阶段修改。
 
 本地测试库没有 API Key 和上游账号，因此本次无法执行真实模型请求、余额扣减、`gpt-5.6-luna`、`gpt-5.6-terra` 和 fast 2 倍计费的端到端验证。这些项目仍是生产切换前的业务验收项。

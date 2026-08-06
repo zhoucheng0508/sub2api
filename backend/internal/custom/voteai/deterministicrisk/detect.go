@@ -81,6 +81,7 @@ var (
 	negationPattern               = regexp.MustCompile(`(?i)(?:不要|别|禁止|不允许|不得|无需|无须|不用|停止|避免|切勿|不能|不可|不应该|\b(?:do[ -]not|don['’]?t|never|must[ -]not|should[ -]not|no[ -]need[ -]to|cannot|can['’]?t|is[ -]not[ -]allowed|are[ -]not[ -]allowed|prohibited)\b)`)
 	defensivePattern              = regexp.MustCompile(`(?i)(?:防止|保护|预防|检测|审计|修复|加固|防御|风控|防刷|反钓鱼|安全校验|漏洞修复|合规|事件响应|测试|验证|\b(?:prevent|protect|detect|audit|fix|repair|mitigat(?:e|es|ed|ing|ion)|harden|defen[cs](?:e|ive)|risk[ -]control|anti[ -]phishing|incident[ -]response|test|verify|validate)\b)`)
 	metaPattern                   = regexp.MustCompile(`(?i)(?:分析|解释|翻译|总结|评估|审阅|审核|误报|漏报|为什么危险|为何危险|为什么被拦截|规则|关键词|分类器|提示词|测试用例|日志|\b(?:analy[sz](?:e|es|ed|ing)|explain(?:s|ed|ing)?|translat(?:e|es|ed|ing|ion)|summari[sz](?:e|es|ed|ing|ation)|evaluat(?:e|es|ed|ing|ion)|review(?:s|ed|ing)?|false[ -](?:positive|negative)|rules?|keywords?|classifiers?|prompts?|test[ -]cases?|logs?)\b|\bwhy\b[^.!?\n]{0,80}\bdangerous\b)`)
+	reportedRequestPattern        = regexp.MustCompile(`(?i)(?:请求|样例|示例|内容|文本|记录|历史|日志|request|example|sample|content|text|record|history|log)(?:[^，。！？；;.!?\n]{0,24})(?:试图|尝试|包含|涉及|寻求|attempt(?:s|ed|ing)?|contain(?:s|ed|ing)?|involv(?:e|es|ed|ing)|seek(?:s|ing)?)`)
 	authorizedPattern             = regexp.MustCompile(`(?i)(?:我自己的|我自有|本人所有|自有系统|明确授权|经授权|合法授权|授权范围|测试环境|隔离环境|沙箱|\b(?:my[ -]own|owned[ -]by[ -]me|explicitly[ -]authori[sz]ed|with[ -]permission|authori[sz]ed[ -](?:test|system|environment)|sandbox|ctf|lab)\b)`)
 	contrastPattern               = regexp.MustCompile(`(?i)(?:但是|但要|而是|却要|反而|直接|仍然|还是|然后|\b(?:but|however|instead|rather|directly|just|then|still)\b)`)
 	negatedScopeObjectPattern     = regexp.MustCompile(`(?i)(?:提醒|警告|解释|讨论|提及|说明|披露|告诉|\b(?:warn|mention|explain|discuss|tell)\b)`)
@@ -564,11 +565,37 @@ func hasExplicitHarmfulExecution(evidence documentEvidence, combination []tokenM
 		if actionContainsGate {
 			continue
 		}
+		if reportedRequestScopedByContextGate(evidence, action) {
+			continue
+		}
 		if overlapsIntent || (!clauseContainsGate(evidence.document, action, defensivePattern) && !clauseContainsGate(evidence.document, action, metaPattern)) {
 			return true
 		}
 	}
 	return false
+}
+
+func reportedRequestScopedByContextGate(evidence documentEvidence, action tokenMatch) bool {
+	if (!evidence.metaDetected && !evidence.defensiveDetected) || !reportedRequestPattern.MatchString(action.value) {
+		return false
+	}
+	prefixEnd := action.start
+	if prefixEnd < 0 || prefixEnd > len(evidence.document.natural) {
+		return false
+	}
+	prefix := evidence.document.natural[:prefixEnd]
+	lastGateEnd := -1
+	for _, pattern := range []*regexp.Regexp{metaPattern, defensivePattern} {
+		for _, match := range pattern.FindAllStringIndex(prefix, -1) {
+			if match[1] > lastGateEnd {
+				lastGateEnd = match[1]
+			}
+		}
+	}
+	if lastGateEnd < 0 {
+		return false
+	}
+	return !contrastPattern.MatchString(prefix[lastGateEnd:])
 }
 
 func hasExplicitThirdParty(matches []tokenMatch) bool {

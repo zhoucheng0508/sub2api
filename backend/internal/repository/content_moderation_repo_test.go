@@ -122,6 +122,7 @@ func TestContentModerationRepositoryListLogs_ScansAuditDetailsInSelectOrder(t *t
 	createdAt := time.Date(2026, 8, 5, 13, 45, 0, 0, time.UTC)
 	promptTokens := 456
 	cachedTokens := 321
+	prefixContinuity := true
 	auditDetails := service.ContentModerationAuditDetails{
 		AuditStage:               "fast",
 		EscalationReasons:        []string{"periodic_full_review"},
@@ -131,7 +132,7 @@ func TestContentModerationRepositoryListLogs_ScansAuditDetailsInSelectOrder(t *t
 		CachedInputTokens:        &cachedTokens,
 		ResultCacheHit:           true,
 		PrefixEpoch:              3,
-		PrefixContinuity:         true,
+		PrefixContinuity:         &prefixContinuity,
 		AuditTargetKind:          "user_intent",
 		AuditTargetSource:        "openai_responses",
 		AuditTargetExcerpt:       "safe target excerpt",

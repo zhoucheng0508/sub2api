@@ -54,7 +54,7 @@ func TestBuildFastAuditInputDeterministicRecentWindow(t *testing.T) {
 	}
 }
 
-func TestBuildFastAuditInputOmitsUnneededAssistant(t *testing.T) {
+func TestBuildFastAuditInputOmitsCleanIndependentHistory(t *testing.T) {
 	t.Parallel()
 	result, err := BuildFastAuditInput([]Turn{
 		{Role: RoleUser, Text: "first"},
@@ -64,11 +64,27 @@ func TestBuildFastAuditInputOmitsUnneededAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(result.Text, "assistant secret detail") {
-		t.Fatalf("unneeded assistant turn included: %q", result.Text)
+	if strings.Contains(result.Text, "assistant secret detail") || strings.Contains(result.Text, "first") {
+		t.Fatalf("unneeded clean history included: %q", result.Text)
 	}
-	if !strings.Contains(result.Text, "first") || !strings.Contains(result.Text, "independent request") {
-		t.Fatalf("recent user turns missing: %q", result.Text)
+	if !strings.Contains(result.Text, "independent request") {
+		t.Fatalf("audit target missing: %q", result.Text)
+	}
+}
+
+func TestBuildFastAuditInputRetainsHistoryForRiskState(t *testing.T) {
+	t.Parallel()
+	result, err := BuildFastAuditInput([]Turn{
+		{Role: RoleUser, Text: "previous ambiguous account request"},
+		{Role: RoleAssistant, Text: "previous response"},
+		{Role: RoleUser, Text: "independent-looking follow-up"},
+	}, State{Tier: TierObserve, CurrentScore: 0.35, Signals: []string{"ownership_unverified"}}, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Text, "previous ambiguous account request") ||
+		!strings.Contains(result.Text, "independent-looking follow-up") {
+		t.Fatalf("risk-aware history was dropped: %q", result.Text)
 	}
 }
 
