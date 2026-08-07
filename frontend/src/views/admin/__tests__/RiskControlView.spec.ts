@@ -506,6 +506,7 @@ describe('admin RiskControlView', () => {
     await flushPromises()
 
     await wrapper.get('[data-test="ai-synchronous-budget-ms"]').setValue('4500')
+    await wrapper.get('[data-test="ai-fast-stage-budget-ms"]').setValue('2200')
     await wrapper.get('[data-test="ai-fast-input-chars"]').setValue('16000')
     await wrapper.get('[data-test="ai-fallback-input-chars"]').setValue('17000')
     await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
@@ -520,6 +521,7 @@ describe('admin RiskControlView', () => {
 
     expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({
       ai_synchronous_budget_ms: 4500,
+      ai_fast_stage_budget_ms: 2200,
       ai_fast_input_chars: 16000,
       ai_fallback_input_chars: 6000,
     }))
@@ -725,7 +727,7 @@ describe('admin RiskControlView', () => {
 
     expect(wrapper.get('[data-test="incremental-audit-status"]').text()).toBe('common.disabled')
     expect(wrapper.get<HTMLInputElement>('[data-test="ai-recent-user-turns"]').element.value).toBe('2')
-    expect(wrapper.get<HTMLInputElement>('[data-test="ai-summary-max-chars"]').element.value).toBe('800')
+    expect(wrapper.get<HTMLInputElement>('[data-test="ai-summary-max-chars"]').element.value).toBe('500')
 
     await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
     await flushPromises()
@@ -735,12 +737,12 @@ describe('admin RiskControlView', () => {
       ai_input_provenance_v2_enabled: true,
       ai_deterministic_risk_v2_enabled: true,
       ai_recent_user_turns: 2,
-      ai_summary_max_chars: 800,
+      ai_summary_max_chars: 500,
       ai_full_review_threshold: 0.4,
       ai_full_review_risk_delta: 0.15,
       ai_periodic_full_review_turns: 10,
       ai_full_review_max_input_chars: 60000,
-      ai_fast_max_output_tokens: 256,
+      ai_fast_max_output_tokens: 128,
       ai_full_max_output_tokens: 1024,
       ai_max_review_max_output_tokens: 1536,
       ai_audit_context_ttl_minutes: 120,
@@ -1172,6 +1174,16 @@ describe('admin RiskControlView', () => {
     listLogs.mockResolvedValue({
       items: [moderationLog({
         audit_details: {
+          total_latency_ms: 1234,
+          extraction_latency_ms: 3,
+          provenance_latency_ms: 2,
+          deterministic_latency_ms: 4,
+          verdict_cache_latency_ms: 5,
+          context_load_latency_ms: 6,
+          fast_build_latency_ms: 7,
+          review_build_latency_ms: 8,
+          provider_latency_ms: 905,
+          postprocess_latency_ms: 12,
           audit_stage: 'full',
           escalation_reasons: ['periodic_review'],
           session_source: 'prompt_cache_key',
@@ -1263,6 +1275,7 @@ describe('admin RiskControlView', () => {
       },
     })
     await flushPromises()
+    expect(wrapper.text()).toContain('1,234 ms')
     await wrapper.get('[data-test="open-input-detail"]').trigger('click')
 
     const text = wrapper.text()
@@ -1277,6 +1290,10 @@ describe('admin RiskControlView', () => {
     expect(text).toContain('admin.riskControl.auditExplicitUserTurn')
     expect(text).toContain('admin.riskControl.auditTrustedClient')
     expect(wrapper.get('[data-test="audit-diagnostic-usage-completeness"]').text()).toContain('admin.riskControl.usageComplete')
+    expect(wrapper.get('[data-test="audit-diagnostic-latency-total"]').text()).toContain('1,234 ms')
+    expect(wrapper.get('[data-test="audit-diagnostic-latency-fast-build"]').text()).toContain('7 ms')
+    expect(wrapper.get('[data-test="audit-diagnostic-latency-review-build"]').text()).toContain('8 ms')
+    expect(wrapper.get('[data-test="audit-diagnostic-latency-provider"]').text()).toContain('905 ms')
     expect(wrapper.get('[data-test="audit-diagnostic-input-hash"]').text()).toContain('a'.repeat(64))
     expect(wrapper.get('[data-test="audit-diagnostic-policy-version"]').text()).toContain('vote-ai-risk-v2')
     expect(wrapper.get('[data-test="audit-diagnostic-audit-key-hash"]').text()).toContain('audit-key-hash')

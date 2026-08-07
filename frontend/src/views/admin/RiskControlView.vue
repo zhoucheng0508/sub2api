@@ -355,7 +355,7 @@
                       </p>
                     </td>
                     <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      <div>{{ latencyText(row.upstream_latency_ms) }}</div>
+                      <div>{{ latencyText(auditTotalLatency(row)) }}</div>
                       <div v-if="row.queue_delay_ms !== null && row.queue_delay_ms !== undefined" class="text-xs text-gray-400">
                         {{ t('admin.riskControl.queueDelay', { ms: row.queue_delay_ms }) }}
                       </div>
@@ -481,6 +481,7 @@
                 <!-- CUSTOM(VOTE-AI-RISK-PERFORMANCE): bounded synchronous fast path and supplemental-review sizing. -->
                 <ModerationPerformanceSettings
                   v-model:synchronous-budget-ms="configForm.ai_synchronous_budget_ms"
+                  v-model:fast-stage-budget-ms="configForm.ai_fast_stage_budget_ms"
                   v-model:fast-input-chars="configForm.ai_fast_input_chars"
                   v-model:fallback-input-chars="configForm.ai_fallback_input_chars"
                   :max-input-chars="configForm.ai_max_input_chars"
@@ -1599,8 +1600,9 @@ const configForm = reactive({
   ai_failure_policy: 'allow' as AIAuditFailurePolicy,
   ai_max_input_chars: 200000,
   ai_synchronous_budget_ms: 4800,
-  ai_fast_input_chars: 12000,
-  ai_fallback_input_chars: 4000,
+  ai_fast_stage_budget_ms: 3000,
+  ai_fast_input_chars: 3000,
+  ai_fallback_input_chars: 3000,
   ai_thinking_mode: 'enabled' as AIAuditThinkingMode,
   ai_reasoning_effort: 'adaptive' as AIAuditReasoningEffort,
   ai_risk_levels_enabled: true,
@@ -1614,12 +1616,12 @@ const configForm = reactive({
   ai_input_provenance_v2_enabled: true,
   ai_deterministic_risk_v2_enabled: true,
   ai_recent_user_turns: 2,
-  ai_summary_max_chars: 800,
+  ai_summary_max_chars: 500,
   ai_full_review_threshold: 0.4,
   ai_full_review_risk_delta: 0.15,
   ai_periodic_full_review_turns: 10,
   ai_full_review_max_input_chars: 60000,
-  ai_fast_max_output_tokens: 256,
+  ai_fast_max_output_tokens: 128,
   ai_full_max_output_tokens: 1024,
   ai_max_review_max_output_tokens: 1536,
   ai_audit_context_ttl_minutes: 120,
@@ -2224,6 +2226,16 @@ const auditDiagnosticItems = computed(() => {
     ? t('admin.riskControl.auditPrefixBaseline')
     : diagnosticText(details.prefix_break_reason)
   return [
+    { key: 'latency-total', label: t('admin.riskControl.auditLatencyTotal'), value: auditLatencyText(details.total_latency_ms) },
+    { key: 'latency-extraction', label: t('admin.riskControl.auditLatencyExtraction'), value: auditLatencyText(details.extraction_latency_ms) },
+    { key: 'latency-provenance', label: t('admin.riskControl.auditLatencyProvenance'), value: auditLatencyText(details.provenance_latency_ms) },
+    { key: 'latency-deterministic', label: t('admin.riskControl.auditLatencyDeterministic'), value: auditLatencyText(details.deterministic_latency_ms) },
+    { key: 'latency-verdict-cache', label: t('admin.riskControl.auditLatencyVerdictCache'), value: auditLatencyText(details.verdict_cache_latency_ms) },
+    { key: 'latency-context-load', label: t('admin.riskControl.auditLatencyContextLoad'), value: auditLatencyText(details.context_load_latency_ms) },
+    { key: 'latency-fast-build', label: t('admin.riskControl.auditLatencyFastBuild'), value: auditLatencyText(details.fast_build_latency_ms) },
+    { key: 'latency-review-build', label: t('admin.riskControl.auditLatencyReviewBuild'), value: auditLatencyText(details.review_build_latency_ms) },
+    { key: 'latency-provider', label: t('admin.riskControl.auditLatencyProvider'), value: auditLatencyText(details.provider_latency_ms) },
+    { key: 'latency-postprocess', label: t('admin.riskControl.auditLatencyPostprocess'), value: auditLatencyText(details.postprocess_latency_ms) },
     { key: 'stage', label: t('admin.riskControl.auditStage'), value: diagnosticText(details.audit_stage) },
     { key: 'target', label: t('admin.riskControl.auditTargetType'), value: diagnosticPair(details.audit_target_kind, details.audit_target_source) },
     { key: 'session', label: t('admin.riskControl.auditSession'), value: diagnosticPair(details.session_source, isKnownAuditCount(details.turn_count) ? formatNumber(details.turn_count) : undefined) },
@@ -2448,8 +2460,9 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.ai_failure_policy = config.ai_chat?.failure_policy === 'block' ? 'block' : 'allow'
   configForm.ai_max_input_chars = config.ai_chat?.max_input_chars ?? 200000
   configForm.ai_synchronous_budget_ms = config.ai_chat?.synchronous_budget_ms ?? 4800
-  configForm.ai_fast_input_chars = config.ai_chat?.fast_input_chars ?? 12000
-  configForm.ai_fallback_input_chars = config.ai_chat?.fallback_input_chars ?? 4000
+  configForm.ai_fast_stage_budget_ms = config.ai_chat?.fast_stage_budget_ms ?? 3000
+  configForm.ai_fast_input_chars = config.ai_chat?.fast_input_chars ?? 3000
+  configForm.ai_fallback_input_chars = config.ai_chat?.fallback_input_chars ?? 3000
   configForm.ai_thinking_mode = config.ai_chat?.thinking_mode === 'disabled' ? 'disabled' : 'enabled'
   const savedReasoningEffort = config.ai_chat?.reasoning_effort
   configForm.ai_reasoning_effort = savedReasoningEffort === 'adaptive' || savedReasoningEffort === 'low' || savedReasoningEffort === 'high' || savedReasoningEffort === 'max'
@@ -2466,12 +2479,12 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.ai_input_provenance_v2_enabled = config.ai_chat?.input_provenance_v2_enabled ?? true
   configForm.ai_deterministic_risk_v2_enabled = config.ai_chat?.deterministic_risk_v2_enabled ?? true
   configForm.ai_recent_user_turns = config.ai_chat?.recent_user_turns ?? 2
-  configForm.ai_summary_max_chars = config.ai_chat?.summary_max_chars ?? 800
+  configForm.ai_summary_max_chars = config.ai_chat?.summary_max_chars ?? 500
   configForm.ai_full_review_threshold = config.ai_chat?.full_review_threshold ?? 0.4
   configForm.ai_full_review_risk_delta = config.ai_chat?.full_review_risk_delta ?? 0.15
   configForm.ai_periodic_full_review_turns = config.ai_chat?.periodic_full_review_turns ?? 10
   configForm.ai_full_review_max_input_chars = config.ai_chat?.full_review_max_input_chars ?? Math.min(60000, configForm.ai_max_input_chars)
-  configForm.ai_fast_max_output_tokens = config.ai_chat?.fast_max_output_tokens ?? 256
+  configForm.ai_fast_max_output_tokens = config.ai_chat?.fast_max_output_tokens ?? 128
   configForm.ai_full_max_output_tokens = config.ai_chat?.full_max_output_tokens ?? 1024
   configForm.ai_max_review_max_output_tokens = config.ai_chat?.max_review_max_output_tokens ?? 1536
   configForm.ai_audit_context_ttl_minutes = config.ai_chat?.audit_context_ttl_minutes ?? 120
@@ -2564,11 +2577,16 @@ async function loadStatus(silent = true) {
 function validateAIChatPerformanceSettings(): boolean {
   if (configForm.audit_provider !== 'ai_chat') return true
   const budget = Number(configForm.ai_synchronous_budget_ms)
+  const fastStageBudget = Number(configForm.ai_fast_stage_budget_ms)
   const maxInput = Number(configForm.ai_max_input_chars)
   const fastInput = Number(configForm.ai_fast_input_chars)
   const fallbackInput = Number(configForm.ai_fallback_input_chars)
   if (!Number.isInteger(budget) || budget < 500 || budget > 5000) {
     appStore.showError(t('admin.riskControl.aiPerformanceBudgetInvalid'))
+    return false
+  }
+  if (!Number.isInteger(fastStageBudget) || fastStageBudget < 500 || fastStageBudget > 3000 || fastStageBudget > budget) {
+    appStore.showError(t('admin.riskControl.aiFastStageBudgetInvalid'))
     return false
   }
   if (!Number.isInteger(fastInput) || fastInput <= 0 || fastInput > maxInput) {
@@ -2642,8 +2660,9 @@ async function saveConfig() {
       ai_failure_policy: configForm.ai_failure_policy,
       ai_max_input_chars: Number(configForm.ai_max_input_chars) || 200000,
       ai_synchronous_budget_ms: Number(configForm.ai_synchronous_budget_ms) || 4800,
-      ai_fast_input_chars: Number(configForm.ai_fast_input_chars) || 12000,
-      ai_fallback_input_chars: Number(configForm.ai_fallback_input_chars) || 4000,
+      ai_fast_stage_budget_ms: Number(configForm.ai_fast_stage_budget_ms) || 3000,
+      ai_fast_input_chars: Number(configForm.ai_fast_input_chars) || 3000,
+      ai_fallback_input_chars: Number(configForm.ai_fallback_input_chars) || 3000,
       ai_thinking_mode: configForm.ai_thinking_mode,
       ai_reasoning_effort: configForm.ai_reasoning_effort,
       ai_risk_levels_enabled: configForm.ai_risk_levels_enabled,
@@ -2657,12 +2676,12 @@ async function saveConfig() {
       ai_input_provenance_v2_enabled: configForm.ai_input_provenance_v2_enabled,
       ai_deterministic_risk_v2_enabled: configForm.ai_deterministic_risk_v2_enabled,
       ai_recent_user_turns: Number(configForm.ai_recent_user_turns) || 2,
-      ai_summary_max_chars: Number(configForm.ai_summary_max_chars) || 800,
+      ai_summary_max_chars: Number(configForm.ai_summary_max_chars) || 500,
       ai_full_review_threshold: Number(configForm.ai_full_review_threshold) || 0.4,
       ai_full_review_risk_delta: Number(configForm.ai_full_review_risk_delta) || 0.15,
       ai_periodic_full_review_turns: Number(configForm.ai_periodic_full_review_turns) || 10,
       ai_full_review_max_input_chars: Number(configForm.ai_full_review_max_input_chars) || 60000,
-      ai_fast_max_output_tokens: Number(configForm.ai_fast_max_output_tokens) || 256,
+      ai_fast_max_output_tokens: Number(configForm.ai_fast_max_output_tokens) || 128,
       ai_full_max_output_tokens: Number(configForm.ai_full_max_output_tokens) || 1024,
       ai_max_review_max_output_tokens: Number(configForm.ai_max_review_max_output_tokens) || 1536,
       ai_audit_context_ttl_minutes: Number(configForm.ai_audit_context_ttl_minutes) || 120,
@@ -3001,8 +3020,9 @@ async function testApiKeys(useInputKeys: boolean) {
       ai_system_prompt: configForm.ai_system_prompt,
       ai_max_input_chars: Number(configForm.ai_max_input_chars) || 200000,
       ai_synchronous_budget_ms: Number(configForm.ai_synchronous_budget_ms) || 4800,
-      ai_fast_input_chars: Number(configForm.ai_fast_input_chars) || 12000,
-      ai_fallback_input_chars: Number(configForm.ai_fallback_input_chars) || 4000,
+      ai_fast_stage_budget_ms: Number(configForm.ai_fast_stage_budget_ms) || 3000,
+      ai_fast_input_chars: Number(configForm.ai_fast_input_chars) || 3000,
+      ai_fallback_input_chars: Number(configForm.ai_fallback_input_chars) || 3000,
       ai_thinking_mode: configForm.ai_thinking_mode,
       ai_reasoning_effort: configForm.ai_reasoning_effort,
       ai_risk_levels_enabled: configForm.ai_risk_levels_enabled,
@@ -3167,7 +3187,20 @@ function percentWidth(value: number): string {
 
 function latencyText(value: number | null): string {
   if (value === null || value === undefined) return '-'
-  return `${value} ms`
+  return `${formatNumber(value)} ms`
+}
+
+function auditTotalLatency(row: ContentModerationLog): number | null {
+  const total = row.audit_details?.total_latency_ms
+  return typeof total === 'number' && Number.isFinite(total) && total >= 0
+    ? total
+    : row.upstream_latency_ms
+}
+
+function auditLatencyText(value?: number): string {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? `${formatNumber(value)} ms`
+    : t('common.unknown')
 }
 
 function apiKeyRowKey(row: ContentModerationAPIKeyStatus, index: number): string {
