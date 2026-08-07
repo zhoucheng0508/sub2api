@@ -96,4 +96,11 @@ pnpm run build
 git diff --check
 ```
 
+全仓库门禁补测：
+
+- `go test -tags=unit ./... -count=1 -timeout 15m` 中，本次涉及的审核、HTTP 客户端、管理端处理器和服务包回归均通过。
+- `TestAuthIdentityFoundationSchemas` 首次因受限环境无法创建 `backend/.entc` 临时目录失败；在允许写入工作树的环境中单独复验通过。
+- `TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI` 的三个子用例均因连接 `api.openai.com:443` 超时失败。该测试依赖在线 OpenAI token-count 接口，不经过 DeepSeek 审核链路，记录为外部网络门禁例外。
+- `pnpm run lint:check`、`pnpm run test:custom` 和 `pnpm run test:run` 均通过；测试工具自动改写的 `pnpm-lock.yaml` 解析噪声已清理。
+
 Docker 证据保存在本地隔离测试产物目录，不提交 API Key、数据库、Redis 数据、原始日志或镜像层到 Git。
