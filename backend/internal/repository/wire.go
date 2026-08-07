@@ -100,7 +100,7 @@ var ProviderSet = wire.NewSet(
 	NewChannelRepository,
 	NewChannelMonitorRepository,
 	NewChannelMonitorRequestTemplateRepository,
-	NewContentModerationRepository,
+	ProvideContentModerationRepository,
 	NewAffiliateRepository,
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
 	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
@@ -151,6 +151,8 @@ var ProviderSet = wire.NewSet(
 
 	// HTTP service ports (DI Strategy A: return interface directly)
 	NewTurnstileVerifier,
+	NewTencentCaptchaVerifier,
+	NewAliyunCaptchaVerifier,
 	ProvidePricingRemoteClient,
 	ProvideGitHubReleaseClient,
 	NewProxyExitInfoProber,
@@ -167,6 +169,12 @@ var ProviderSet = wire.NewSet(
 	ProvideSQLDB,
 	ProvideRedis,
 )
+
+// ProvideContentModerationRepository exposes the Vote AI repository through
+// its service-layer port so Wire does not depend on the concrete implementation.
+func ProvideContentModerationRepository(db *sql.DB) service.ContentModerationRepository {
+	return NewContentModerationRepository(db)
+}
 
 // ProvideEnt 为依赖注入提供 Ent 客户端。
 //
