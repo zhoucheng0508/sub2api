@@ -67,6 +67,7 @@ type contentModerationConfigRequest struct {
 	AIFailurePolicy                   *string                                 `json:"ai_failure_policy"`
 	AIMaxInputChars                   *int                                    `json:"ai_max_input_chars"`
 	AISynchronousBudgetMS             *int                                    `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS               *int                                    `json:"ai_fast_stage_budget_ms"`
 	AIFastInputChars                  *int                                    `json:"ai_fast_input_chars"`
 	AIFallbackInputChars              *int                                    `json:"ai_fallback_input_chars"`
 	AIThinkingMode                    *string                                 `json:"ai_thinking_mode"`
@@ -112,6 +113,7 @@ type contentModerationAPIKeyTestRequest struct {
 	AISystemPrompt        string   `json:"ai_system_prompt"`
 	AIMaxInputChars       int      `json:"ai_max_input_chars"`
 	AISynchronousBudgetMS int      `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS   int      `json:"ai_fast_stage_budget_ms"`
 	AIFastInputChars      int      `json:"ai_fast_input_chars"`
 	AIFallbackInputChars  int      `json:"ai_fallback_input_chars"`
 	AIThinkingMode        string   `json:"ai_thinking_mode"`
@@ -186,6 +188,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		AIFailurePolicy:                   req.AIFailurePolicy,
 		AIMaxInputChars:                   req.AIMaxInputChars,
 		AISynchronousBudgetMS:             req.AISynchronousBudgetMS,
+		AIFastStageBudgetMS:               req.AIFastStageBudgetMS,
 		AIFastInputChars:                  req.AIFastInputChars,
 		AIFallbackInputChars:              req.AIFallbackInputChars,
 		AIThinkingMode:                    req.AIThinkingMode,
@@ -250,6 +253,7 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		AISystemPrompt:        req.AISystemPrompt,
 		AIMaxInputChars:       req.AIMaxInputChars,
 		AISynchronousBudgetMS: req.AISynchronousBudgetMS,
+		AIFastStageBudgetMS:   req.AIFastStageBudgetMS,
 		AIFastInputChars:      req.AIFastInputChars,
 		AIFallbackInputChars:  req.AIFallbackInputChars,
 		AIThinkingMode:        req.AIThinkingMode,

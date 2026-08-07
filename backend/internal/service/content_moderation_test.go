@@ -906,20 +906,51 @@ func TestContentModerationConfigNormalize_UsesDeepSeekOfficialReasoningEfforts(t
 func TestContentModerationConfigNormalize_EnforcesAIPerformanceBounds(t *testing.T) {
 	cfg := defaultContentModerationConfig()
 	cfg.AIChat.SynchronousBudgetMS = minAIChatSynchronousBudgetMS - 1
+	cfg.AIChat.FastStageBudgetMS = minAIChatFastStageBudgetMS - 1
 	cfg.AIChat.MaxInputChars = minAIChatMaxInputChars - 1
 	cfg.normalize()
 	require.Equal(t, defaultAIChatSynchronousBudgetMS, cfg.AIChat.SynchronousBudgetMS)
+	require.Equal(t, defaultAIChatFastStageBudgetMS, cfg.AIChat.FastStageBudgetMS)
 	require.Equal(t, defaultAIChatMaxInputChars, cfg.AIChat.MaxInputChars)
 
 	cfg.AIChat.SynchronousBudgetMS = minAIChatSynchronousBudgetMS
+	cfg.AIChat.FastStageBudgetMS = maxAIChatFastStageBudgetMS
 	cfg.AIChat.MaxInputChars = minAIChatMaxInputChars
 	cfg.AIChat.FastInputChars = minAIChatMaxInputChars + 1
 	cfg.AIChat.FallbackInputChars = minAIChatMaxInputChars + 1
 	cfg.normalize()
 	require.Equal(t, minAIChatSynchronousBudgetMS, cfg.AIChat.SynchronousBudgetMS)
+	require.Equal(t, minAIChatSynchronousBudgetMS, cfg.AIChat.FastStageBudgetMS)
 	require.Equal(t, minAIChatMaxInputChars, cfg.AIChat.MaxInputChars)
 	require.Equal(t, minAIChatMaxInputChars, cfg.AIChat.FastInputChars)
 	require.Equal(t, minAIChatMaxInputChars, cfg.AIChat.FallbackInputChars)
+}
+
+func TestContentModerationFastStageContextUsesConfiguredBudget(t *testing.T) {
+	backgroundCtx, cancelBackground := contentModerationFastStageContext(context.Background(), 2200)
+	defer cancelBackground()
+	backgroundDeadline, ok := backgroundCtx.Deadline()
+	require.True(t, ok)
+	require.LessOrEqual(t, time.Until(backgroundDeadline), 2200*time.Millisecond)
+
+	parent, cancelParent := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelParent()
+
+	fastCtx, cancelFast := contentModerationFastStageContext(parent, 2200)
+	defer cancelFast()
+	deadline, ok := fastCtx.Deadline()
+	require.True(t, ok)
+	remaining := time.Until(deadline)
+	require.Greater(t, remaining, 2*time.Second)
+	require.LessOrEqual(t, remaining, 2200*time.Millisecond)
+
+	shortParent, cancelShortParent := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancelShortParent()
+	shortCtx, cancelShort := contentModerationFastStageContext(shortParent, 2200)
+	defer cancelShort()
+	shortDeadline, ok := shortCtx.Deadline()
+	require.True(t, ok)
+	require.LessOrEqual(t, time.Until(shortDeadline), 800*time.Millisecond)
 }
 
 func TestContentModerationCheck_AIChatUsesConfidenceThreshold(t *testing.T) {

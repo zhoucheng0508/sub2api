@@ -71,9 +71,9 @@ var (
 )
 
 const (
-	defaultFastInputChars           = 6000
+	defaultFastInputChars           = 3000
 	defaultFallbackInputChars       = 3000
-	defaultFastMaxOutputTokens      = 256
+	defaultFastMaxOutputTokens      = 128
 	defaultFullMaxOutputTokens      = 1024
 	defaultMaxReviewMaxOutputTokens = 1536
 	legacyFastMaxOutputTokens       = 256
@@ -117,6 +117,9 @@ categories 仅限 cyber_abuse,credential_theft,malware,phishing,fraud,spam,polic
 [RISK-SIGNALS] 所有权不明不能单独拦截；继续历史有害操作才标 progressive_escalation。
 [DECISION-RULES] 风控配置、误报分析、引用/翻译/总结风险文本、账号保护、官方找回、漏洞修复及授权研究应放行并标 defensive_context。风险词或历史违规不能自动继承风险；证据不足时降低分数。无类别或信号返回空数组。`
 
+const compactFastOutputInstruction = `
+[FAST-OUTPUT] 本阶段只返回紧凑 JSON：{"flagged":boolean,"risk_score":0到1,"signals":[string]}。三个字段必须存在；不要返回解释文字。`
+
 // DefaultSystemPrompt remains as a compatibility alias for existing callers.
 const DefaultSystemPrompt = RecommendedSystemPrompt
 
@@ -135,6 +138,7 @@ type Config struct {
 	ExistingRiskScore        float64
 	ThinkingMode             string
 	ReasoningEffort          string
+	compactFastProtocol      bool
 }
 
 type ReviewStage string
@@ -319,6 +323,7 @@ func AuditStage(ctx context.Context, client *http.Client, cfg Config, apiKey str
 	case StageFast:
 		content = trimContextIfLimited(content, effectiveFastInputChars(cfg))
 		thinking = "disabled"
+		cfg.compactFastProtocol = true
 	case StageFull:
 		// Full means full context, not necessarily deep reasoning. Reserve max
 		// reasoning for strong-signal reviews so periodic reviews stay bounded.
@@ -329,12 +334,15 @@ func AuditStage(ctx context.Context, client *http.Client, cfg Config, apiKey str
 		return nil, fmt.Errorf("unsupported AI audit stage %q", stage)
 	}
 
-	retry := fallbackBudget{available: stage == StageFast}
+	// Stage orchestration owns retries across distinct API keys. A same-key
+	// adapter fallback duplicates cost and obscures the synchronous deadline.
+	retry := fallbackBudget{available: false}
 	auditCall := auditWithFallback
+	prompt := NormalizeSystemPrompt(cfg.SystemPrompt)
 	if stage == StageFast {
-		auditCall = auditWithHedgedFallback
+		prompt += compactFastOutputInstruction
 	}
-	result, err := auditCall(ctx, client, cfg, apiKey, endpoint, NormalizeSystemPrompt(cfg.SystemPrompt), content, thinking, effort, adaptiveMaxOutputTokens(cfg, effort), httpStatus, &retry)
+	result, err := auditCall(ctx, client, cfg, apiKey, endpoint, prompt, content, thinking, effort, adaptiveMaxOutputTokens(cfg, effort), httpStatus, &retry)
 	if result != nil {
 		result.Stage = stage
 	}
@@ -404,117 +412,6 @@ func auditWithFallback(ctx context.Context, client *http.Client, cfg Config, api
 	return result, nil
 }
 
-type hedgedAuditResult struct {
-	result *Result
-	usage  *Usage
-	err    error
-	status int
-	input  int
-	name   string
-}
-
-func auditWithHedgedFallback(ctx context.Context, client *http.Client, cfg Config, apiKey string, endpoint string, prompt string, content string, thinking string, effort string, maxTokensOverride int, httpStatus *int, retry *fallbackBudget) (*Result, error) {
-	delay, ok := auditHedgeDelay(ctx, client, retry)
-	if !ok {
-		return auditWithFallback(ctx, client, cfg, apiKey, endpoint, prompt, content, thinking, effort, maxTokensOverride, httpStatus, retry)
-	}
-	retry.available = false
-	hedgeCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	results := make(chan hedgedAuditResult, 2)
-	start := func(name, auditContent, auditThinking, auditEffort string, auditMaxTokens int, jsonMode bool) {
-		go func() {
-			status := 0
-			result, usage, err := auditOnce(hedgeCtx, client, cfg, apiKey, endpoint, prompt, auditContent, auditThinking, auditEffort, auditMaxTokens, jsonMode, &status)
-			results <- hedgedAuditResult{result: result, usage: usage, err: err, status: status, input: auditRequestInputChars(prompt, auditContent), name: name}
-		}()
-	}
-	start("primary", content, thinking, effort, maxTokensOverride, true)
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case primary := <-results:
-		if primary.err == nil {
-			setAuditHTTPStatus(httpStatus, primary.status)
-			primary.result.Usage = primary.usage
-			primary.result.InputChars = primary.input
-			return primary.result, nil
-		}
-		if !shouldFallback(primary.err) {
-			return nil, &auditAttemptError{err: primary.err, inputChars: primary.input}
-		}
-		fallbackContent := trimContextIfLimited(content, effectiveFallbackInputChars(cfg))
-		return finishSynchronousFallback(ctx, client, cfg, apiKey, endpoint, prompt, primary, fallbackContent, httpStatus)
-	case <-timer.C:
-	}
-
-	fallbackContent := trimContextIfLimited(content, effectiveFallbackInputChars(cfg))
-	start("fallback", fallbackContent, "disabled", "", 0, false)
-	completed := make([]hedgedAuditResult, 0, 2)
-	for len(completed) < 2 {
-		attempt := <-results
-		completed = append(completed, attempt)
-		if attempt.err == nil {
-			cancel()
-			setAuditHTTPStatus(httpStatus, attempt.status)
-			attempt.result.Usage = mergeUsage(nil, attempt.usage)
-			attempt.result.InputChars = auditRequestInputChars(prompt, content) + auditRequestInputChars(prompt, fallbackContent)
-			return attempt.result, nil
-		}
-		if attempt.name == "primary" && !shouldFallback(attempt.err) {
-			return nil, &auditAttemptError{err: attempt.err, inputChars: attempt.input}
-		}
-	}
-	return nil, &auditAttemptError{err: errors.Join(
-		fmt.Errorf("primary AI audit attempt: %w", completed[0].err),
-		fmt.Errorf("fallback AI audit attempt: %w", completed[1].err),
-	), inputChars: auditRequestInputChars(prompt, content) + auditRequestInputChars(prompt, fallbackContent)}
-}
-
-func finishSynchronousFallback(ctx context.Context, client *http.Client, cfg Config, apiKey string, endpoint string, prompt string, primary hedgedAuditResult, fallbackContent string, httpStatus *int) (*Result, error) {
-	status := 0
-	result, usage, err := auditOnce(ctx, client, cfg, apiKey, endpoint, prompt, fallbackContent, "disabled", "", 0, false, &status)
-	if err != nil {
-		return nil, &auditAttemptError{err: errors.Join(
-			fmt.Errorf("primary AI audit attempt: %w", primary.err),
-			fmt.Errorf("fallback AI audit attempt: %w", err),
-		), inputChars: primary.input + auditRequestInputChars(prompt, fallbackContent)}
-	}
-	setAuditHTTPStatus(httpStatus, status)
-	result.Usage = mergeUsage(primary.usage, usage)
-	result.InputChars = primary.input + auditRequestInputChars(prompt, fallbackContent)
-	return result, nil
-}
-
-func auditHedgeDelay(ctx context.Context, client *http.Client, retry *fallbackBudget) (time.Duration, bool) {
-	if retry == nil || !retry.available || !canFallback(ctx, client) {
-		return 0, false
-	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return 0, false
-	}
-	remaining := time.Until(deadline)
-	if remaining < 600*time.Millisecond {
-		return 0, false
-	}
-	delay := remaining / 2
-	if delay < 200*time.Millisecond {
-		delay = 200 * time.Millisecond
-	}
-	if delay > 2500*time.Millisecond {
-		delay = 2500 * time.Millisecond
-	}
-	return delay, true
-}
-
-func setAuditHTTPStatus(target *int, value int) {
-	if target != nil && value > 0 {
-		*target = value
-	}
-}
-
 func primaryAuditAttemptContext(ctx context.Context, client *http.Client, retry *fallbackBudget) (context.Context, context.CancelFunc) {
 	noop := func() {}
 	if retry == nil || !retry.available || !canFallback(ctx, client) {
@@ -570,7 +467,12 @@ func auditOnce(ctx context.Context, client *http.Client, cfg Config, apiKey stri
 	if err != nil {
 		return nil, usage, err
 	}
-	result, err := ParseResult(responseContent)
+	var result *Result
+	if cfg.compactFastProtocol {
+		result, err = ParseFastResult(responseContent)
+	} else {
+		result, err = ParseResult(responseContent)
+	}
 	if err != nil {
 		return nil, usage, err
 	}
@@ -1118,6 +1020,39 @@ func ClassifySystemPrompt(prompt string) (version string, usesRecommended bool) 
 }
 
 func ParseResult(raw string) (*Result, error) {
+	var result Result
+	if err := decodeSingleAuditResult(raw, &result); err != nil {
+		return nil, err
+	}
+	return normalizeParsedResult(&result)
+}
+
+// ParseFastResult requires explicit compact-protocol fields. Pointer-backed
+// wire fields distinguish an omitted false/zero value from a valid one.
+func ParseFastResult(raw string) (*Result, error) {
+	var wire struct {
+		Flagged    *bool     `json:"flagged"`
+		RiskScore  *float64  `json:"risk_score"`
+		Signals    *[]string `json:"signals"`
+		Categories []string  `json:"categories,omitempty"`
+		Reason     string    `json:"reason,omitempty"`
+	}
+	if err := decodeSingleAuditResult(raw, &wire); err != nil {
+		return nil, err
+	}
+	if wire.Flagged == nil || wire.RiskScore == nil || wire.Signals == nil {
+		return nil, fmt.Errorf("%w: fast audit result must include flagged, risk_score, and signals", ErrInvalidJSON)
+	}
+	return normalizeParsedResult(&Result{
+		Flagged:    *wire.Flagged,
+		RiskScore:  *wire.RiskScore,
+		Signals:    append([]string(nil), (*wire.Signals)...),
+		Categories: append([]string(nil), wire.Categories...),
+		Reason:     wire.Reason,
+	})
+}
+
+func decodeSingleAuditResult(raw string, target any) error {
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, "```") && strings.HasSuffix(raw, "```") {
 		raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "```json"), "```"))
@@ -1125,15 +1060,21 @@ func ParseResult(raw string) (*Result, error) {
 			raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "```"), "```"))
 		}
 	}
-	var result Result
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&result); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%w: AI audit result must contain exactly one JSON object", ErrInvalidJSON)
+		return fmt.Errorf("%w: AI audit result must contain exactly one JSON object", ErrInvalidJSON)
+	}
+	return nil
+}
+
+func normalizeParsedResult(result *Result) (*Result, error) {
+	if result == nil {
+		return nil, fmt.Errorf("%w: AI audit result is nil", ErrInvalidJSON)
 	}
 	if result.RiskScore < 0 || result.RiskScore > 1 {
 		return nil, fmt.Errorf("%w: AI audit risk_score must be between 0 and 1", ErrInvalidJSON)
@@ -1190,7 +1131,7 @@ func ParseResult(raw string) (*Result, error) {
 	}
 	result.Categories = categories
 	result.Reason = sanitizeProviderText(result.Reason, 500)
-	return &result, nil
+	return result, nil
 }
 
 func sanitizeProviderText(value string, maxChars int) string {

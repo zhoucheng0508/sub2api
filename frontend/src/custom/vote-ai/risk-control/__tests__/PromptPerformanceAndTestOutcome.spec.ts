@@ -56,10 +56,11 @@ describe('RecommendedPromptControl', () => {
 })
 
 describe('ModerationPerformanceSettings', () => {
-  it('emits all three bounded performance controls independently', async () => {
+  it('emits all four bounded performance controls independently', async () => {
     const wrapper = mount(ModerationPerformanceSettings, {
       props: {
         synchronousBudgetMs: 4800,
+        fastStageBudgetMs: 2200,
         fastInputChars: 12000,
         fallbackInputChars: 4000,
         maxInputChars: 200000,
@@ -67,10 +68,12 @@ describe('ModerationPerformanceSettings', () => {
     })
 
     await wrapper.get('[data-test="ai-synchronous-budget-ms"]').setValue('4500')
+    await wrapper.get('[data-test="ai-fast-stage-budget-ms"]').setValue('2100')
     await wrapper.get('[data-test="ai-fast-input-chars"]').setValue('16000')
     await wrapper.get('[data-test="ai-fallback-input-chars"]').setValue('6000')
 
     expect(wrapper.emitted('update:synchronousBudgetMs')).toEqual([[4500]])
+    expect(wrapper.emitted('update:fastStageBudgetMs')).toEqual([[2100]])
     expect(wrapper.emitted('update:fastInputChars')).toEqual([[16000]])
     expect(wrapper.emitted('update:fallbackInputChars')).toEqual([[6000]])
     expect(wrapper.get('label[for="vote-ai-moderation-synchronous-budget"]').exists()).toBe(true)

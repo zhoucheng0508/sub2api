@@ -72,6 +72,65 @@ func TestBuildFastAuditInputOmitsCleanIndependentHistory(t *testing.T) {
 	}
 }
 
+func TestBuildFastAuditInputQuantizesStableLowRiskSummary(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.PeriodicFullReviewTurns = 25
+	turns := []Turn{{Role: RoleUser, Text: "repeatable independent request"}}
+
+	first, err := BuildFastAuditInput(turns, State{}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BuildFastAuditInput(turns, State{
+		TurnCount: 1, CurrentScore: 0.10, MaxScore: 0.10, Tier: TierLow, Trend: TrendStable,
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Text != second.Text {
+		t.Fatalf("stable low-risk summary changed within one review bucket:\nfirst=%q\nsecond=%q", first.Text, second.Text)
+	}
+	if !strings.Contains(first.Text, "state=low_stable\nturn_bucket=0") || strings.Contains(first.Text, "current_score=") {
+		t.Fatalf("stable summary was not quantized: %q", first.Text)
+	}
+
+	nextBucket, err := BuildFastAuditInput(turns, State{
+		TurnCount: 25, CurrentScore: 0.10, MaxScore: 0.10, Tier: TierLow, Trend: TrendStable,
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Text == nextBucket.Text || !strings.Contains(nextBucket.Text, "turn_bucket=1") {
+		t.Fatalf("periodic review bucket did not fence the stable summary: %q", nextBucket.Text)
+	}
+}
+
+func TestBuildFastAuditInputDoesNotQuantizeRiskyOrReferentialState(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	risky, err := BuildFastAuditInput([]Turn{{Role: RoleUser, Text: "independent request"}}, State{
+		TurnCount: 2, CurrentScore: 0.25, MaxScore: 0.25, Tier: TierLow, Trend: TrendStable,
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(risky.Text, "state=low_stable") || !strings.Contains(risky.Text, "current_score=0.25") {
+		t.Fatalf("risky state was incorrectly quantized: %q", risky.Text)
+	}
+
+	referential, err := BuildFastAuditInput([]Turn{
+		{Role: RoleAssistant, Text: "previous answer"},
+		{Role: RoleUser, Text: "Please continue"},
+	}, State{TurnCount: 1, CurrentScore: 0.05, MaxScore: 0.05, Tier: TierLow, Trend: TrendStable}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(referential.Text, "state=low_stable") || !strings.Contains(referential.Text, "previous answer") {
+		t.Fatalf("referential request was incorrectly quantized: %q", referential.Text)
+	}
+}
+
 func TestBuildFastAuditInputRetainsHistoryForRiskState(t *testing.T) {
 	t.Parallel()
 	result, err := BuildFastAuditInput([]Turn{

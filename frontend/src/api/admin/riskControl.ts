@@ -51,6 +51,7 @@ export interface ContentModerationAIChatProfile extends ContentModerationProvide
   failure_policy: AIAuditFailurePolicy
   max_input_chars: number
   synchronous_budget_ms: number
+  fast_stage_budget_ms: number
   fast_input_chars: number
   fallback_input_chars: number
   thinking_mode: AIAuditThinkingMode
@@ -154,6 +155,7 @@ export interface TestContentModerationAPIKeysPayload {
   ai_system_prompt?: string
   ai_max_input_chars?: number
   ai_synchronous_budget_ms?: number
+  ai_fast_stage_budget_ms?: number
   ai_fast_input_chars?: number
   ai_fallback_input_chars?: number
   ai_thinking_mode?: AIAuditThinkingMode
@@ -241,6 +243,7 @@ export interface UpdateContentModerationConfig {
   ai_failure_policy?: AIAuditFailurePolicy
   ai_max_input_chars?: number
   ai_synchronous_budget_ms?: number
+  ai_fast_stage_budget_ms?: number
   ai_fast_input_chars?: number
   ai_fallback_input_chars?: number
   ai_thinking_mode?: AIAuditThinkingMode
@@ -419,6 +422,16 @@ export interface ContentModerationAuditStageDetails {
 }
 
 export interface ContentModerationAuditDetails {
+  total_latency_ms?: number
+  extraction_latency_ms?: number
+  provenance_latency_ms?: number
+  deterministic_latency_ms?: number
+  verdict_cache_latency_ms?: number
+  context_load_latency_ms?: number
+  fast_build_latency_ms?: number
+  review_build_latency_ms?: number
+  provider_latency_ms?: number
+  postprocess_latency_ms?: number
   audit_stage?: string
   escalation_reasons?: string[]
   session_source?: string

@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	voteaideterministicrisk "github.com/Wei-Shaw/sub2api/internal/custom/voteai/deterministicrisk"
 	voteaimoderation "github.com/Wei-Shaw/sub2api/internal/custom/voteai/moderation"
@@ -11,6 +12,16 @@ import (
 // ContentModerationAuditDetails contains redacted, structured diagnostics for
 // one audit. It deliberately excludes complete conversations and credentials.
 type ContentModerationAuditDetails struct {
+	TotalLatencyMS           *int                                            `json:"total_latency_ms,omitempty"`
+	ExtractionLatencyMS      *int                                            `json:"extraction_latency_ms,omitempty"`
+	ProvenanceLatencyMS      *int                                            `json:"provenance_latency_ms,omitempty"`
+	DeterministicLatencyMS   *int                                            `json:"deterministic_latency_ms,omitempty"`
+	VerdictCacheLatencyMS    *int                                            `json:"verdict_cache_latency_ms,omitempty"`
+	ContextLoadLatencyMS     *int                                            `json:"context_load_latency_ms,omitempty"`
+	FastBuildLatencyMS       *int                                            `json:"fast_build_latency_ms,omitempty"`
+	ReviewBuildLatencyMS     *int                                            `json:"review_build_latency_ms,omitempty"`
+	ProviderLatencyMS        *int                                            `json:"provider_latency_ms,omitempty"`
+	PostprocessLatencyMS     *int                                            `json:"postprocess_latency_ms,omitempty"`
 	AuditStage               string                                          `json:"audit_stage,omitempty"`
 	EscalationReasons        []string                                        `json:"escalation_reasons,omitempty"`
 	SessionSource            string                                          `json:"session_source,omitempty"`
@@ -55,6 +66,63 @@ type ContentModerationAuditDetails struct {
 	Stages                   []ContentModerationAuditStageDetails            `json:"stages,omitempty"`
 }
 
+// contentModerationLatencyBreakdown is request-local and never persisted as a
+// whole. Only bounded millisecond counters are copied into audit_details.
+type contentModerationLatencyBreakdown struct {
+	startedAt              time.Time
+	postprocessStartedAt   time.Time
+	extractionLatencyMS    *int
+	provenanceLatencyMS    *int
+	deterministicLatencyMS *int
+	verdictCacheLatencyMS  *int
+	contextLoadLatencyMS   *int
+	fastBuildLatencyMS     *int
+	reviewBuildLatencyMS   *int
+	providerLatencyMS      *int
+}
+
+func newContentModerationLatencyBreakdown() *contentModerationLatencyBreakdown {
+	return &contentModerationLatencyBreakdown{startedAt: time.Now()}
+}
+
+func moderationElapsedMS(startedAt time.Time) *int {
+	if startedAt.IsZero() {
+		return nil
+	}
+	return auditIntPtr(max(0, int(time.Since(startedAt).Milliseconds())))
+}
+
+func addModerationElapsedMS(target **int, startedAt time.Time) {
+	if target == nil || startedAt.IsZero() {
+		return
+	}
+	elapsed := max(0, int(time.Since(startedAt).Milliseconds()))
+	if *target == nil {
+		*target = auditIntPtr(elapsed)
+		return
+	}
+	**target += elapsed
+}
+
+func contentModerationProviderLatencyMS(result *moderationAPIResult) *int {
+	if result == nil {
+		return nil
+	}
+	total := 0
+	observed := false
+	for _, stage := range result.StageDetails {
+		if !stage.ProviderCalled || stage.LatencyMS == nil {
+			continue
+		}
+		total += max(0, *stage.LatencyMS)
+		observed = true
+	}
+	if !observed {
+		return nil
+	}
+	return auditIntPtr(total)
+}
+
 // ContentModerationAuditStageDetails separates provider work from Sub2API
 // result-cache hits. This prevents a partially cached two-stage review from
 // being reported as a zero-cost audit.
@@ -96,6 +164,18 @@ func populateContentModerationAuditDetails(
 		HashScope:                "audit_target_v1",
 		PolicyVersion:            contentModerationAuditPolicyVersion(cfg),
 	}
+	if timings := content.auditTimings; timings != nil {
+		details.TotalLatencyMS = moderationElapsedMS(timings.startedAt)
+		details.ExtractionLatencyMS = cloneIntPtr(timings.extractionLatencyMS)
+		details.ProvenanceLatencyMS = cloneIntPtr(timings.provenanceLatencyMS)
+		details.DeterministicLatencyMS = cloneIntPtr(timings.deterministicLatencyMS)
+		details.VerdictCacheLatencyMS = cloneIntPtr(timings.verdictCacheLatencyMS)
+		details.ContextLoadLatencyMS = cloneIntPtr(timings.contextLoadLatencyMS)
+		details.FastBuildLatencyMS = cloneIntPtr(timings.fastBuildLatencyMS)
+		details.ReviewBuildLatencyMS = cloneIntPtr(timings.reviewBuildLatencyMS)
+		details.ProviderLatencyMS = cloneIntPtr(timings.providerLatencyMS)
+		details.PostprocessLatencyMS = moderationElapsedMS(timings.postprocessStartedAt)
+	}
 	providerApplicable := (result != nil && !result.LocalDecision) || log.Action == ContentModerationActionError
 	resultCacheApplicable := providerApplicable && cfg.AIChat.CacheEnabled
 	reviewApplicable := providerApplicable
@@ -121,6 +201,9 @@ func populateContentModerationAuditDetails(
 		details.InputChars = plan.inputChars
 	}
 	if result != nil {
+		if providerLatency := contentModerationProviderLatencyMS(result); providerLatency != nil {
+			details.ProviderLatencyMS = providerLatency
+		}
 		details.AuditStage = string(result.Stage)
 		if details.InputChars == 0 {
 			details.InputChars = contentModerationResultInputChars(result)

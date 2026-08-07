@@ -113,3 +113,21 @@ func TestValidatedTransport_ValidationErrorStopsRoundTrip(t *testing.T) {
 	require.ErrorIs(t, err, expectedErr)
 	require.Equal(t, int32(0), atomic.LoadInt32(&baseCalls))
 }
+
+func TestBuildTransportHonorsHTTP2AndPoolOptions(t *testing.T) {
+	t.Parallel()
+	transport, err := buildTransport(Options{
+		MaxIdleConnsPerHost: 32,
+		MaxConnsPerHost:     64,
+		ForceAttemptHTTP2:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 32, transport.MaxIdleConnsPerHost)
+	require.Equal(t, 64, transport.MaxConnsPerHost)
+	require.True(t, transport.ForceAttemptHTTP2)
+
+	base := Options{MaxIdleConnsPerHost: 32}
+	http2 := base
+	http2.ForceAttemptHTTP2 = true
+	require.NotEqual(t, buildClientKey(base), buildClientKey(http2))
+}

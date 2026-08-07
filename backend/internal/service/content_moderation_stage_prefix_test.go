@@ -178,6 +178,7 @@ func TestContentModerationCachedFullReviewDoesNotAdvanceProviderPrefixState(t *t
 	}
 	plan, err := svc.prepareIncrementalAudit(context.Background(), input, cfg, content)
 	require.NoError(t, err)
+	plan.ensureReviewInput(cfg, false, nil)
 	fullCfg := cloneContentModerationConfig(cfg)
 	fullCfg.AIChat.auditStage = string(voteaimoderation.StageFull)
 	fullCfg.AIChat.riskStateDigest = contentModerationAuditRiskDigest(plan.state, plan.policyVersion, cfg)
@@ -200,6 +201,48 @@ func TestContentModerationCachedFullReviewDoesNotAdvanceProviderPrefixState(t *t
 	require.Equal(t, 1, prefixUpdates)
 	require.EqualValues(t, 120, plan.state.LastPrefixTokens)
 	require.True(t, plan.state.PrefixBaseline)
+}
+
+func TestContentModerationAuditRiskDigestNormalizesStableLowRiskState(t *testing.T) {
+	cfg := contentModerationGuardConfig("http://moderation.invalid")
+	cfg.AIChat.PeriodicFullReviewTurns = 25
+
+	empty := contentModerationAuditRiskDigest(voteaiauditcontext.State{
+		TurnCount: 1,
+	}, "policy-v1", cfg)
+	explicit := contentModerationAuditRiskDigest(voteaiauditcontext.State{
+		TurnCount: 1,
+		Tier:      voteaiauditcontext.TierLow,
+		Trend:     voteaiauditcontext.TrendStable,
+	}, "policy-v1", cfg)
+	require.Equal(t, empty, explicit)
+
+	nextBucket := contentModerationAuditRiskDigest(voteaiauditcontext.State{
+		TurnCount: 25,
+		Tier:      voteaiauditcontext.TierLow,
+		Trend:     voteaiauditcontext.TrendStable,
+	}, "policy-v1", cfg)
+	require.NotEqual(t, explicit, nextBucket)
+}
+
+func TestContentModerationAuditRiskDigestFencesRiskState(t *testing.T) {
+	cfg := contentModerationGuardConfig("http://moderation.invalid")
+	base := voteaiauditcontext.State{
+		TurnCount: 2,
+		Tier:      voteaiauditcontext.TierLow,
+		Trend:     voteaiauditcontext.TrendStable,
+	}
+	baseDigest := contentModerationAuditRiskDigest(base, "policy-v1", cfg)
+
+	variants := []voteaiauditcontext.State{
+		{TurnCount: 2, Tier: voteaiauditcontext.TierObserve, Trend: voteaiauditcontext.TrendStable},
+		{TurnCount: 2, Tier: voteaiauditcontext.TierLow, Trend: voteaiauditcontext.TrendRising},
+		{TurnCount: 2, Tier: voteaiauditcontext.TierLow, Trend: voteaiauditcontext.TrendStable, Categories: []string{"cyber_abuse"}},
+		{TurnCount: 2, Tier: voteaiauditcontext.TierLow, Trend: voteaiauditcontext.TrendStable, Signals: []string{"ownership_unverified"}},
+	}
+	for _, state := range variants {
+		require.NotEqual(t, baseDigest, contentModerationAuditRiskDigest(state, "policy-v1", cfg))
+	}
 }
 
 func TestContentModerationPrefixTokensUseFullStageUsageOnly(t *testing.T) {
