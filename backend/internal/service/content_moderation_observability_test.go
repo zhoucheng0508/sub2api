@@ -5,11 +5,53 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	voteaiauditcontext "github.com/Wei-Shaw/sub2api/internal/custom/voteai/auditcontext"
 	voteaimoderation "github.com/Wei-Shaw/sub2api/internal/custom/voteai/moderation"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPopulateContentModerationAuditDetails_IncludesLatencyBreakdown(t *testing.T) {
+	extraction, provenance, deterministic := 3, 2, 4
+	verdictCache, contextLoad, fastBuild := 5, 6, 7
+	reviewBuild, provider := 8, 99
+	content := ContentModerationInput{auditTimings: &contentModerationLatencyBreakdown{
+		startedAt:              time.Now().Add(-150 * time.Millisecond),
+		postprocessStartedAt:   time.Now().Add(-12 * time.Millisecond),
+		extractionLatencyMS:    &extraction,
+		provenanceLatencyMS:    &provenance,
+		deterministicLatencyMS: &deterministic,
+		verdictCacheLatencyMS:  &verdictCache,
+		contextLoadLatencyMS:   &contextLoad,
+		fastBuildLatencyMS:     &fastBuild,
+		reviewBuildLatencyMS:   &reviewBuild,
+		providerLatencyMS:      &provider,
+	}}
+	result := &moderationAPIResult{StageDetails: []ContentModerationAuditStageDetails{
+		{Stage: string(voteaimoderation.StageFast), ProviderCalled: true, LatencyMS: auditIntPtr(21)},
+		{Stage: string(voteaimoderation.StageFull), ResultCacheHit: true, LatencyMS: auditIntPtr(1)},
+		{Stage: string(voteaimoderation.StageMax), ProviderCalled: true, LatencyMS: auditIntPtr(34)},
+	}}
+	log := &ContentModerationLog{}
+	cfg := &ContentModerationConfig{AuditProvider: ContentModerationProviderAIChat}
+
+	populateContentModerationAuditDetails(log, cfg, content, result, nil, false)
+
+	details := log.AuditDetails
+	require.NotNil(t, details.TotalLatencyMS)
+	require.GreaterOrEqual(t, *details.TotalLatencyMS, 140)
+	require.Equal(t, 3, *details.ExtractionLatencyMS)
+	require.Equal(t, 2, *details.ProvenanceLatencyMS)
+	require.Equal(t, 4, *details.DeterministicLatencyMS)
+	require.Equal(t, 5, *details.VerdictCacheLatencyMS)
+	require.Equal(t, 6, *details.ContextLoadLatencyMS)
+	require.Equal(t, 7, *details.FastBuildLatencyMS)
+	require.Equal(t, 8, *details.ReviewBuildLatencyMS)
+	require.Equal(t, 55, *details.ProviderLatencyMS)
+	require.NotNil(t, details.PostprocessLatencyMS)
+	require.GreaterOrEqual(t, *details.PostprocessLatencyMS, 10)
+}
 
 func TestPopulateContentModerationAuditDetails_RedactsAndBoundsPersistedExcerpts(t *testing.T) {
 	const (

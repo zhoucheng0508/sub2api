@@ -247,6 +247,12 @@ func writeContentModerationGuardResult(
 	signals []string,
 	reason string,
 ) {
+	if categories == nil {
+		categories = []string{}
+	}
+	if signals == nil {
+		signals = []string{}
+	}
 	result, _ := json.Marshal(map[string]any{
 		"flagged": flagged, "risk_score": score, "categories": categories,
 		"signals": signals, "reason": reason,
@@ -870,6 +876,7 @@ func TestContentModerationGuard_FullReviewContainsExactlyOneAuditTarget(t *testi
 	}, cfg, content)
 
 	require.NoError(t, err)
+	plan.ensureReviewInput(cfg, false, nil)
 	require.Equal(t, 1, strings.Count(plan.fullInput, "[AUDIT-TARGET-LOCATOR"))
 	require.Equal(t, 1, strings.Count(plan.fullInput, target))
 	require.Contains(t, plan.fullInput, "[CONVERSATION-HISTORY]")
@@ -877,6 +884,68 @@ func TestContentModerationGuard_FullReviewContainsExactlyOneAuditTarget(t *testi
 	require.Contains(t, plan.fullInput, "Earlier answer.")
 	require.Zero(t, strings.Count(plan.canonicalFullPrefix, "[AUDIT-TARGET-LOCATOR"))
 	require.Equal(t, 1, strings.Count(plan.canonicalFullPrefix, target))
+}
+
+func TestContentModerationGuard_CleanFastPathDoesNotBuildReviewInput(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeContentModerationGuardResult(w, false, 0.05, nil, nil, "benign")
+	}))
+	defer server.Close()
+
+	cfg := contentModerationGuardConfig(server.URL)
+	cfg.AIChat.IncrementalAuditEnabled = true
+	cfg.AIChat.CacheEnabled = false
+	cfg.AIChat.PeriodicFullReviewTurns = 25
+	svc, _ := newContentModerationGuardService(t, cfg, server, newContentModerationGuardCache())
+	timings := newContentModerationLatencyBreakdown()
+	content := contentModerationGuardInput("ordinary project update")
+	content.auditTimings = timings
+
+	result, plan, err := svc.callIncrementalAIChatAudit(context.Background(), ContentModerationCheckInput{
+		UserID: 611, APIKeyID: 711, SessionID: "clean-fast", RequestID: "clean-fast-1",
+	}, cfg, content, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, voteaimoderation.StageFast, result.Stage)
+	require.Equal(t, int64(1), calls.Load())
+	require.False(t, plan.reviewInputBuilt)
+	require.Empty(t, plan.fullInput)
+	require.Empty(t, plan.periodicInput)
+	require.Nil(t, timings.reviewBuildLatencyMS)
+}
+
+func TestContentModerationGuard_FastStageUsesBoundedBudgetWithoutSameKeyRetry(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		time.Sleep(3 * time.Second)
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cfg := contentModerationGuardConfig(server.URL)
+	cfg.AIChat.IncrementalAuditEnabled = true
+	cfg.AIChat.CacheEnabled = false
+	cfg.AIChat.RetryCount = 2
+	cfg.AIChat.FastStageBudgetMS = 1500
+	svc, _ := newContentModerationGuardService(t, cfg, server, newContentModerationGuardCache())
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	startedAt := time.Now()
+
+	result, _, err := svc.callIncrementalAIChatAudit(ctx, ContentModerationCheckInput{
+		UserID: 612, APIKeyID: 712, SessionID: "bounded-fast", RequestID: "bounded-fast-1",
+	}, cfg, contentModerationGuardInput("ordinary project update"), false)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Less(t, time.Since(startedAt), 2200*time.Millisecond)
+	require.Equal(t, int64(1), calls.Load())
 }
 
 func TestContentModerationGuard_PeriodicTrajectoryKeepsTenTurnsAndSamplesContent(t *testing.T) {
@@ -911,14 +980,17 @@ func TestContentModerationGuard_PeriodicTrajectoryOnlyAppliesToSolePeriodicReaso
 	require.False(t, contentModerationUsesPeriodicTrajectory([]string{voteaiauditcontext.ReviewReasonStrongSignal}))
 
 	plan := &contentModerationIncrementalPlan{
-		fullInput:           "full-input",
-		canonicalFullPrefix: "full-prefix",
-		periodicInput:       "periodic-input",
-		canonicalPeriodic:   "periodic-prefix",
+		reviewTargetKind: "user_request",
+		reviewTargetText: "current target",
+		reviewSourceTurns: []ContentModerationTurn{
+			{Role: "user", Purpose: "supporting_context", Text: "earlier target"},
+			{Role: "user", Purpose: "audit_target", Text: "current target"},
+		},
 	}
-	plan.activatePeriodicTrajectory()
-	require.Equal(t, "periodic-input", plan.fullInput)
-	require.Equal(t, "periodic-prefix", plan.canonicalFullPrefix)
+	plan.ensureReviewInput(defaultContentModerationConfig(), true, nil)
+	require.Contains(t, plan.fullInput, "[PERIODIC-RISK-TRAJECTORY")
+	require.Equal(t, plan.periodicInput, plan.fullInput)
+	require.Equal(t, plan.canonicalPeriodic, plan.canonicalFullPrefix)
 	require.True(t, plan.fullHistoryTruncated)
 	require.True(t, plan.prefixCompacted)
 	require.False(t, plan.prefixHistoryRewrite)
@@ -1029,6 +1101,7 @@ func TestContentModerationGuard_FullReviewRedactsSecretsFromEveryHistoricalRole(
 	}, cfg, content)
 
 	require.NoError(t, err)
+	plan.ensureReviewInput(cfg, false, nil)
 	for _, secret := range []string{"audit-system-secret-canary-1234567890", "historical-user-password", "historical-assistant-token"} {
 		require.NotContains(t, plan.fullInput, secret)
 		require.NotContains(t, plan.canonicalFullPrefix, secret)

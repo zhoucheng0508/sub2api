@@ -646,7 +646,7 @@ func TestAdaptiveOutputTokenBudgetsPreserveLegacyWhenStageLimitsDisabled(t *test
 	}
 
 	stageDefaults := Config{StageOutputLimitsEnabled: true}
-	if got := adaptiveMaxOutputTokens(stageDefaults, ""); got != 256 {
+	if got := adaptiveMaxOutputTokens(stageDefaults, ""); got != 128 {
 		t.Fatalf("stage default fast budget = %d", got)
 	}
 	if got := adaptiveMaxOutputTokens(stageDefaults, "high"); got != 1024 {
@@ -697,7 +697,13 @@ func TestAuditStageUsesFixedReasoningAndOutputBudgets(t *testing.T) {
 				if request.Thinking.Type != tt.wantThinking || request.ReasoningEffort != tt.wantEffort || request.MaxTokens != tt.wantTokens {
 					t.Fatalf("stage %s sent thinking=%q effort=%q tokens=%d", tt.stage, request.Thinking.Type, request.ReasoningEffort, request.MaxTokens)
 				}
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"reason\":\"benign\"}"}}]}`))
+				if tt.stage == StageFast && !strings.Contains(request.Messages[0].Content, "[FAST-OUTPUT]") {
+					t.Fatal("fast stage did not include the compact output instruction")
+				}
+				if tt.stage != StageFast && strings.Contains(request.Messages[0].Content, "[FAST-OUTPUT]") {
+					t.Fatalf("stage %s unexpectedly included the compact output instruction", tt.stage)
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"signals\":[],\"reason\":\"benign\"}"}}]}`))
 			}))
 			defer server.Close()
 
@@ -718,7 +724,25 @@ func TestAuditStageUsesFixedReasoningAndOutputBudgets(t *testing.T) {
 	}
 }
 
-func TestAuditStageFastHedgesSlowPrimary(t *testing.T) {
+func TestParseFastResultRequiresExplicitCompactFields(t *testing.T) {
+	t.Parallel()
+	valid, err := ParseFastResult(`{"flagged":false,"risk_score":0,"signals":[]}`)
+	if err != nil || valid == nil || valid.Flagged || valid.RiskScore != 0 || len(valid.Signals) != 0 {
+		t.Fatalf("valid compact result=%#v err=%v", valid, err)
+	}
+	for _, raw := range []string{
+		`{"risk_score":0,"signals":[]}`,
+		`{"flagged":false,"signals":[]}`,
+		`{"flagged":false,"risk_score":0}`,
+		`{"flagged":false,"risk_score":0,"signals":[],"unknown":true}`,
+	} {
+		if _, err := ParseFastResult(raw); !errors.Is(err, ErrInvalidJSON) {
+			t.Fatalf("raw=%s err=%v, want ErrInvalidJSON", raw, err)
+		}
+	}
+}
+
+func TestAuditStageFastDoesNotDuplicateRequestOnSameKey(t *testing.T) {
 	t.Parallel()
 	requests := make(chan chatRequest, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -728,28 +752,20 @@ func TestAuditStageFastHedgesSlowPrimary(t *testing.T) {
 			return
 		}
 		requests <- request
-		if request.ResponseFormat != nil {
-			<-r.Context().Done()
-			return
-		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"flagged\":false,\"risk_score\":0.05,\"categories\":[],\"signals\":[],\"reason\":\"benign\"}"}}]}`))
+		<-r.Context().Done()
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	started := time.Now()
 	result, err := AuditStage(ctx, server.Client(), Config{
 		BaseURL: server.URL + "/v1", Model: "deepseek-v4-flash", FallbackInputChars: 100,
 	}, "test-key", strings.Repeat("safe input ", 50), StageFast, nil)
-	if err != nil || result == nil || result.Flagged {
-		t.Fatalf("hedged result=%#v err=%v", result, err)
+	if err == nil || result != nil {
+		t.Fatalf("result=%#v err=%v, want timeout", result, err)
 	}
-	if elapsed := time.Since(started); elapsed >= 750*time.Millisecond {
-		t.Fatalf("hedged fallback finished too late: %v", elapsed)
-	}
-	if len(requests) != 2 {
-		t.Fatalf("request count=%d want=2", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("request count=%d want=1", len(requests))
 	}
 }
 

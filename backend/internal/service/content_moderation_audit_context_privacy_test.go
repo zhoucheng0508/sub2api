@@ -53,6 +53,7 @@ func TestContentModerationAuditContext_StatelessActorDoesNotCrossConversationBou
 
 	firstPlan, err := svc.prepareIncrementalAudit(context.Background(), firstInput, cfg, contentModerationGuardInput("First independent request."))
 	require.NoError(t, err)
+	firstPlan.ensureReviewInput(cfg, false, nil)
 	require.False(t, firstPlan.stableSession)
 	require.InDelta(t, 0.15, firstPlan.state.CurrentScore, 0.0001, "numeric actor risk should still inform this request")
 	for _, providerInput := range []string{firstPlan.fastInput.Text, firstPlan.fullInput} {
@@ -84,6 +85,7 @@ func TestContentModerationAuditContext_StatelessActorDoesNotCrossConversationBou
 	secondInput.RequestID = "stateless-conversation-two"
 	secondPlan, err := svc.prepareIncrementalAudit(context.Background(), secondInput, cfg, contentModerationGuardInput("Second independent request."))
 	require.NoError(t, err)
+	secondPlan.ensureReviewInput(cfg, false, nil)
 	require.False(t, secondPlan.stableSession)
 	require.InDelta(t, 0.19, secondPlan.state.CurrentScore, 0.0001, "only damped numeric actor risk may cross requests")
 	providerInput := secondPlan.fastInput.Text + "\n" + secondPlan.fullInput

@@ -30,6 +30,18 @@ const (
 	periodicReviewSystemChars          = 128
 )
 
+func contentModerationFastStageContext(ctx context.Context, budgetMS int) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return ctx, func() {}
+	}
+	budget := time.Duration(max(1, budgetMS)) * time.Millisecond
+	deadline, ok := ctx.Deadline()
+	if ok && time.Until(deadline) <= budget {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
 type contentModerationIncrementalPlan struct {
 	state                voteaiauditcontext.State
 	stateKey             string
@@ -39,6 +51,10 @@ type contentModerationIncrementalPlan struct {
 	canonicalFullPrefix  string
 	periodicInput        string
 	canonicalPeriodic    string
+	reviewSourceTurns    []ContentModerationTurn
+	reviewTargetKind     string
+	reviewTargetText     string
+	reviewInputBuilt     bool
 	latestUserText       string
 	stableSession        bool
 	fullHistoryAvailable bool
@@ -81,6 +97,8 @@ func (s *ContentModerationService) prepareIncrementalAudit(
 	cfg *ContentModerationConfig,
 	content ContentModerationInput,
 ) (*contentModerationIncrementalPlan, error) {
+	prepareStarted := time.Now()
+	incrementalContextLoadMS := 0
 	turns := make([]voteaiauditcontext.Turn, 0, len(content.Turns))
 	userTurns := 0
 	targetIndex := -1
@@ -105,18 +123,10 @@ func (s *ContentModerationService) prepareIncrementalAudit(
 			continue
 		}
 		text := strings.TrimSpace(turn.Text)
-		if turn.Purpose == "audit_target" && fullAuditTargetText != "" {
-			// The fast builder receives AuditTargetText separately, while the
-			// full builder reads the canonical turn slice. Keep the independently
-			// bounded full-review target here rather than reusing the short sample.
-			text = fullAuditTargetText
-		} else if turn.Role == "tool" {
-			text = sanitizeContentModerationToolOutput(text, cfg.auditContextConfig().ToolTurnMaxChars)
-		} else {
-			// Full review is sent to an external audit provider. Redact every
-			// historical role, not only the current target and tool output, so an
-			// earlier credential cannot leak when a later turn triggers escalation.
-			text = voteaiauditcontext.RedactSecrets(text)
+		if turn.Purpose == "audit_target" && fastAuditTargetText != "" {
+			// Keep the lightweight fast view bounded. Historical redaction and
+			// full-review rendering are deferred until escalation is confirmed.
+			text = fastAuditTargetText
 		}
 		converted := voteaiauditcontext.Turn{
 			Role:      voteaiauditcontext.Role(strings.ToLower(strings.TrimSpace(turn.Role))),
@@ -150,6 +160,9 @@ func (s *ContentModerationService) prepareIncrementalAudit(
 		inputTruncated:       inputTruncated || fastAuditTargetTruncated,
 		policyVersion:        contentModerationAuditPolicyVersion(cfg),
 		eventAt:              time.Now().UTC(),
+		reviewSourceTurns:    append([]ContentModerationTurn(nil), content.Turns...),
+		reviewTargetKind:     content.AuditTargetKind,
+		reviewTargetText:     fullAuditTargetText,
 	}
 	sessionKey, actorKey, _ := contentModerationRiskIdentity(input)
 	plan.stateKey = sessionKey
@@ -161,7 +174,12 @@ func (s *ContentModerationService) prepareIncrementalAudit(
 	}
 	if plan.stateKey != "" {
 		if store, ok := s.hashCache.(ContentModerationAuditContextStore); ok {
+			contextLoadStarted := time.Now()
 			state, found, err := store.GetContentModerationAuditContext(ctx, plan.stateKey)
+			incrementalContextLoadMS = max(0, int(time.Since(contextLoadStarted).Milliseconds()))
+			if content.auditTimings != nil {
+				addModerationElapsedMS(&content.auditTimings.contextLoadLatencyMS, contextLoadStarted)
+			}
 			if err != nil {
 				slog.Warn("content_moderation.audit_context_get_failed", "error", err)
 			} else if found {
@@ -199,17 +217,93 @@ func (s *ContentModerationService) prepareIncrementalAudit(
 	if err != nil {
 		return nil, err
 	}
+	if content.auditTimings != nil {
+		fastBuildMS := max(0, int(time.Since(prepareStarted).Milliseconds())-incrementalContextLoadMS)
+		content.auditTimings.fastBuildLatencyMS = auditIntPtr(fastBuildMS)
+	}
 	plan.fastInput = fast
 	plan.inputTruncated = plan.inputTruncated || fast.Truncated
-	plan.canonicalFullPrefix, plan.fullInput, inputTruncated, plan.prefixCompacted, plan.prefixHistoryRewrite = buildContentModerationFullReviewInputForTurns(
-		turns, targetIndex, content.AuditTargetKind, fullAuditTargetText, plan.state, cfg,
-	)
-	plan.canonicalPeriodic, plan.periodicInput = buildContentModerationPeriodicReviewInputForTurns(
-		turns, targetIndex, content.AuditTargetKind, fullAuditTargetText, plan.state,
-	)
-	plan.fullHistoryTruncated = inputTruncated
-	plan.inputTruncated = plan.inputTruncated || inputTruncated
 	return plan, nil
+}
+
+func (plan *contentModerationIncrementalPlan) ensureReviewInput(
+	cfg *ContentModerationConfig,
+	periodic bool,
+	timings *contentModerationLatencyBreakdown,
+) {
+	if plan == nil || plan.reviewInputBuilt {
+		return
+	}
+	startedAt := time.Now()
+	turns, targetIndex, sourceTruncated := buildContentModerationReviewTurns(plan, cfg)
+	if periodic {
+		plan.canonicalPeriodic, plan.periodicInput = buildContentModerationPeriodicReviewInputForTurns(
+			turns, targetIndex, plan.reviewTargetKind, plan.reviewTargetText, plan.state,
+		)
+		plan.fullInput = plan.periodicInput
+		plan.canonicalFullPrefix = plan.canonicalPeriodic
+		plan.fullHistoryTruncated = true
+		plan.prefixCompacted = true
+		plan.prefixHistoryRewrite = false
+	} else {
+		var fullTruncated bool
+		plan.canonicalFullPrefix, plan.fullInput, fullTruncated, plan.prefixCompacted, plan.prefixHistoryRewrite = buildContentModerationFullReviewInputForTurns(
+			turns, targetIndex, plan.reviewTargetKind, plan.reviewTargetText, plan.state, cfg,
+		)
+		plan.fullHistoryTruncated = sourceTruncated || fullTruncated
+	}
+	plan.inputTruncated = plan.inputTruncated || sourceTruncated || plan.fullHistoryTruncated
+	plan.reviewInputBuilt = true
+	if timings != nil {
+		addModerationElapsedMS(&timings.reviewBuildLatencyMS, startedAt)
+	}
+}
+
+func buildContentModerationReviewTurns(
+	plan *contentModerationIncrementalPlan,
+	cfg *ContentModerationConfig,
+) (turns []voteaiauditcontext.Turn, targetIndex int, truncated bool) {
+	if plan == nil {
+		return nil, -1, false
+	}
+	turns = make([]voteaiauditcontext.Turn, 0, len(plan.reviewSourceTurns)+1)
+	targetIndex = -1
+	toolLimit := voteaiauditcontext.DefaultConfig().ToolTurnMaxChars
+	if cfg != nil {
+		toolLimit = cfg.auditContextConfig().ToolTurnMaxChars
+	}
+	for _, turn := range plan.reviewSourceTurns {
+		if turn.Source == "trusted_metadata" || turn.Purpose == "ignored" {
+			continue
+		}
+		text := strings.TrimSpace(turn.Text)
+		if turn.Purpose == "audit_target" && plan.reviewTargetText != "" {
+			text = plan.reviewTargetText
+		} else if turn.Role == "tool" {
+			text = sanitizeContentModerationToolOutput(text, toolLimit)
+		} else {
+			text = voteaiauditcontext.RedactSecrets(text)
+		}
+		converted := voteaiauditcontext.Turn{
+			Role:      voteaiauditcontext.Role(strings.ToLower(strings.TrimSpace(turn.Role))),
+			Text:      text,
+			ToolCall:  turn.ToolCall,
+			Truncated: turn.Truncated,
+		}
+		if converted.Text == "" {
+			continue
+		}
+		if turn.Purpose == "audit_target" {
+			targetIndex = len(turns)
+		}
+		truncated = truncated || converted.Truncated
+		turns = append(turns, converted)
+	}
+	if targetIndex < 0 && plan.reviewTargetText != "" {
+		turns = append(turns, voteaiauditcontext.Turn{Role: voteaiauditcontext.RoleUser, Text: plan.reviewTargetText})
+		targetIndex = len(turns) - 1
+	}
+	return turns, targetIndex, truncated
 }
 
 // buildContentModerationPeriodicReviewInputForTurns provides a compact
@@ -274,17 +368,6 @@ func buildContentModerationPeriodicReviewInputForTurns(
 
 func contentModerationUsesPeriodicTrajectory(reasons []string) bool {
 	return len(reasons) == 1 && reasons[0] == voteaiauditcontext.ReviewReasonPeriodic
-}
-
-func (plan *contentModerationIncrementalPlan) activatePeriodicTrajectory() {
-	if plan == nil || strings.TrimSpace(plan.periodicInput) == "" {
-		return
-	}
-	plan.fullInput = plan.periodicInput
-	plan.canonicalFullPrefix = plan.canonicalPeriodic
-	plan.fullHistoryTruncated = true
-	plan.prefixCompacted = true
-	plan.prefixHistoryRewrite = false
 }
 
 func lowWeightContentModerationActorState(state voteaiauditcontext.State) voteaiauditcontext.State {
@@ -691,8 +774,16 @@ func contentModerationAuditRiskDigest(state voteaiauditcontext.State, policyVers
 		periodic = cfg.AIChat.PeriodicFullReviewTurns
 	}
 	turnBucket := state.TurnCount / periodic
+	tier := strings.ToLower(strings.TrimSpace(state.Tier))
+	if tier == "" {
+		tier = voteaiauditcontext.TierLow
+	}
+	trend := strings.ToLower(strings.TrimSpace(state.Trend))
+	if trend == "" {
+		trend = voteaiauditcontext.TrendStable
+	}
 	payload := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s\x00%s",
-		policyVersion, turnBucket, state.Tier, state.Trend,
+		policyVersion, turnBucket, tier, trend,
 		strings.Join(categories, ","), strings.Join(signals, ","))
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:16])
@@ -919,6 +1010,7 @@ func (s *ContentModerationService) callIncrementalAIChatAudit(
 	}
 	if cfg.AIChat.forceFullReview {
 		plan.escalationReasons = []string{voteaiauditcontext.ReviewReasonForced}
+		plan.ensureReviewInput(cfg, false, content.auditTimings)
 		fullCfg := cloneContentModerationConfig(cfg)
 		fullCfg.AIChat.auditStage = string(voteaimoderation.StageFull)
 		fullCfg.AIChat.riskStateDigest = contentModerationAuditRiskDigest(plan.state, plan.policyVersion, cfg)
@@ -926,6 +1018,9 @@ func (s *ContentModerationService) callIncrementalAIChatAudit(
 		stageStarted := time.Now()
 		fullResult, fullErr := s.callModeration(ctx, fullCfg, plan.fullInput, trackKeyLoad)
 		stageLatency := int(time.Since(stageStarted).Milliseconds())
+		if content.auditTimings != nil {
+			addModerationElapsedMS(&content.auditTimings.providerLatencyMS, stageStarted)
+		}
 		if fullErr != nil {
 			s.recordContentModerationAuditFailure(voteaimoderation.StageFull, stageLatency, voteaimoderation.AttemptedInputChars(fullErr))
 			return nil, plan, fullErr
@@ -942,8 +1037,13 @@ func (s *ContentModerationService) callIncrementalAIChatAudit(
 	fastCfg.AIChat.auditStage = string(voteaimoderation.StageFast)
 	fastCfg.AIChat.riskStateDigest = contentModerationAuditRiskDigest(plan.state, plan.policyVersion, cfg)
 	fastStarted := time.Now()
-	fastResult, err := s.callModeration(ctx, fastCfg, plan.fastInput.Text, trackKeyLoad)
+	fastCtx, cancelFast := contentModerationFastStageContext(ctx, cfg.AIChat.FastStageBudgetMS)
+	fastResult, err := s.callModeration(fastCtx, fastCfg, plan.fastInput.Text, trackKeyLoad)
+	cancelFast()
 	fastLatency := int(time.Since(fastStarted).Milliseconds())
+	if content.auditTimings != nil {
+		addModerationElapsedMS(&content.auditTimings.providerLatencyMS, fastStarted)
+	}
 	if err != nil {
 		s.recordContentModerationAuditFailure(voteaimoderation.StageFast, fastLatency, voteaimoderation.AttemptedInputChars(err))
 		return nil, plan, err
@@ -973,9 +1073,7 @@ func (s *ContentModerationService) callIncrementalAIChatAudit(
 		s.updateContentModerationAuditContext(ctx, input, cfg, plan, fastResult, false)
 		return fastResult, plan, nil
 	}
-	if contentModerationUsesPeriodicTrajectory(decision.Reasons) {
-		plan.activatePeriodicTrajectory()
-	}
+	plan.ensureReviewInput(cfg, contentModerationUsesPeriodicTrajectory(decision.Reasons), content.auditTimings)
 
 	stage := voteaimoderation.StageFull
 	if voteaiauditcontext.HasStrongSignal(fastResult.Signals) && fastResult.CategoryScores["ai_risk"] >= cfg.AIChat.ConfidenceThreshold {
@@ -988,6 +1086,9 @@ func (s *ContentModerationService) callIncrementalAIChatAudit(
 	fullStarted := time.Now()
 	fullResult, reviewErr := s.callModeration(ctx, fullCfg, plan.fullInput, trackKeyLoad)
 	fullLatency := int(time.Since(fullStarted).Milliseconds())
+	if content.auditTimings != nil {
+		addModerationElapsedMS(&content.auditTimings.providerLatencyMS, fullStarted)
+	}
 	s.recordContentModerationAuditUsage(fastResult, len([]rune(plan.fastInput.Text)), cfg)
 	if reviewErr != nil {
 		s.recordContentModerationAuditFailure(stage, fullLatency, voteaimoderation.AttemptedInputChars(reviewErr))

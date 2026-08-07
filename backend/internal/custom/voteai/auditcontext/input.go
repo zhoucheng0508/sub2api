@@ -44,7 +44,7 @@ func BuildFastAuditInput(turns []Turn, state State, cfg Config) (FastInput, erro
 // supporting text alone.
 func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State, cfg Config) (FastInput, error) {
 	cfg = NormalizeConfig(cfg)
-	target.Text = normalizeTurnText(target.Text)
+	target.Text = RedactSecrets(normalizeTurnText(target.Text))
 	target.Kind = strings.ToLower(strings.TrimSpace(target.Kind))
 	if target.Kind == "" {
 		target.Kind = "user_request"
@@ -111,7 +111,7 @@ func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State,
 	for _, index := range indexes {
 		turn := turns[index]
 		turn.Role = normalizeRole(turn.Role)
-		turn.Text = normalizeTurnText(turn.Text)
+		turn.Text = RedactSecrets(normalizeTurnText(turn.Text))
 		if turn.Truncated {
 			truncated = true
 		}
@@ -123,7 +123,7 @@ func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State,
 		prepared[index] = turn
 	}
 
-	summary := formatSummary(state, cfg, false)
+	summary := formatFastSummary(target.Text, state, cfg, false)
 	text := renderFastTargetInput(target, summary, indexes, prepared, false)
 	if runeLen(text) > cfg.FastInputChars {
 		// A referential assistant/tool turn is more useful than an older user
@@ -146,7 +146,7 @@ func BuildFastAuditInputForTarget(turns []Turn, target AuditTarget, state State,
 		text = renderFastTargetInput(target, summary, indexes, prepared, false)
 	}
 	if runeLen(text) > cfg.FastInputChars {
-		summary = formatSummary(state, cfg, true)
+		summary = formatFastSummary(target.Text, state, cfg, true)
 		text = renderFastTargetInput(target, summary, indexes, prepared, false)
 	}
 
@@ -257,7 +257,14 @@ func NeedsPreviousContext(text string) bool {
 	return false
 }
 
-func formatSummary(state State, cfg Config, compact bool) string {
+func formatFastSummary(targetText string, state State, cfg Config, compact bool) string {
+	if stableLowRiskSummaryAllowed(targetText, state, cfg) {
+		turnBucket := 0
+		if cfg.PeriodicFullReviewTurns > 0 {
+			turnBucket = state.TurnCount / cfg.PeriodicFullReviewTurns
+		}
+		return fmt.Sprintf("[SESSION-RISK-SUMMARY]\nstate=low_stable\nturn_bucket=%d", turnBucket)
+	}
 	categories := strings.Join(normalizeValues(state.Categories), ",")
 	if categories == "" {
 		categories = "none"
@@ -296,6 +303,22 @@ func formatSummary(state State, cfg Config, compact bool) string {
 		state.TurnCount, tier, clampScore(state.CurrentScore), clampScore(state.MaxScore), trend, categories, signals, reasonText,
 	)
 	return truncateRunes(summary, cfg.SummaryMaxChars, contentTruncatedMarker)
+}
+
+func stableLowRiskSummaryAllowed(targetText string, state State, cfg Config) bool {
+	if NeedsPreviousContext(targetText) || len(state.Categories) > 0 || len(state.Signals) > 0 || len(state.RecentReasons) > 0 {
+		return false
+	}
+	tier := strings.ToLower(strings.TrimSpace(state.Tier))
+	if tier != "" && tier != TierLow {
+		return false
+	}
+	trend := strings.ToLower(strings.TrimSpace(state.Trend))
+	if trend != "" && trend != TrendStable {
+		return false
+	}
+	return clampScore(state.CurrentScore) < cfg.HistoryRiskThreshold &&
+		clampScore(state.MaxScore) < cfg.HistoryRiskThreshold
 }
 
 func normalizeTurnText(value string) string {

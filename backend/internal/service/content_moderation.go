@@ -153,10 +153,13 @@ const (
 	defaultAIChatSynchronousBudgetMS              = 3500
 	minAIChatSynchronousBudgetMS                  = 500
 	maxAIChatSynchronousBudgetMS                  = 5000
+	defaultAIChatFastStageBudgetMS                = 3000
+	minAIChatFastStageBudgetMS                    = 500
+	maxAIChatFastStageBudgetMS                    = 3000
 	preferredAIChatNextAPIKeyBudget               = 1500 * time.Millisecond
 	minimumAIChatAPIKeyBudget                     = 500 * time.Millisecond
 	aiChatAPIKeyBudgetGuard                       = 50 * time.Millisecond
-	defaultAIChatFastInputChars                   = 6000
+	defaultAIChatFastInputChars                   = 3000
 	defaultAIChatFallbackInputChars               = 3000
 	defaultAIChatConfidenceThreshold              = 0.7
 	defaultAIChatCacheTTLSeconds                  = 3600
@@ -169,12 +172,12 @@ const (
 	defaultAIChatSessionRiskHalfLifeMinutes       = 30
 	defaultAIChatSessionRiskBlockCooldownMinutes  = 30
 	defaultAIChatRecentUserTurns                  = 2
-	defaultAIChatSummaryMaxChars                  = 800
+	defaultAIChatSummaryMaxChars                  = 500
 	defaultAIChatFullReviewThreshold              = 0.40
 	defaultAIChatFullReviewRiskDelta              = 0.15
 	defaultAIChatPeriodicFullReviewTurns          = 10
 	defaultAIChatFullReviewMaxInputChars          = 60000
-	defaultAIChatFastMaxOutputTokens              = 256
+	defaultAIChatFastMaxOutputTokens              = 128
 	defaultAIChatFullMaxOutputTokens              = 1024
 	defaultAIChatMaxReviewMaxOutputTokens         = 1536
 	defaultAIChatAuditContextTTLMinutes           = 120
@@ -285,6 +288,7 @@ type ContentModerationAIChatConfig struct {
 	APIKeys                         []string `json:"api_keys,omitempty"`
 	TimeoutMS                       int      `json:"timeout_ms"`
 	SynchronousBudgetMS             int      `json:"synchronous_budget_ms"`
+	FastStageBudgetMS               int      `json:"fast_stage_budget_ms"`
 	RetryCount                      int      `json:"retry_count"`
 	ConfidenceThreshold             float64  `json:"confidence_threshold"`
 	CacheEnabled                    bool     `json:"cache_enabled"`
@@ -397,6 +401,7 @@ type ContentModerationAIChatConfigView struct {
 	FailurePolicy                    string   `json:"failure_policy"`
 	MaxInputChars                    int      `json:"max_input_chars"`
 	SynchronousBudgetMS              int      `json:"synchronous_budget_ms"`
+	FastStageBudgetMS                int      `json:"fast_stage_budget_ms"`
 	FastInputChars                   int      `json:"fast_input_chars"`
 	FallbackInputChars               int      `json:"fallback_input_chars"`
 	ThinkingMode                     string   `json:"thinking_mode"`
@@ -472,6 +477,7 @@ type TestContentModerationAPIKeysInput struct {
 	AISystemPrompt        string   `json:"ai_system_prompt"`
 	AIMaxInputChars       int      `json:"ai_max_input_chars"`
 	AISynchronousBudgetMS int      `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS   int      `json:"ai_fast_stage_budget_ms"`
 	AIFastInputChars      int      `json:"ai_fast_input_chars"`
 	AIFallbackInputChars  int      `json:"ai_fallback_input_chars"`
 	AIThinkingMode        string   `json:"ai_thinking_mode"`
@@ -554,6 +560,7 @@ type UpdateContentModerationConfigInput struct {
 	AIFailurePolicy                    *string                         `json:"ai_failure_policy"`
 	AIMaxInputChars                    *int                            `json:"ai_max_input_chars"`
 	AISynchronousBudgetMS              *int                            `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS                *int                            `json:"ai_fast_stage_budget_ms"`
 	AIFastInputChars                   *int                            `json:"ai_fast_input_chars"`
 	AIFallbackInputChars               *int                            `json:"ai_fallback_input_chars"`
 	AIThinkingMode                     *string                         `json:"ai_thinking_mode"`
@@ -643,6 +650,7 @@ type ContentModerationInput struct {
 	TrustedClient   bool
 	TrustedSignals  []string
 	IgnoredMetadata []string
+	auditTimings    *contentModerationLatencyBreakdown
 }
 
 type ContentModerationTurn struct {
@@ -1418,6 +1426,9 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.AISynchronousBudgetMS != nil {
 		cfg.AIChat.SynchronousBudgetMS = *input.AISynchronousBudgetMS
 	}
+	if input.AIFastStageBudgetMS != nil {
+		cfg.AIChat.FastStageBudgetMS = *input.AIFastStageBudgetMS
+	}
 	if input.AIFastInputChars != nil {
 		cfg.AIChat.FastInputChars = *input.AIFastInputChars
 	}
@@ -1674,6 +1685,9 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 	if input.AISynchronousBudgetMS > 0 {
 		cfg.AIChat.SynchronousBudgetMS = input.AISynchronousBudgetMS
 	}
+	if input.AIFastStageBudgetMS > 0 {
+		cfg.AIChat.FastStageBudgetMS = input.AIFastStageBudgetMS
+	}
 	if input.AIFastInputChars > 0 {
 		cfg.AIChat.FastInputChars = input.AIFastInputChars
 	}
@@ -1771,6 +1785,7 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 
 func (s *ContentModerationService) Check(ctx context.Context, input ContentModerationCheckInput) (*ContentModerationDecision, error) {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
+	requestTimings := newContentModerationLatencyBreakdown()
 	if s == nil || s.settingRepo == nil || s.repo == nil {
 		slog.Info("content_moderation.skip_unavailable",
 			"user_id", input.UserID,
@@ -1870,6 +1885,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		return allow, nil
 	}
 	s.captureContentModerationEpoch(ctx, &input)
+	extractionStarted := time.Now()
 	extraction := ExtractContentModerationInputOutcome(input.Protocol, input.Body)
 	if extraction.Err != nil {
 		action := ContentModerationActionError
@@ -1904,7 +1920,11 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 	}
 	content := extraction.Input
 	content.Normalize()
+	requestTimings.extractionLatencyMS = moderationElapsedMS(extractionStarted)
+	provenanceStarted := time.Now()
 	normalizeContentModerationProvenance(input, runtimeSnapshot, &content)
+	requestTimings.provenanceLatencyMS = moderationElapsedMS(provenanceStarted)
+	content.auditTimings = requestTimings
 	slog.Info("content_moderation.input_extracted",
 		"user_id", input.UserID,
 		"api_key_id", input.APIKeyID,
@@ -1920,6 +1940,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"ignored_metadata", content.IgnoredMetadata,
 		"image_count", len(content.Images),
 		"extraction_truncated", extraction.Truncated)
+	verdictCacheStarted := time.Now()
 	hashText := content.AuditTargetHash(contentModerationAuditPolicyVersion(cfg))
 	if cfg.AuditProvider == ContentModerationProviderAIChat {
 		cfg = cloneContentModerationConfig(cfg)
@@ -1944,6 +1965,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			return cached, nil
 		}
 	}
+	requestTimings.verdictCacheLatencyMS = moderationElapsedMS(verdictCacheStarted)
 	if cfg.AuditProvider == ContentModerationProviderAIChat && !contentModerationHasAuditTarget(content) {
 		state, found, riskErr := s.getSessionRisk(ctx, input, cfg)
 		if riskErr != nil {
@@ -2154,6 +2176,7 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		defer s.preBlockActive.Add(-1)
 	}
 	existingRiskScore := 0.0
+	contextLoadStarted := time.Now()
 	if cfg.AuditProvider == ContentModerationProviderAIChat {
 		state, found, riskErr := s.getSessionRisk(ctx, input, cfg)
 		if riskErr != nil {
@@ -2193,12 +2216,19 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 			}
 		}
 	}
+	if content.auditTimings != nil && cfg.AuditProvider == ContentModerationProviderAIChat {
+		addModerationElapsedMS(&content.auditTimings.contextLoadLatencyMS, contextLoadStarted)
+	}
 	localRisk := voteaideterministicrisk.None()
+	deterministicStarted := time.Now()
 	if cfg.AuditProvider == ContentModerationProviderAIChat && cfg.AIChat.DeterministicRiskV2Enabled {
 		s.recordContentModerationSessionSource(normalizeContentModerationSessionSource(input.SessionSource, input.SessionID))
 		localRisk = evaluateContentModerationDeterministicRisk(content)
 	} else if cfg.AuditProvider == ContentModerationProviderAIChat {
 		s.recordContentModerationSessionSource(normalizeContentModerationSessionSource(input.SessionSource, input.SessionID))
+	}
+	if content.auditTimings != nil && cfg.AuditProvider == ContentModerationProviderAIChat {
+		content.auditTimings.deterministicLatencyMS = moderationElapsedMS(deterministicStarted)
 	}
 	if localRisk.Level == voteaideterministicrisk.LevelCandidate {
 		cfg = cloneContentModerationConfig(cfg)
@@ -2240,6 +2270,9 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		legacyStarted := time.Now()
 		result, err = s.callModeration(auditCtx, cfg, moderationInput, trackPreBlock)
 		if cfg.AuditProvider == ContentModerationProviderAIChat {
+			if content.auditTimings != nil {
+				addModerationElapsedMS(&content.auditTimings.providerLatencyMS, legacyStarted)
+			}
 			legacyLatency := int(time.Since(legacyStarted).Milliseconds())
 			if err != nil {
 				s.recordContentModerationAuditFailure(contentModerationConfiguredAuditStage(cfg), legacyLatency, voteaimoderation.AttemptedInputChars(err))
@@ -2252,6 +2285,9 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 				s.recordContentModerationAuditUsage(result, len([]rune(aiChatTextFromModerationInput(moderationInput))), cfg)
 			}
 		}
+	}
+	if content.auditTimings != nil {
+		content.auditTimings.postprocessStartedAt = time.Now()
 	}
 	annotateModerationResultWithDeterministicRisk(result, localRisk)
 	latency := int(time.Since(start).Milliseconds())
@@ -3774,6 +3810,9 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		if aiChatAudit {
 			key, ok = s.nextUsableAPIKeyExcluding(cfg, triedKeyHashes)
 			if !ok {
+				if strings.TrimSpace(cfg.AIChat.auditStage) == string(voteaimoderation.StageFast) && len(triedKeyHashes) > 0 {
+					break
+				}
 				// Preserve the configured retry semantics after every distinct usable
 				// key has received one attempt.
 				key, ok = s.nextUsableAPIKey(cfg)
@@ -4115,7 +4154,11 @@ func (s *ContentModerationService) moderationHTTPClient(ctx context.Context, cfg
 	if err != nil {
 		return nil, err
 	}
-	client, err := httpclient.GetClient(httpclient.Options{ProxyURL: proxyURL})
+	client, err := httpclient.GetClient(httpclient.Options{
+		ProxyURL:            proxyURL,
+		MaxIdleConnsPerHost: 32,
+		ForceAttemptHTTP2:   true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("build moderation proxy client: %w", err)
 	}
@@ -4612,6 +4655,7 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 			APIKeys:                         []string{},
 			TimeoutMS:                       defaultAIChatTimeoutMS,
 			SynchronousBudgetMS:             defaultAIChatSynchronousBudgetMS,
+			FastStageBudgetMS:               defaultAIChatFastStageBudgetMS,
 			RetryCount:                      1,
 			ConfidenceThreshold:             defaultAIChatConfidenceThreshold,
 			CacheEnabled:                    true,
@@ -4980,6 +5024,12 @@ func (cfg *ContentModerationConfig) normalizeAIChat() {
 	if cfg.AIChat.SynchronousBudgetMS < minAIChatSynchronousBudgetMS || cfg.AIChat.SynchronousBudgetMS > maxAIChatSynchronousBudgetMS {
 		cfg.AIChat.SynchronousBudgetMS = defaultAIChatSynchronousBudgetMS
 	}
+	if cfg.AIChat.FastStageBudgetMS < minAIChatFastStageBudgetMS || cfg.AIChat.FastStageBudgetMS > maxAIChatFastStageBudgetMS {
+		cfg.AIChat.FastStageBudgetMS = defaultAIChatFastStageBudgetMS
+	}
+	if cfg.AIChat.FastStageBudgetMS > cfg.AIChat.SynchronousBudgetMS {
+		cfg.AIChat.FastStageBudgetMS = cfg.AIChat.SynchronousBudgetMS
+	}
 	if cfg.AIChat.RetryCount < 0 {
 		cfg.AIChat.RetryCount = 0
 	}
@@ -5323,6 +5373,7 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 			FailurePolicy:                        cfg.AIChat.FailurePolicy,
 			MaxInputChars:                        cfg.AIChat.MaxInputChars,
 			SynchronousBudgetMS:                  cfg.AIChat.SynchronousBudgetMS,
+			FastStageBudgetMS:                    cfg.AIChat.FastStageBudgetMS,
 			FastInputChars:                       cfg.AIChat.FastInputChars,
 			FallbackInputChars:                   cfg.AIChat.FallbackInputChars,
 			ThinkingMode:                         cfg.AIChat.ThinkingMode,
