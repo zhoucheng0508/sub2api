@@ -70,6 +70,10 @@ Vote AI 已有：
 - 前端：`lint:check`、`typecheck`、生产构建全部通过；
 - `git diff --check` 通过；
 - TLS 身份专项测试和 `internal/service` 全量测试通过。
+- 本地 Docker 镜像构建通过，`/health` 返回 `{"status":"ok"}`；
+- 镜像内置版本为 `0.1.172`，内置提交与本次合并提交一致；
+- 隔离 PostgreSQL 实测同时记录官方 `194/195` 和 Vote AI `194/195/196` 五个完整迁移文件名；
+- `usage_logs.upstream_response_model` 字段和 `tls_fingerprint_routers` 表均已创建。
 
 本机未安装 `golangci-lint` 和 `govulncheck`，对应检查交由 GitHub CI 和安全扫描工作流执行。前端测试
 存在既有的 Vue 组件解析警告和 Browserslist 数据提示，但无失败用例。
