@@ -74,6 +74,7 @@ Vote AI 已有：
 - 镜像内置版本为 `0.1.172`，内置提交与本次合并提交一致；
 - 隔离 PostgreSQL 实测同时记录官方 `194/195` 和 Vote AI `194/195/196` 五个完整迁移文件名；
 - `usage_logs.upstream_response_model` 字段和 `tls_fingerprint_routers` 表均已创建。
+- 将 PostCSS 间接依赖的 `nanoid` 固定到 `3.3.17`，修复 `GHSA-2v37-7h3g-55p8`。
 
 本机未安装 `golangci-lint` 和 `govulncheck`，对应检查交由 GitHub CI 和安全扫描工作流执行。前端测试
 存在既有的 Vue 组件解析警告和 Browserslist 数据提示，但无失败用例。
