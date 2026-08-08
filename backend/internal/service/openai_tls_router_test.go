@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/model"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -96,7 +97,7 @@ func TestOpenAITLSInvalidRouterProfileFallsBackAsIdentityPairAndKeepsProxy(t *te
 	require.NotNil(t, upstream.profile)
 	require.Equal(t, "Built-in Default (Node.js 24.x)", upstream.profile.Name)
 	require.Equal(t, codexCLIUserAgent, upstream.headers.Get("User-Agent"))
-	require.Equal(t, "codex_cli_rs", upstream.headers.Get("originator"))
+	require.Equal(t, openai.CodexDefaultOriginator, upstream.headers.Get("originator"))
 }
 
 func TestOpenAITLSIdentityPassesThroughOfficialCodexNormalization(t *testing.T) {
@@ -110,7 +111,7 @@ func TestOpenAITLSIdentityPassesThroughOfficialCodexNormalization(t *testing.T) 
 	})
 
 	require.Equal(t, codexCLIUserAgent, req.Header.Get("User-Agent"))
-	require.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+	require.Equal(t, openai.CodexDefaultOriginator, req.Header.Get("originator"))
 }
 
 func TestOpenAIProductionPathsDoNotBypassTLSRouter(t *testing.T) {
