@@ -100,6 +100,8 @@ The server stores the initial task in Redis and responds with `202 Accepted`:
 
 `Location` contains the polling path and `Retry-After: 3` provides the recommended polling interval.
 
+Each API key may have only one active asynchronous image task. The reservation is acquired atomically in Redis before the task is created and released only when the task reaches `completed` or `failed`. A second submission with the same key returns `429 IMAGE_TASK_ALREADY_ACTIVE` and `Retry-After: 3`; another API key can submit independently. The reservation has a timeout slightly longer than the maximum execution time so a crashed process cannot block the key permanently.
+
 ## Poll a task
 
 Use the same API key that submitted the task:

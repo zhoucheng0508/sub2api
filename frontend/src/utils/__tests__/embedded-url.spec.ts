@@ -56,6 +56,30 @@ describe('embedded-url', () => {
     expect(url.searchParams.has('lang')).toBe(false)
   })
 
+  it('omits user identity, auth token, and full source URL when context forwarding is disabled', () => {
+    const result = buildEmbeddedUrl(
+      'https://canvas.vote520.com/?user_id=old-user&token=old-token&src_url=https%3A%2F%2Fold.example.com',
+      42,
+      'sensitive-token',
+      'dark',
+      'zh-CN',
+      false,
+    )
+
+    const url = new URL(result)
+    expect(url.searchParams.has('user_id')).toBe(false)
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(url.searchParams.has('src_url')).toBe(false)
+    expect(url.searchParams.get('theme')).toBe('dark')
+    expect(url.searchParams.get('lang')).toBe('zh-CN')
+    expect(url.searchParams.get('ui_mode')).toBe('embedded')
+    expect(url.searchParams.get('src_host')).toBe('https://app.example.com')
+    expect(result).not.toContain('sensitive-token')
+    expect(result).not.toContain('old-token')
+    expect(result).not.toContain('old-user')
+    expect(result).not.toContain('old.example.com')
+  })
+
   it('returns original string for invalid url input', () => {
     expect(buildEmbeddedUrl('not a url', 1, 'token')).toBe('not a url')
   })

@@ -41,3 +41,25 @@ func TestImageTaskStoreMissing(t *testing.T) {
 	_, err := store.Get(context.Background(), "imgtask_missing")
 	require.ErrorIs(t, err, service.ErrImageTaskNotFound)
 }
+
+func TestImageTaskStoreActiveSlotIsAtomicAndOwnerSafe(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewImageTaskStore(rdb)
+	ctx := context.Background()
+
+	acquired, err := store.Acquire(ctx, 9, "imgtask_first", 35*time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	require.Equal(t, 35*time.Minute, mr.TTL(imageTaskActiveKey(9)))
+
+	acquired, err = store.Acquire(ctx, 9, "imgtask_second", 35*time.Minute)
+	require.NoError(t, err)
+	require.False(t, acquired)
+
+	require.NoError(t, store.Release(ctx, 9, "imgtask_wrong"))
+	require.True(t, mr.Exists(imageTaskActiveKey(9)))
+	require.NoError(t, store.Release(ctx, 9, "imgtask_first"))
+	require.False(t, mr.Exists(imageTaskActiveKey(9)))
+}

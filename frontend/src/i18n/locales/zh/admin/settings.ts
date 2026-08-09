@@ -642,6 +642,8 @@ export default {
         visibility: '可见角色',
         visibilityUser: '普通用户',
         visibilityAdmin: '管理员',
+        passUserContext: '传递用户上下文',
+        passUserContextHint: '关闭后不向 iframe URL 传递用户 ID、登录 Token 和完整来源地址。',
         add: '添加菜单项',
         remove: '删除',
         moveUp: '上移',

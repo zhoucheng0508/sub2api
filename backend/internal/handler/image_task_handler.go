@@ -104,6 +104,9 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID})
 	if err != nil {
 		cancel()
+		if errors.Is(err, service.ErrImageTaskActive) {
+			c.Header("Retry-After", "3")
+		}
 		imageTaskError(c, err)
 		return
 	}

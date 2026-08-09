@@ -21,11 +21,13 @@ const (
 
 	defaultImageTaskTTL              = 24 * time.Hour
 	defaultImageTaskExecutionTimeout = 30 * time.Minute
+	imageTaskActiveSlotGrace         = 5 * time.Minute
 )
 
 var (
 	ErrImageTaskNotFound    = infraerrors.New(http.StatusNotFound, "IMAGE_TASK_NOT_FOUND", "image task not found")
 	ErrImageTaskForbidden   = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
+	ErrImageTaskActive      = infraerrors.New(http.StatusTooManyRequests, "IMAGE_TASK_ALREADY_ACTIVE", "this API key already has an active image task")
 	ErrImageTaskUnavailable = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
 )
 
@@ -67,6 +69,8 @@ type ImageTaskOwner struct {
 type ImageTaskStore interface {
 	Save(ctx context.Context, task *ImageTaskRecord, ttl time.Duration) error
 	Get(ctx context.Context, id string) (*ImageTaskRecord, error)
+	Acquire(ctx context.Context, apiKeyID int64, taskID string, ttl time.Duration) (bool, error)
+	Release(ctx context.Context, apiKeyID int64, taskID string) error
 }
 
 // ImageStorageResolver reports the currently effective object-storage binding.
@@ -163,7 +167,15 @@ func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*I
 		CreatedAt: now.Unix(),
 		ExpiresAt: now.Add(s.ttl).Unix(),
 	}
+	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
+	if err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	if !acquired {
+		return nil, ErrImageTaskActive
+	}
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
+		_ = s.store.Release(ctx, owner.APIKeyID, task.ID)
 		return nil, ErrImageTaskUnavailable.WithCause(err)
 	}
 	return imageTaskToPublic(task), nil
@@ -230,6 +242,9 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	task.CompletedAt = &completedAt
 	task.ExpiresAt = now.Add(s.ttl).Unix()
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
+		return ErrImageTaskUnavailable.WithCause(err)
+	}
+	if err := s.store.Release(ctx, task.APIKeyID, task.ID); err != nil {
 		return ErrImageTaskUnavailable.WithCause(err)
 	}
 	return nil

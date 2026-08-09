@@ -17,8 +17,9 @@ import (
 )
 
 type asyncImageMemoryStore struct {
-	mu    sync.RWMutex
-	tasks map[string]*service.ImageTaskRecord
+	mu     sync.RWMutex
+	tasks  map[string]*service.ImageTaskRecord
+	active map[int64]string
 }
 
 func (s *asyncImageMemoryStore) Save(_ context.Context, task *service.ImageTaskRecord, _ time.Duration) error {
@@ -42,6 +43,28 @@ func (s *asyncImageMemoryStore) Get(_ context.Context, id string) (*service.Imag
 	copy.Result = append(json.RawMessage(nil), task.Result...)
 	copy.Error = append(json.RawMessage(nil), task.Error...)
 	return &copy, nil
+}
+
+func (s *asyncImageMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID string, _ time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil {
+		s.active = make(map[int64]string)
+	}
+	if s.active[apiKeyID] != "" {
+		return false, nil
+	}
+	s.active[apiKeyID] = taskID
+	return true, nil
+}
+
+func (s *asyncImageMemoryStore) Release(_ context.Context, apiKeyID int64, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active[apiKeyID] == taskID {
+		delete(s.active, apiKeyID)
+	}
+	return nil
 }
 
 func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
@@ -87,6 +110,14 @@ func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	require.Equal(t, service.ImageTaskStatusProcessing, accepted.Status)
 	require.Equal(t, "/v1/images/tasks/"+accepted.TaskID, accepted.PollURL)
 	require.Equal(t, accepted.PollURL, w.Header().Get("Location"))
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-1","prompt":"dog"}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondWriter := httptest.NewRecorder()
+	router.ServeHTTP(secondWriter, secondReq)
+	require.Equal(t, http.StatusTooManyRequests, secondWriter.Code)
+	require.Equal(t, "3", secondWriter.Header().Get("Retry-After"))
+	require.Contains(t, secondWriter.Body.String(), "IMAGE_TASK_ALREADY_ACTIVE")
 
 	// The detached background request must survive completion of/cancellation
 	// from the short submission request.
