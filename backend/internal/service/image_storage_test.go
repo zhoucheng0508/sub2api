@@ -29,6 +29,13 @@ type fakeImageStorage struct {
 	err   error
 }
 
+type blockingImageStorage struct{}
+
+func (*blockingImageStorage) Save(ctx context.Context, _, _ string, _ []byte) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -73,14 +80,14 @@ func TestImageResultUploaderRewritesB64JSON(t *testing.T) {
 }
 
 func TestImageResultUploaderRewritesURL(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(pngBytes)
 	}))
 	defer upstream.Close()
 
 	storage := &fakeImageStorage{}
-	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	uploader := NewImageResultUploader(storage, "images/", 0, upstream.Client())
 
 	result := json.RawMessage(`{"created":1,"data":[{"url":"` + upstream.URL + `/pic.png"}]}`)
 	out, err := uploader.Rewrite(context.Background(), "imgtask_xyz", result)
@@ -95,6 +102,46 @@ func TestImageResultUploaderRewritesURL(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out, &parsed))
 	require.JSONEq(t, `"https://cdn.test/images/imgtask_xyz-0.png"`, string(parsed.Data[0]["url"]))
+}
+
+func TestImageResultUploaderRejectsInsecureImageURLAndRedirect(t *testing.T) {
+	t.Run("direct HTTP", func(t *testing.T) {
+		httpCalls := 0
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			httpCalls++
+			return nil, errors.New("must not be called")
+		})}
+		uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+		_, err := uploader.Rewrite(context.Background(), "imgtask_http", json.RawMessage(`{"data":[{"url":"http://example.test/image.png"}]}`))
+		require.ErrorContains(t, err, "must use HTTPS")
+		require.Zero(t, httpCalls)
+	})
+
+	t.Run("HTTPS redirect to HTTP", func(t *testing.T) {
+		insecureTargetCalls := 0
+		insecureTarget := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			insecureTargetCalls++
+		}))
+		defer insecureTarget.Close()
+		secureSource := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", insecureTarget.URL+"/image.png")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer secureSource.Close()
+		uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, secureSource.Client())
+		result := json.RawMessage(`{"data":[{"url":"` + secureSource.URL + `/redirect"}]}`)
+		_, err := uploader.Rewrite(context.Background(), "imgtask_redirect", result)
+		require.ErrorContains(t, err, "must use HTTPS")
+		require.Zero(t, insecureTargetCalls)
+	})
+}
+
+func TestImageResultUploaderDefaultClientRejectsPrivateIP(t *testing.T) {
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, nil)
+	result := json.RawMessage(`{"data":[{"url":"https://127.0.0.1:1/image.png"}]}`)
+
+	_, err := uploader.Rewrite(context.Background(), "imgtask_private", result)
+	require.ErrorContains(t, err, "resolved ip 127.0.0.1 is not allowed")
 }
 
 func TestImageResultUploaderRewritesImageDataURLWithoutHTTP(t *testing.T) {
@@ -192,6 +239,34 @@ func TestImageResultUploaderPropagatesStorageError(t *testing.T) {
 	require.Contains(t, err.Error(), "bucket unreachable")
 }
 
+func TestImageResultUploaderRejectsMissingOrEmptyData(t *testing.T) {
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, nil)
+	for _, tt := range []struct {
+		name    string
+		result  json.RawMessage
+		wantErr string
+	}{
+		{name: "missing", result: json.RawMessage(`{"created":1,"b64_json":"unexpected"}`), wantErr: "does not contain a data array"},
+		{name: "empty", result: json.RawMessage(`{"created":1,"data":[]}`), wantErr: "data array is empty"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := uploader.Rewrite(context.Background(), "imgtask_invalid", tt.result)
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestImageResultUploaderRejectsMultipleOutputImagesBeforeUpload(t *testing.T) {
+	storage := &fakeImageStorage{}
+	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	result := json.RawMessage(`{"data":[{"b64_json":"` + b64 + `"},{"b64_json":"` + b64 + `"}]}`)
+
+	_, err := uploader.Rewrite(context.Background(), "imgtask_multiple", result)
+	require.ErrorContains(t, err, "must contain exactly one item")
+	require.Empty(t, storage.saved, "invalid multi-output responses must be rejected before any object is uploaded")
+}
+
 func TestImageResultUploaderNilStoragePassthrough(t *testing.T) {
 	var uploader *ImageResultUploader
 	result := json.RawMessage(`{"data":[{"url":"https://example.test/x.png"}]}`)
@@ -248,4 +323,32 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	next, err := svc.Create(context.Background(), owner)
 	require.NoError(t, err)
 	require.NotEqual(t, created.ID, next.ID)
+}
+
+func TestImageTaskServiceCompleteOffloadTimeoutStillMarksFailedAndReleasesSlot(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	uploader := NewImageResultUploader(&blockingImageStorage{}, "images/", 0, nil)
+	svc := NewImageTaskServiceWithUploader(store, uploader, time.Hour, 20*time.Millisecond)
+	owner := ImageTaskOwner{UserID: 1, APIKeyID: 2}
+	created, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+
+	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	result := json.RawMessage(`{"data":[{"b64_json":"` + b64 + `"}]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), svc.FinalizeTimeout())
+	defer cancel()
+	started := time.Now()
+	require.NoError(t, svc.Complete(ctx, created.ID, http.StatusOK, result))
+	require.Less(t, time.Since(started), time.Second)
+
+	got, err := svc.Get(context.Background(), owner, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, ImageTaskStatusFailed, got.Status)
+	require.Contains(t, string(got.Error), "object storage")
+	require.Empty(t, store.active)
+}
+
+func TestImageTaskServiceFinalizeTimeoutNeverExceedsExecutionTimeout(t *testing.T) {
+	require.Equal(t, 20*time.Millisecond, NewImageTaskServiceWithOptions(&imageTaskMemoryStore{}, time.Hour, 20*time.Millisecond).FinalizeTimeout())
+	require.Equal(t, defaultImageTaskFinalizeTimeout, NewImageTaskServiceWithOptions(&imageTaskMemoryStore{}, time.Hour, time.Hour).FinalizeTimeout())
 }

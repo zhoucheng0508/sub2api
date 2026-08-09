@@ -20,6 +20,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const asyncImageTaskTerminalWriteTimeout = 10 * time.Second
+
 type AsyncImageHandler struct {
 	tasks   *service.ImageTaskService
 	openAI  *OpenAIGatewayHandler
@@ -90,6 +92,10 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	}
 	if asyncImageRequestStreams(c.GetHeader("Content-Type"), body) {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "streaming image requests cannot be submitted as asynchronous tasks")
+		return
+	}
+	if !asyncImageRequestHasSingleOutput(c.GetHeader("Content-Type"), body) {
+		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "n must be 1 for asynchronous image tasks")
 		return
 	}
 	if err := h.validateRequest(c, platform, body); err != nil {
@@ -247,7 +253,9 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 			h.failTask(taskID, http.StatusBadGateway, imageTaskErrorPayload("api_error", "upstream returned an invalid image response"))
 			return
 		}
-		if err := h.tasks.Complete(context.Background(), taskID, statusCode, json.RawMessage(body)); err != nil {
+		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), h.tasks.FinalizeTimeout())
+		defer finalizeCancel()
+		if err := h.tasks.Complete(finalizeCtx, taskID, statusCode, json.RawMessage(body)); err != nil {
 			logger.L().Error("image_task.complete_store_failed", zap.String("task_id", taskID), zap.Error(err))
 		}
 		return
@@ -256,7 +264,9 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 }
 
 func (h *AsyncImageHandler) failTask(taskID string, statusCode int, taskErr json.RawMessage) {
-	if err := h.tasks.Fail(context.Background(), taskID, statusCode, taskErr); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), asyncImageTaskTerminalWriteTimeout)
+	defer cancel()
+	if err := h.tasks.Fail(ctx, taskID, statusCode, taskErr); err != nil {
 		logger.L().Error("image_task.failure_store_failed", zap.String("task_id", taskID), zap.Error(err))
 	}
 }
@@ -288,6 +298,20 @@ func asyncImageRequestStreams(contentType string, body []byte) bool {
 		Stream bool `json:"stream"`
 	}
 	return json.Unmarshal(body, &envelope) == nil && envelope.Stream
+}
+
+func asyncImageRequestHasSingleOutput(contentType string, body []byte) bool {
+	if isMultipartImagesContentType(contentType) {
+		// The platform parser performs the authoritative multipart validation.
+		return true
+	}
+	var envelope struct {
+		N *int `json:"n"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.N == nil {
+		return true
+	}
+	return *envelope.N == 1
 }
 
 func imageTaskPollURL(submitPath, taskID string) string {

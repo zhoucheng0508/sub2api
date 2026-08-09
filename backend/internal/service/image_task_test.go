@@ -12,11 +12,13 @@ import (
 )
 
 type imageTaskMemoryStore struct {
-	task    *ImageTaskRecord
-	ttl     time.Duration
-	saveErr error
-	getErr  error
-	active  map[int64]string
+	task         *ImageTaskRecord
+	ttl          time.Duration
+	saveErr      error
+	getErr       error
+	releaseErr   error
+	releaseCalls int
+	active       map[int64]string
 }
 
 func (s *imageTaskMemoryStore) Save(_ context.Context, task *ImageTaskRecord, ttl time.Duration) error {
@@ -52,6 +54,10 @@ func (s *imageTaskMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID
 }
 
 func (s *imageTaskMemoryStore) Release(_ context.Context, apiKeyID int64, taskID string) error {
+	s.releaseCalls++
+	if s.releaseErr != nil {
+		return s.releaseErr
+	}
 	if s.active[apiKeyID] == taskID {
 		delete(s.active, apiKeyID)
 	}
@@ -142,4 +148,21 @@ func TestImageTaskServiceFailedTaskReleasesActiveSlot(t *testing.T) {
 	next, err := svc.Create(context.Background(), owner)
 	require.NoError(t, err)
 	require.NotEqual(t, created.ID, next.ID)
+}
+
+func TestImageTaskServiceTerminalSaveFailureStillAttemptsSlotRelease(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	svc := NewImageTaskServiceWithOptions(store, time.Hour, time.Minute)
+	owner := ImageTaskOwner{UserID: 7, APIKeyID: 9}
+
+	created, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	store.saveErr = errors.New("redis write failed")
+
+	err = svc.Fail(context.Background(), created.ID, http.StatusBadGateway,
+		json.RawMessage(`{"type":"api_error","message":"upstream failed"}`))
+	require.ErrorIs(t, err, ErrImageTaskUnavailable)
+	require.Equal(t, 1, store.releaseCalls)
+	require.Empty(t, store.active, "terminal persistence failure must not strand the per-key active slot")
+	require.Equal(t, ImageTaskStatusProcessing, store.task.Status, "failed terminal persistence must not pretend the task was stored")
 }
