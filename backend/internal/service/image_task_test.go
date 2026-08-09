@@ -127,3 +127,19 @@ func TestImageTaskServiceMapsStoreFailures(t *testing.T) {
 	require.ErrorIs(t, err, ErrImageTaskUnavailable)
 	require.Empty(t, store.active)
 }
+
+func TestImageTaskServiceFailedTaskReleasesActiveSlot(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	svc := NewImageTaskServiceWithOptions(store, time.Hour, time.Minute)
+	owner := ImageTaskOwner{UserID: 7, APIKeyID: 9}
+
+	created, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	require.NoError(t, svc.Fail(context.Background(), created.ID, http.StatusBadGateway,
+		json.RawMessage(`{"type":"api_error","message":"upstream failed"}`)))
+	require.Empty(t, store.active)
+
+	next, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	require.NotEqual(t, created.ID, next.ID)
+}

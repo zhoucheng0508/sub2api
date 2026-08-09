@@ -174,3 +174,52 @@ func TestAsyncImageHandlerDisabledReturns404(t *testing.T) {
 	// No task was created / persisted.
 	require.Empty(t, store.tasks)
 }
+
+func TestAsyncImageHandlerPollHidesOtherAPIKeyAndIsIdempotent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	owner := service.ImageTaskOwner{UserID: 7, APIKeyID: 9}
+	created, err := tasks.Create(context.Background(), owner)
+	require.NoError(t, err)
+	require.NoError(t, tasks.Complete(context.Background(), created.ID, http.StatusOK,
+		json.RawMessage(`{"created":123,"data":[{"url":"https://example.test/image.png"}]}`)))
+
+	h := &AsyncImageHandler{tasks: tasks}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		apiKeyID := int64(9)
+		if c.GetHeader("X-Test-API-Key") == "other" {
+			apiKeyID = 10
+		}
+		groupID := int64(3)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			ID: apiKeyID, UserID: 7, GroupID: &groupID,
+			Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, AllowImageGeneration: true},
+		})
+		c.Next()
+	})
+	router.GET("/v1/images/tasks/:task_id", h.Get)
+
+	otherReq := httptest.NewRequest(http.MethodGet, "/v1/images/tasks/"+created.ID, nil)
+	otherReq.Header.Set("X-Test-API-Key", "other")
+	otherWriter := httptest.NewRecorder()
+	router.ServeHTTP(otherWriter, otherReq)
+	require.Equal(t, http.StatusNotFound, otherWriter.Code)
+	require.Contains(t, otherWriter.Body.String(), "IMAGE_TASK_NOT_FOUND")
+	require.NotContains(t, otherWriter.Body.String(), "image.png")
+
+	var firstBody string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/images/tasks/"+created.ID, nil)
+		writer := httptest.NewRecorder()
+		router.ServeHTTP(writer, req)
+		require.Equal(t, http.StatusOK, writer.Code)
+		require.Equal(t, "no-store", writer.Header().Get("Cache-Control"))
+		if i == 0 {
+			firstBody = writer.Body.String()
+		} else {
+			require.JSONEq(t, firstBody, writer.Body.String())
+		}
+	}
+}

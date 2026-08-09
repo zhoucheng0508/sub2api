@@ -243,4 +243,9 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
 	require.Contains(t, string(got.Error), "object storage")
 	require.NotContains(t, string(got.Result), "b64_json", "failed offload must not persist base64 to Redis")
+	require.Empty(t, store.active, "object-storage failure must release the per-key active slot")
+
+	next, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	require.NotEqual(t, created.ID, next.ID)
 }
