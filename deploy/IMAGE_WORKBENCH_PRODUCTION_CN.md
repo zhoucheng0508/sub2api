@@ -78,6 +78,16 @@ image_storage:
 bash deploy/tests/image-gateway-nginx-test.sh
 ```
 
+部署网关后，先执行不会提交生图任务、不会触发扣费的 PowerShell 预检：
+
+```powershell
+$env:IMAGE_GATEWAY_API_KEY = "<绑定 image生图 分组的测试 Key>"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\tests\Test-ImageWorkbenchGateway.ps1
+Remove-Item Env:IMAGE_GATEWAY_API_KEY
+```
+
+脚本只调用`OPTIONS`和`GET`，验证路由白名单、CORS、`Cache-Control: no-store`、匿名访问被拒绝、Key鉴权以及模型列表精确为`gpt-image-2`。不要把Key作为命令行参数保存到Shell历史；不设置环境变量时仍会执行无鉴权的路由、CORS、缓存和匿名鉴权拒绝检查。`-ExecutionPolicy Bypass`只作用于该子进程，不修改系统持久执行策略。
+
 ### 1.4 canvas.vote520.com
 
 - 静态指纹资源长期缓存；HTML 与运行时配置 `Cache-Control: no-store`；
@@ -101,6 +111,8 @@ bash deploy/tests/image-gateway-nginx-test.sh
 - 其他 Origin 不包含 `Access-Control-Allow-Origin`；
 - 所有 API 响应包含 `Cache-Control: no-store`；
 - Nginx 日志没有 Authorization、API Key、查询串或签名 URL 参数。
+
+上述无副作用项目应先使用`deploy/tests/Test-ImageWorkbenchGateway.ps1`自动执行并保存输出，再进入真实生图、审核、计费和并发测试。
 
 ### 2.2 Key 与模型隔离
 
