@@ -113,10 +113,23 @@ func runSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, coordinator 
 					reqLog.Warn("security_audit.scope_account_mode_check_failed", zap.Error(err))
 				}
 			} else if requiresAccount {
-				if reqLog != nil {
-					reqLog.Debug("security_audit.scope_deferred_until_account_selection", zap.Int64("user_id", subject.UserID))
+				var groupID *int64
+				if apiKey != nil {
+					groupID = apiKey.GroupID
 				}
-				return nil
+				canAuditBeforeSelection, groupErr := legacy.CanAuditGroupBeforeAccountSelection(c.Request.Context(), groupID)
+				if groupErr != nil {
+					if reqLog != nil {
+						reqLog.Warn("security_audit.scope_group_check_failed", zap.Int64("user_id", subject.UserID), zap.Error(groupErr))
+					}
+				} else if !canAuditBeforeSelection {
+					if reqLog != nil {
+						reqLog.Debug("security_audit.scope_deferred_until_account_selection", zap.Int64("user_id", subject.UserID))
+					}
+					return nil
+				} else if reqLog != nil {
+					reqLog.Debug("security_audit.scope_group_fully_protected", zap.Int64("user_id", subject.UserID))
+				}
 			}
 		} else {
 			scopeAccountID := securityAuditScopeAccountID(account)

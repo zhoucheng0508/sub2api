@@ -595,7 +595,7 @@ func (s *ContentModerationService) runContentModerationRequestVerdict(
 		return contentModerationRequestVerdictFallbackDecision(fallback)
 	}
 	if acquired {
-		decision, releaseSafe := s.executeContentModerationRequestVerdict(ctx, key, evaluate)
+		decision, releaseSafe := s.executeClaimedContentModerationRequestVerdict(ctx, key, fallback, evaluate)
 		if releaseSafe {
 			s.releaseContentModerationRequestVerdictClaim(ctx, claimStore, key, owner)
 		}
@@ -626,7 +626,7 @@ func (s *ContentModerationService) runContentModerationRequestVerdict(
 				return contentModerationRequestVerdictFallbackDecision(fallback)
 			}
 			if acquired {
-				decision, releaseSafe := s.executeContentModerationRequestVerdict(ctx, key, evaluate)
+				decision, releaseSafe := s.executeClaimedContentModerationRequestVerdict(ctx, key, fallback, evaluate)
 				if releaseSafe {
 					s.releaseContentModerationRequestVerdictClaim(ctx, claimStore, key, owner)
 				}
@@ -634,6 +634,24 @@ func (s *ContentModerationService) runContentModerationRequestVerdict(
 			}
 		}
 	}
+}
+
+func (s *ContentModerationService) executeClaimedContentModerationRequestVerdict(
+	ctx context.Context,
+	key string,
+	fallback *ContentModerationDecision,
+	evaluate contentModerationRequestVerdictEvaluator,
+) (*ContentModerationDecision, bool) {
+	// The cache read that preceded lease acquisition may have raced with the
+	// previous owner publishing its verdict and releasing the lease. Recheck
+	// while holding the lease before executing non-idempotent side effects.
+	if cached, hit, err := s.getContentModerationRequestVerdict(ctx, key); err != nil {
+		slog.Warn("content_moderation.request_verdict_claimed_cache_get_failed", "error", err)
+		return contentModerationRequestVerdictFallbackDecision(fallback), true
+	} else if hit {
+		return cached, true
+	}
+	return s.executeContentModerationRequestVerdict(ctx, key, evaluate)
 }
 
 func (s *ContentModerationService) executeContentModerationRequestVerdict(

@@ -4944,6 +4944,64 @@ func (s *ContentModerationService) RequiresAccountScopeResolution(ctx context.Co
 	return normalizeContentModerationAccountFilter(cfg.AccountFilter).Type != ContentModerationScopeFilterAll, nil
 }
 
+// CanAuditGroupBeforeAccountSelection reports whether every account currently
+// bound to the group is inside the configured account audit scope. Callers may
+// then perform one blocking audit before creating asynchronous work. A mixed or
+// unresolved group must still defer until the scheduler selects an account.
+func (s *ContentModerationService) CanAuditGroupBeforeAccountSelection(ctx context.Context, groupID *int64) (bool, error) {
+	cfg, err := s.contentModerationScopeConfig(ctx)
+	if err != nil {
+		return false, err
+	}
+	filter := normalizeContentModerationAccountFilter(cfg.AccountFilter)
+	if filter.Type == ContentModerationScopeFilterAll {
+		return true, nil
+	}
+	if s == nil || s.groupRepo == nil || groupID == nil || *groupID <= 0 {
+		return false, nil
+	}
+	accountIDs, err := s.groupRepo.GetAccountIDsByGroupIDs(ctx, []int64{*groupID})
+	if err != nil {
+		return false, fmt.Errorf("resolve content moderation group accounts: %w", err)
+	}
+	accountIDs = normalizeInt64IDs(accountIDs)
+	if len(accountIDs) == 0 {
+		return false, nil
+	}
+
+	canonicalByID := make(map[int64]int64, len(accountIDs))
+	if s.accountScopeRepo != nil {
+		accounts, err := s.accountScopeRepo.GetByIDs(ctx, accountIDs)
+		if err != nil {
+			return false, fmt.Errorf("resolve content moderation group account identities: %w", err)
+		}
+		for _, account := range accounts {
+			if account == nil || account.ID <= 0 {
+				continue
+			}
+			canonicalID := account.ID
+			if account.ParentAccountID != nil && *account.ParentAccountID > 0 {
+				canonicalID = *account.ParentAccountID
+			}
+			canonicalByID[account.ID] = canonicalID
+		}
+		if len(canonicalByID) != len(accountIDs) {
+			return false, nil
+		}
+	}
+
+	for _, accountID := range accountIDs {
+		canonicalID := accountID
+		if resolved, ok := canonicalByID[accountID]; ok {
+			canonicalID = resolved
+		}
+		if !cfg.includesAccount(canonicalID) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // ShouldAuditAccount evaluates one selected upstream account. It is safe to
 // call again after failover because the decision contains no request state.
 func (s *ContentModerationService) ShouldAuditAccount(ctx context.Context, accountID int64) (bool, string, error) {
