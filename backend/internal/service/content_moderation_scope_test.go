@@ -15,6 +15,19 @@ type contentModerationScopeAccountRepo struct {
 	calls    int
 }
 
+type contentModerationScopeGroupRepo struct {
+	GroupRepository
+	accountIDs []int64
+	err        error
+}
+
+func (r *contentModerationScopeGroupRepo) GetAccountIDsByGroupIDs(_ context.Context, _ []int64) ([]int64, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]int64(nil), r.accountIDs...), nil
+}
+
 func contentModerationScopeInt64Ptr(value int64) *int64 {
 	return &value
 }
@@ -285,6 +298,73 @@ func TestContentModerationScopeMatchingHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, shouldAudit)
 	require.Empty(t, reason)
+}
+
+func TestContentModerationCanAuditGroupBeforeAccountSelection(t *testing.T) {
+	groupID := int64(8)
+	tests := []struct {
+		name       string
+		filter     ContentModerationAccountFilter
+		accountIDs []int64
+		want       bool
+	}{
+		{name: "all", filter: ContentModerationAccountFilter{Type: ContentModerationScopeFilterAll}, accountIDs: []int64{21, 22}, want: true},
+		{name: "include fully protected", filter: ContentModerationAccountFilter{Type: ContentModerationScopeFilterInclude, AccountIDs: []int64{21, 22}}, accountIDs: []int64{21, 22}, want: true},
+		{name: "include mixed", filter: ContentModerationAccountFilter{Type: ContentModerationScopeFilterInclude, AccountIDs: []int64{21}}, accountIDs: []int64{21, 22}, want: false},
+		{name: "exclude fully protected", filter: ContentModerationAccountFilter{Type: ContentModerationScopeFilterExclude, AccountIDs: []int64{23}}, accountIDs: []int64{21, 22}, want: true},
+		{name: "exclude mixed", filter: ContentModerationAccountFilter{Type: ContentModerationScopeFilterExclude, AccountIDs: []int64{22}}, accountIDs: []int64{21, 22}, want: false},
+		{name: "empty group", filter: ContentModerationAccountFilter{Type: ContentModerationScopeFilterInclude, AccountIDs: []int64{21}}, accountIDs: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settingRepo := &contentModerationTestSettingRepo{values: map[string]string{}}
+			groupRepo := &contentModerationScopeGroupRepo{accountIDs: tt.accountIDs}
+			svc := NewContentModerationService(settingRepo, nil, nil, groupRepo, nil, nil, nil, nil)
+			_, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{AccountFilter: &tt.filter})
+			require.NoError(t, err)
+
+			got, err := svc.CanAuditGroupBeforeAccountSelection(context.Background(), &groupID)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestContentModerationCanAuditGroupCanonicalizesShadowAccounts(t *testing.T) {
+	const (
+		parentID int64 = 21
+		shadowID int64 = 121
+	)
+	groupID := int64(8)
+	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{}}
+	groupRepo := &contentModerationScopeGroupRepo{accountIDs: []int64{shadowID}}
+	accountRepo := &contentModerationScopeAccountRepo{accounts: map[int64]*Account{
+		shadowID: {ID: shadowID, ParentAccountID: contentModerationScopeInt64Ptr(parentID)},
+	}}
+	svc := NewContentModerationService(settingRepo, nil, nil, groupRepo, nil, nil, nil, nil)
+	svc.accountScopeRepo = accountRepo
+	filter := ContentModerationAccountFilter{Type: ContentModerationScopeFilterInclude, AccountIDs: []int64{parentID}}
+	_, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{AccountFilter: &filter})
+	require.NoError(t, err)
+
+	got, err := svc.CanAuditGroupBeforeAccountSelection(context.Background(), &groupID)
+	require.NoError(t, err)
+	require.True(t, got)
+}
+
+func TestContentModerationCanAuditGroupLookupFailureIsExplicit(t *testing.T) {
+	groupID := int64(8)
+	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{}}
+	groupRepo := &contentModerationScopeGroupRepo{err: errors.New("database unavailable")}
+	svc := NewContentModerationService(settingRepo, nil, nil, groupRepo, nil, nil, nil, nil)
+	filter := ContentModerationAccountFilter{Type: ContentModerationScopeFilterInclude, AccountIDs: []int64{21}}
+	_, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{AccountFilter: &filter})
+	require.NoError(t, err)
+
+	_, err = svc.CanAuditGroupBeforeAccountSelection(context.Background(), &groupID)
+	require.ErrorContains(t, err, "resolve content moderation group accounts")
+	require.ErrorContains(t, err, "database unavailable")
 }
 
 func TestContentModerationScopeFilterEmptyListSemantics(t *testing.T) {

@@ -17,8 +17,9 @@ import (
 )
 
 type asyncImageMemoryStore struct {
-	mu    sync.RWMutex
-	tasks map[string]*service.ImageTaskRecord
+	mu     sync.RWMutex
+	tasks  map[string]*service.ImageTaskRecord
+	active map[int64]string
 }
 
 func (s *asyncImageMemoryStore) Save(_ context.Context, task *service.ImageTaskRecord, _ time.Duration) error {
@@ -42,6 +43,28 @@ func (s *asyncImageMemoryStore) Get(_ context.Context, id string) (*service.Imag
 	copy.Result = append(json.RawMessage(nil), task.Result...)
 	copy.Error = append(json.RawMessage(nil), task.Error...)
 	return &copy, nil
+}
+
+func (s *asyncImageMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID string, _ time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil {
+		s.active = make(map[int64]string)
+	}
+	if s.active[apiKeyID] != "" {
+		return false, nil
+	}
+	s.active[apiKeyID] = taskID
+	return true, nil
+}
+
+func (s *asyncImageMemoryStore) Release(_ context.Context, apiKeyID int64, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active[apiKeyID] == taskID {
+		delete(s.active, apiKeyID)
+	}
+	return nil
 }
 
 func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
@@ -87,6 +110,14 @@ func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	require.Equal(t, service.ImageTaskStatusProcessing, accepted.Status)
 	require.Equal(t, "/v1/images/tasks/"+accepted.TaskID, accepted.PollURL)
 	require.Equal(t, accepted.PollURL, w.Header().Get("Location"))
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-1","prompt":"dog"}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondWriter := httptest.NewRecorder()
+	router.ServeHTTP(secondWriter, secondReq)
+	require.Equal(t, http.StatusTooManyRequests, secondWriter.Code)
+	require.Equal(t, "3", secondWriter.Header().Get("Retry-After"))
+	require.Contains(t, secondWriter.Body.String(), "IMAGE_TASK_ALREADY_ACTIVE")
 
 	// The detached background request must survive completion of/cancellation
 	// from the short submission request.
@@ -142,4 +173,121 @@ func TestAsyncImageHandlerDisabledReturns404(t *testing.T) {
 
 	// No task was created / persisted.
 	require.Empty(t, store.tasks)
+}
+
+func TestAsyncImageHandlerRejectsMultipleOutputsBeforeTaskCreation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	h := &AsyncImageHandler{tasks: tasks}
+	h.execute = func(string, *gin.Context) {}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		groupID := int64(3)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			ID: 9, UserID: 7, GroupID: &groupID,
+			Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, AllowImageGeneration: true},
+		})
+		c.Next()
+	})
+	router.POST("/v1/images/generations/async", h.Submit)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-2","prompt":"cat","n":2}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "n must be 1")
+	require.Empty(t, store.tasks, "invalid multi-output requests must be rejected before task creation")
+	require.Empty(t, store.active)
+}
+
+func TestAsyncImageHandlerRejectsMultipartMultipleOutputs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &AsyncImageHandler{openAI: &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	const boundary = "sub2api-multipart-n-guard"
+	body := asyncImageMultipartEditBody(boundary, "edit this image", "2", "not-a-real-image")
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits/async", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	c.Request = req
+
+	err := h.validateRequest(c, service.PlatformOpenAI, []byte(body))
+	require.EqualError(t, err, "n must be 1 for asynchronous image tasks")
+}
+
+func asyncImageMultipartEditBody(boundary, prompt, n, imageBytes string) string {
+	return strings.Join([]string{
+		"--" + boundary,
+		`Content-Disposition: form-data; name="model"`,
+		"",
+		"gpt-image-2",
+		"--" + boundary,
+		`Content-Disposition: form-data; name="prompt"`,
+		"",
+		prompt,
+		"--" + boundary,
+		`Content-Disposition: form-data; name="n"`,
+		"",
+		n,
+		"--" + boundary,
+		`Content-Disposition: form-data; name="image"; filename="input.png"`,
+		"Content-Type: image/png",
+		"",
+		imageBytes,
+		"--" + boundary + "--",
+		"",
+	}, "\r\n")
+}
+
+func TestAsyncImageHandlerPollHidesOtherAPIKeyAndIsIdempotent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	owner := service.ImageTaskOwner{UserID: 7, APIKeyID: 9}
+	created, err := tasks.Create(context.Background(), owner)
+	require.NoError(t, err)
+	require.NoError(t, tasks.Complete(context.Background(), created.ID, http.StatusOK,
+		json.RawMessage(`{"created":123,"data":[{"url":"https://example.test/image.png"}]}`)))
+
+	h := &AsyncImageHandler{tasks: tasks}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		apiKeyID := int64(9)
+		if c.GetHeader("X-Test-API-Key") == "other" {
+			apiKeyID = 10
+		}
+		groupID := int64(3)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			ID: apiKeyID, UserID: 7, GroupID: &groupID,
+			Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, AllowImageGeneration: true},
+		})
+		c.Next()
+	})
+	router.GET("/v1/images/tasks/:task_id", h.Get)
+
+	otherReq := httptest.NewRequest(http.MethodGet, "/v1/images/tasks/"+created.ID, nil)
+	otherReq.Header.Set("X-Test-API-Key", "other")
+	otherWriter := httptest.NewRecorder()
+	router.ServeHTTP(otherWriter, otherReq)
+	require.Equal(t, http.StatusNotFound, otherWriter.Code)
+	require.Contains(t, otherWriter.Body.String(), "IMAGE_TASK_NOT_FOUND")
+	require.NotContains(t, otherWriter.Body.String(), "image.png")
+
+	var firstBody string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/images/tasks/"+created.ID, nil)
+		writer := httptest.NewRecorder()
+		router.ServeHTTP(writer, req)
+		require.Equal(t, http.StatusOK, writer.Code)
+		require.Equal(t, "no-store", writer.Header().Get("Cache-Control"))
+		if i == 0 {
+			firstBody = writer.Body.String()
+		} else {
+			require.JSONEq(t, firstBody, writer.Body.String())
+		}
+	}
 }

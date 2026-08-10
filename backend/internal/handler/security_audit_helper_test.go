@@ -121,6 +121,31 @@ func TestRunSecurityAuditDefersUntilProtectedAccountAndCachesSuccessfulAudit(t *
 	require.Equal(t, 1, evaluated)
 }
 
+func TestRunSecurityAuditRunsBeforeRoutingWhenEntireGroupIsProtected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 8
+	settingRepo := &contentModerationHandlerSettingRepo{values: map[string]string{}}
+	groupRepo := &handlerScopeGroupRepo{accountIDs: []int64{202, 203}}
+	svc := service.NewContentModerationService(settingRepo, nil, nil, groupRepo, nil, nil, nil, nil)
+	accountFilter := service.ContentModerationAccountFilter{Type: service.ContentModerationScopeFilterInclude, AccountIDs: []int64{202, 203}}
+	_, err := svc.UpdateConfig(context.Background(), service.UpdateContentModerationConfigInput{AccountFilter: &accountFilter})
+	require.NoError(t, err)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+		Kind: securityaudit.DecisionAllow, AllowNextStage: true,
+	}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-2","prompt":"hello"}`))
+	apiKey := &service.APIKey{ID: 9, UserID: 7, GroupID: contentModerationHandlerInt64Ptr(groupID)}
+
+	decision := runSecurityAudit(c, nil, securityaudit.NewCoordinator(nil, engine), svc, apiKey, middleware2.AuthSubject{UserID: 7}, service.ContentModerationProtocolOpenAIImages, "gpt-image-2", []byte(`{"prompt":"hello"}`), "http")
+	require.NotNil(t, decision)
+	require.True(t, decision.AllowNextStage)
+	require.Equal(t, 1, engine.evaluated)
+	completed, exists := c.Get(securityAuditCompletedContextKey)
+	require.True(t, exists)
+	require.Equal(t, true, completed)
+}
+
 func TestRunSecurityAuditAccountExcludeUsesShadowParentIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newHandlerScopeModerationService(t,
@@ -268,6 +293,19 @@ func newHandlerScopeModerationService(t *testing.T, userFilter service.ContentMo
 	})
 	require.NoError(t, err)
 	return svc
+}
+
+type handlerScopeGroupRepo struct {
+	service.GroupRepository
+	accountIDs []int64
+}
+
+func (r *handlerScopeGroupRepo) GetAccountIDsByGroupIDs(context.Context, []int64) ([]int64, error) {
+	return append([]int64(nil), r.accountIDs...), nil
+}
+
+func contentModerationHandlerInt64Ptr(value int64) *int64 {
+	return &value
 }
 
 type turnCountingEngine struct {

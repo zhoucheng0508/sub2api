@@ -101,6 +101,13 @@ func (r GrokMediaRequestInfo) ModerationBody() []byte {
 	return body
 }
 
+// PromptModerationBody keeps asynchronous media prechecks text-only. The
+// regular synchronous media path may still use ModerationBody when its audit
+// provider is explicitly configured for image inputs.
+func (r GrokMediaRequestInfo) PromptModerationBody() []byte {
+	return imagePromptModerationBody(r.Prompt)
+}
+
 func (e GrokMediaEndpoint) httpMethod() string {
 	if e.IsVideoLookupRequest() {
 		return http.MethodGet

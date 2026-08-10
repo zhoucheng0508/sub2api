@@ -21,11 +21,15 @@ const (
 
 	defaultImageTaskTTL              = 24 * time.Hour
 	defaultImageTaskExecutionTimeout = 30 * time.Minute
+	defaultImageTaskFinalizeTimeout  = 2 * time.Minute
+	imageTaskTerminalWriteTimeout    = 10 * time.Second
+	imageTaskActiveSlotGrace         = 5 * time.Minute
 )
 
 var (
 	ErrImageTaskNotFound    = infraerrors.New(http.StatusNotFound, "IMAGE_TASK_NOT_FOUND", "image task not found")
 	ErrImageTaskForbidden   = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
+	ErrImageTaskActive      = infraerrors.New(http.StatusTooManyRequests, "IMAGE_TASK_ALREADY_ACTIVE", "this API key already has an active image task")
 	ErrImageTaskUnavailable = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
 )
 
@@ -67,6 +71,8 @@ type ImageTaskOwner struct {
 type ImageTaskStore interface {
 	Save(ctx context.Context, task *ImageTaskRecord, ttl time.Duration) error
 	Get(ctx context.Context, id string) (*ImageTaskRecord, error)
+	Acquire(ctx context.Context, apiKeyID int64, taskID string, ttl time.Duration) (bool, error)
+	Release(ctx context.Context, apiKeyID int64, taskID string) error
 }
 
 // ImageStorageResolver reports the currently effective object-storage binding.
@@ -150,6 +156,14 @@ func (s *ImageTaskService) ExecutionTimeout() time.Duration {
 	return s.executionTimeout
 }
 
+func (s *ImageTaskService) FinalizeTimeout() time.Duration {
+	timeout := defaultImageTaskFinalizeTimeout
+	if s != nil && s.executionTimeout > 0 && s.executionTimeout < timeout {
+		timeout = s.executionTimeout
+	}
+	return timeout
+}
+
 func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*ImageTask, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrImageTaskUnavailable
@@ -163,7 +177,15 @@ func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*I
 		CreatedAt: now.Unix(),
 		ExpiresAt: now.Add(s.ttl).Unix(),
 	}
+	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
+	if err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	if !acquired {
+		return nil, ErrImageTaskActive
+	}
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
+		_ = s.store.Release(ctx, owner.APIKeyID, task.ID)
 		return nil, ErrImageTaskUnavailable.WithCause(err)
 	}
 	return imageTaskToPublic(task), nil
@@ -196,11 +218,21 @@ func (s *ImageTaskService) Complete(ctx context.Context, id string, statusCode i
 		if err != nil {
 			// 转存失败不回退存 base64，避免大 blob 撑爆 Redis：直接把任务标记为失败。
 			logger.L().Error("image_task.offload_failed", zap.String("task_id", id), zap.Error(err))
-			return s.Fail(ctx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "failed to store generated image to object storage"))
+			terminalCtx, cancel := imageTaskTerminalContext(ctx)
+			defer cancel()
+			return s.Fail(terminalCtx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "failed to store generated image to object storage"))
 		}
 		result = rewritten
 	}
 	return s.finish(ctx, id, ImageTaskStatusCompleted, statusCode, result, nil)
+}
+
+func imageTaskTerminalContext(parent context.Context) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if parent != nil {
+		base = context.WithoutCancel(parent)
+	}
+	return context.WithTimeout(base, imageTaskTerminalWriteTimeout)
 }
 
 func (s *ImageTaskService) Fail(ctx context.Context, id string, statusCode int, taskErr json.RawMessage) error {
@@ -229,8 +261,10 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	task.Error = taskErr
 	task.CompletedAt = &completedAt
 	task.ExpiresAt = now.Add(s.ttl).Unix()
-	if err := s.store.Save(ctx, task, s.ttl); err != nil {
-		return ErrImageTaskUnavailable.WithCause(err)
+	saveErr := s.store.Save(ctx, task, s.ttl)
+	releaseErr := s.store.Release(ctx, task.APIKeyID, task.ID)
+	if saveErr != nil || releaseErr != nil {
+		return ErrImageTaskUnavailable.WithCause(errors.Join(saveErr, releaseErr))
 	}
 	return nil
 }

@@ -190,6 +190,7 @@ export interface CustomMenuItem {
   page_slug?: string
   visibility: 'user' | 'admin'
   sort_order: number
+  pass_user_context?: boolean
 }
 
 export interface CustomEndpoint {

@@ -9,9 +9,12 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 )
 
 const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
@@ -33,28 +36,58 @@ type ImageStorage interface {
 type ImageResultUploader struct {
 	storage          ImageStorage
 	httpClient       *http.Client
+	httpClientErr    error
 	prefix           string
 	maxDownloadBytes int64
 }
 
 // NewImageResultUploader 构造一个 uploader；storage 为 nil 时 Rewrite 直接透传。
 func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadBytes int64, httpClient *http.Client) *ImageResultUploader {
+	var clientErr error
 	if httpClient == nil {
-		httpClient = defaultImageDownloadHTTPClient()
+		httpClient, clientErr = defaultImageDownloadHTTPClient()
 	}
 	if maxDownloadBytes <= 0 {
 		maxDownloadBytes = defaultImageMaxDownloadBytes
 	}
 	return &ImageResultUploader{
 		storage:          storage,
-		httpClient:       httpClient,
+		httpClient:       imageDownloadClientWithRedirectPolicy(httpClient),
+		httpClientErr:    clientErr,
 		prefix:           prefix,
 		maxDownloadBytes: maxDownloadBytes,
 	}
 }
 
-func defaultImageDownloadHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+func defaultImageDownloadHTTPClient() (*http.Client, error) {
+	return httpclient.GetClient(httpclient.Options{
+		Timeout:            60 * time.Second,
+		ValidateResolvedIP: true,
+	})
+}
+
+func imageDownloadClientWithRedirectPolicy(client *http.Client) *http.Client {
+	if client == nil {
+		return nil
+	}
+	cloned := *client
+	original := client.CheckRedirect
+	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req == nil || req.URL == nil {
+			return errors.New("image download redirect URL is missing")
+		}
+		if err := validateImageDownloadURL(req.URL); err != nil {
+			return err
+		}
+		if original != nil {
+			return original(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("image download stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &cloned
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
@@ -64,21 +97,26 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 	if u == nil || u.storage == nil {
 		return result, nil
 	}
+	if u.httpClientErr != nil {
+		return nil, fmt.Errorf("initialize secure image download client: %w", u.httpClientErr)
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(result, &top); err != nil {
 		return nil, fmt.Errorf("parse image response: %w", err)
 	}
 	rawData, ok := top["data"]
 	if !ok {
-		// 没有 data 数组（结构不符合预期），保持原样返回，交由上层决定。
-		return result, nil
+		return nil, errors.New("image response does not contain a data array")
 	}
 	var items []map[string]json.RawMessage
 	if err := json.Unmarshal(rawData, &items); err != nil {
 		return nil, fmt.Errorf("parse image response data: %w", err)
 	}
 	if len(items) == 0 {
-		return result, nil
+		return nil, errors.New("image response data array is empty")
+	}
+	if len(items) != 1 {
+		return nil, fmt.Errorf("image response must contain exactly one item, got %d", len(items))
 	}
 	for i, item := range items {
 		data, contentType, err := u.fetchImageBytes(ctx, item)
@@ -192,7 +230,17 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse image download URL: %w", err)
+	}
+	if err := validateImageDownloadURL(parsedURL); err != nil {
+		return nil, "", err
+	}
+	if u.httpClient == nil {
+		return nil, "", errors.New("secure image download client is unavailable")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("build download request: %w", err)
 	}
@@ -220,6 +268,19 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 		contentType = detectImageContentType(data)
 	}
 	return data, contentType, nil
+}
+
+func validateImageDownloadURL(parsed *url.URL) error {
+	if parsed == nil || !strings.EqualFold(strings.TrimSpace(parsed.Scheme), "https") {
+		return errors.New("image download URL must use HTTPS")
+	}
+	if strings.TrimSpace(parsed.Hostname()) == "" {
+		return errors.New("image download URL host is missing")
+	}
+	if parsed.User != nil {
+		return errors.New("image download URL must not contain user information")
+	}
+	return nil
 }
 
 func (u *ImageResultUploader) buildKey(taskID string, index int, contentType string) string {

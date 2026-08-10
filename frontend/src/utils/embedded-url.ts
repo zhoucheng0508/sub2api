@@ -19,14 +19,20 @@ export function buildEmbeddedUrl(
   authToken?: string | null,
   theme: 'light' | 'dark' = 'light',
   lang?: string,
+  passUserContext = true,
 ): string {
   if (!baseUrl) return baseUrl
   try {
     const url = new URL(baseUrl)
-    if (userId) {
+    if (!passUserContext) {
+      url.searchParams.delete(EMBEDDED_USER_ID_QUERY_KEY)
+      url.searchParams.delete(EMBEDDED_AUTH_TOKEN_QUERY_KEY)
+      url.searchParams.delete(EMBEDDED_SRC_QUERY_KEY)
+    }
+    if (passUserContext && userId) {
       url.searchParams.set(EMBEDDED_USER_ID_QUERY_KEY, String(userId))
     }
-    if (authToken) {
+    if (passUserContext && authToken) {
       url.searchParams.set(EMBEDDED_AUTH_TOKEN_QUERY_KEY, authToken)
     }
     url.searchParams.set(EMBEDDED_THEME_QUERY_KEY, theme)
@@ -37,7 +43,9 @@ export function buildEmbeddedUrl(
     // Source tracking: let the embedded page know where it's being loaded from
     if (typeof window !== 'undefined') {
       url.searchParams.set(EMBEDDED_SRC_HOST_QUERY_KEY, window.location.origin)
-      url.searchParams.set(EMBEDDED_SRC_QUERY_KEY, window.location.href)
+      if (passUserContext) {
+        url.searchParams.set(EMBEDDED_SRC_QUERY_KEY, window.location.href)
+      }
     }
     return url.toString()
   } catch {

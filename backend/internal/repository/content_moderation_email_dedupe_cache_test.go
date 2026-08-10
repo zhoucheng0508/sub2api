@@ -331,3 +331,42 @@ func TestContentModerationSessionRiskIndexTTLDoesNotShrink(t *testing.T) {
 	require.LessOrEqual(t, ttl, 24*time.Hour)
 	require.Equal(t, fmt.Sprintf("%s{%d}", contentModerationSessionRiskIndexPrefix, 7), contentModerationSessionRiskIndexKey(7))
 }
+
+func TestContentModerationSessionRiskConcurrentActorUpdatesRetryConflicts(t *testing.T) {
+	cache, _ := newContentModerationDedupeTestCache(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const workers = 20
+	const actorKey = "shared-actor-risk-key"
+	cfg := riskstate.DefaultConfig()
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			_, err := cache.UpdateContentModerationSessionRiskForUser(ctx, 7, actorKey, riskstate.Event{
+				Score:      0.4,
+				Categories: []string{"cyber_abuse"},
+				RequestID:  fmt.Sprintf("request-%d", worker),
+				At:         time.Now().UTC(),
+			}, cfg)
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	state, found, err := cache.GetContentModerationSessionRisk(ctx, actorKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, workers, state.Strikes)
+}

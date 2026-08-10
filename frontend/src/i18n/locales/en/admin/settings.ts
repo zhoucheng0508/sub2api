@@ -647,6 +647,8 @@ export default {
         visibility: 'Visible To',
         visibilityUser: 'Regular Users',
         visibilityAdmin: 'Administrators',
+        passUserContext: 'Pass user context',
+        passUserContextHint: 'When disabled, user ID, login token, and the full source URL are omitted from the iframe URL.',
         add: 'Add Menu Item',
         remove: 'Remove',
         moveUp: 'Move Up',
