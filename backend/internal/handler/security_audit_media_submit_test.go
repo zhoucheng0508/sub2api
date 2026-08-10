@@ -128,6 +128,42 @@ func TestAsyncImageAuditUnavailableFailsClosedBeforeTaskCreation(t *testing.T) {
 	require.Len(t, requests, 1)
 }
 
+func TestAsyncImageMultipartPrecheckNeverForwardsReferenceBytes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: map[string]*service.ImageTaskRecord{}}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	engine := blockingHandlerPromptEngine()
+	openAI := &OpenAIGatewayHandler{
+		gatewayService:           &service.OpenAIGatewayService{},
+		securityAuditCoordinator: securityaudit.NewCoordinator(nil, engine),
+	}
+	h := &AsyncImageHandler{tasks: tasks, openAI: openAI, execute: func(string, *gin.Context) {}}
+
+	router := gin.New()
+	router.Use(securityAuditMediaTestMiddleware)
+	router.POST("/v1/images/edits/async", h.Submit)
+	const (
+		boundary = "sub2api-moderation-binary-guard"
+		canary   = "REFERENCE_BINARY_CANARY"
+	)
+	body := asyncImageMultipartEditBody(boundary, "blocked edit prompt", "1", canary)
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits/async", strings.NewReader(body))
+	request.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Empty(t, store.tasks)
+	evaluated, _, requests := engine.snapshot()
+	require.Equal(t, 1, evaluated)
+	require.Len(t, requests, 1)
+	auditBody := string(requests[0].Body)
+	require.Contains(t, auditBody, "blocked edit prompt")
+	require.NotContains(t, auditBody, canary)
+	require.NotContains(t, auditBody, "data:image")
+	require.NotContains(t, auditBody, "base64")
+}
+
 func TestAsyncImageSuccessfulPrecheckIsNotRepeatedByDetachedExecution(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &asyncImageMemoryStore{tasks: map[string]*service.ImageTaskRecord{}}

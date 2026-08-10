@@ -147,14 +147,14 @@ func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKe
 	moderationBody := body
 	if platform == service.PlatformGrok {
 		parsed := service.ParseGrokMediaRequest(c.GetHeader("Content-Type"), body)
-		model, moderationBody = parsed.Model, parsed.ModerationBody()
+		model, moderationBody = parsed.Model, parsed.PromptModerationBody()
 	} else if h.openAI.gatewayService != nil {
 		parsed, err := h.openAI.gatewayService.ParseOpenAIImagesRequest(c, body)
 		if err != nil {
 			imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return false
 		}
-		model, moderationBody = parsed.Model, parsed.ModerationBody()
+		model, moderationBody = parsed.Model, parsed.PromptModerationBody()
 	}
 	if len(moderationBody) == 0 {
 		c.Set(securityAuditCompletedContextKey, true)
@@ -213,6 +213,9 @@ func (h *AsyncImageHandler) validateRequest(c *gin.Context, platform string, bod
 	}
 	if parsed.Stream {
 		return errors.New("streaming image requests cannot be submitted as asynchronous tasks")
+	}
+	if parsed.N != 1 {
+		return errors.New("n must be 1 for asynchronous image tasks")
 	}
 	return nil
 }

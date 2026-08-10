@@ -204,6 +204,45 @@ func TestAsyncImageHandlerRejectsMultipleOutputsBeforeTaskCreation(t *testing.T)
 	require.Empty(t, store.active)
 }
 
+func TestAsyncImageHandlerRejectsMultipartMultipleOutputs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &AsyncImageHandler{openAI: &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	const boundary = "sub2api-multipart-n-guard"
+	body := asyncImageMultipartEditBody(boundary, "edit this image", "2", "not-a-real-image")
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits/async", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	c.Request = req
+
+	err := h.validateRequest(c, service.PlatformOpenAI, []byte(body))
+	require.EqualError(t, err, "n must be 1 for asynchronous image tasks")
+}
+
+func asyncImageMultipartEditBody(boundary, prompt, n, imageBytes string) string {
+	return strings.Join([]string{
+		"--" + boundary,
+		`Content-Disposition: form-data; name="model"`,
+		"",
+		"gpt-image-2",
+		"--" + boundary,
+		`Content-Disposition: form-data; name="prompt"`,
+		"",
+		prompt,
+		"--" + boundary,
+		`Content-Disposition: form-data; name="n"`,
+		"",
+		n,
+		"--" + boundary,
+		`Content-Disposition: form-data; name="image"; filename="input.png"`,
+		"Content-Type: image/png",
+		"",
+		imageBytes,
+		"--" + boundary + "--",
+		"",
+	}, "\r\n")
+}
+
 func TestAsyncImageHandlerPollHidesOtherAPIKeyAndIsIdempotent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}

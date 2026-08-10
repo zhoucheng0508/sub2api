@@ -112,6 +112,28 @@ func (r *OpenAIImagesRequest) ModerationBody() []byte {
 	return body
 }
 
+// PromptModerationBody is used by the asynchronous image workbench precheck.
+// Reference image bytes stay on the image path and are never forwarded to the
+// text-only moderation provider.
+func (r *OpenAIImagesRequest) PromptModerationBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return imagePromptModerationBody(r.Prompt)
+}
+
+func imagePromptModerationBody(prompt string) []byte {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]string{"prompt": prompt})
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
 func (r *OpenAIImagesRequest) moderationImages() []map[string]string {
 	if r == nil {
 		return nil
