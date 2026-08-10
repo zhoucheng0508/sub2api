@@ -96,6 +96,38 @@ func TestAsyncImagePromptGuardRunsBeforeTaskCreation(t *testing.T) {
 	require.Contains(t, string(requests[0].Body), "blocked async prompt")
 }
 
+func TestAsyncImageAuditUnavailableFailsClosedBeforeTaskCreation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: map[string]*service.ImageTaskRecord{}}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+		Kind:           securityaudit.DecisionUnavailable,
+		ErrorCode:      securityaudit.ErrorCodeUnavailable,
+		AllowNextStage: false,
+	}}
+	openAI := &OpenAIGatewayHandler{securityAuditCoordinator: securityaudit.NewCoordinator(nil, engine)}
+	h := &AsyncImageHandler{tasks: tasks, openAI: openAI}
+	executions := 0
+	h.execute = func(string, *gin.Context) { executions++ }
+
+	router := gin.New()
+	router.Use(securityAuditMediaTestMiddleware)
+	router.POST("/v1/images/generations/async", h.Submit)
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-2","prompt":"benign async prompt"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), securityaudit.ErrorCodeUnavailable)
+	require.Empty(t, store.tasks, "audit infrastructure failure must not create an asynchronous task")
+	require.Empty(t, store.active, "audit infrastructure failure must not reserve a per-key task slot")
+	require.Zero(t, executions, "audit infrastructure failure must not dispatch to an image account")
+	evaluated, _, requests := engine.snapshot()
+	require.Equal(t, 1, evaluated)
+	require.Len(t, requests, 1)
+}
+
 func TestAsyncImageSuccessfulPrecheckIsNotRepeatedByDetachedExecution(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &asyncImageMemoryStore{tasks: map[string]*service.ImageTaskRecord{}}

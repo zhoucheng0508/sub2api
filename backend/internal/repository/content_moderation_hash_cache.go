@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -22,6 +23,12 @@ const contentModerationSessionRiskIndexPrefix = "content_moderation:session_risk
 const contentModerationUserEpochPrefix = "content_moderation:user_epoch:v1:"
 const contentModerationAuditContextPrefix = "content_moderation:audit_context:v1:"
 const contentModerationAuditContextIndexPrefix = "content_moderation:audit_context_index:v1:"
+
+const (
+	contentModerationRedisTransactionMaxAttempts = 20
+	contentModerationRedisRetryBaseDelay         = time.Millisecond
+	contentModerationRedisRetryMaxDelay          = 25 * time.Millisecond
+)
 
 var (
 	contentModerationFlaggedHashRecordScript = redis.NewScript(`
@@ -262,7 +269,7 @@ func (c *contentModerationHashCache) updateContentModerationAuditContext(
 		indexKey = contentModerationAuditContextIndexKey(userID)
 	}
 	var updated auditcontext.State
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < contentModerationRedisTransactionMaxAttempts; attempt++ {
 		err := c.rdb.Watch(ctx, func(tx *redis.Tx) error {
 			var previous auditcontext.State
 			raw, err := tx.Get(ctx, redisKey).Bytes()
@@ -302,6 +309,9 @@ func (c *contentModerationHashCache) updateContentModerationAuditContext(
 			return updated, nil
 		}
 		if err != redis.TxFailedErr {
+			return auditcontext.State{}, err
+		}
+		if err := waitForContentModerationRedisRetry(ctx, attempt); err != nil {
 			return auditcontext.State{}, err
 		}
 	}
@@ -359,7 +369,7 @@ func (c *contentModerationHashCache) updateContentModerationSessionRisk(ctx cont
 	}
 	normalizedTTL := riskstate.NormalizeConfig(cfg).TTL
 	var updated riskstate.State
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < contentModerationRedisTransactionMaxAttempts; attempt++ {
 		err := c.rdb.Watch(ctx, func(tx *redis.Tx) error {
 			var previous riskstate.State
 			raw, err := tx.Get(ctx, redisKey).Bytes()
@@ -401,8 +411,30 @@ func (c *contentModerationHashCache) updateContentModerationSessionRisk(ctx cont
 		if err != redis.TxFailedErr {
 			return riskstate.State{}, err
 		}
+		if err := waitForContentModerationRedisRetry(ctx, attempt); err != nil {
+			return riskstate.State{}, err
+		}
 	}
 	return riskstate.State{}, redis.TxFailedErr
+}
+
+func waitForContentModerationRedisRetry(ctx context.Context, attempt int) error {
+	delay := contentModerationRedisRetryBaseDelay
+	for step := 0; step < attempt && delay < contentModerationRedisRetryMaxDelay; step++ {
+		delay *= 2
+	}
+	if delay > contentModerationRedisRetryMaxDelay {
+		delay = contentModerationRedisRetryMaxDelay
+	}
+	delay += time.Duration(rand.IntN(int(delay) + 1))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func contentModerationSessionRiskIndexKey(userID int64) string {
