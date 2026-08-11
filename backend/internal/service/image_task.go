@@ -36,16 +36,23 @@ var (
 // ImageTaskRecord is the private Redis representation of an asynchronous image
 // request. Ownership fields are intentionally omitted from the public view.
 type ImageTaskRecord struct {
-	ID          string          `json:"id"`
-	UserID      int64           `json:"user_id"`
-	APIKeyID    int64           `json:"api_key_id"`
-	Status      string          `json:"status"`
-	HTTPStatus  int             `json:"http_status,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       json.RawMessage `json:"error,omitempty"`
-	CreatedAt   int64           `json:"created_at"`
-	CompletedAt *int64          `json:"completed_at,omitempty"`
-	ExpiresAt   int64           `json:"expires_at"`
+	ID           string           `json:"id"`
+	UserID       int64            `json:"user_id"`
+	APIKeyID     int64            `json:"api_key_id"`
+	Status       string           `json:"status"`
+	HTTPStatus   int              `json:"http_status,omitempty"`
+	Result       json.RawMessage  `json:"result,omitempty"`
+	Error        json.RawMessage  `json:"error,omitempty"`
+	CreatedAt    int64            `json:"created_at"`
+	CompletedAt  *int64           `json:"completed_at,omitempty"`
+	ExpiresAt    int64            `json:"expires_at"`
+	OutputResize *ImageResizeSpec `json:"output_resize,omitempty"`
+}
+
+type ImageResizeSpec struct {
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Filter string `json:"filter"`
 }
 
 // ImageTask is the API-safe task representation returned to callers.
@@ -165,17 +172,22 @@ func (s *ImageTaskService) FinalizeTimeout() time.Duration {
 }
 
 func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*ImageTask, error) {
+	return s.CreateWithResize(ctx, owner, nil)
+}
+
+func (s *ImageTaskService) CreateWithResize(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec) (*ImageTask, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrImageTaskUnavailable
 	}
 	now := time.Now().UTC()
 	task := &ImageTaskRecord{
-		ID:        "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		UserID:    owner.UserID,
-		APIKeyID:  owner.APIKeyID,
-		Status:    ImageTaskStatusProcessing,
-		CreatedAt: now.Unix(),
-		ExpiresAt: now.Add(s.ttl).Unix(),
+		ID:           "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+		UserID:       owner.UserID,
+		APIKeyID:     owner.APIKeyID,
+		Status:       ImageTaskStatusProcessing,
+		CreatedAt:    now.Unix(),
+		ExpiresAt:    now.Add(s.ttl).Unix(),
+		OutputResize: resize,
 	}
 	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
 	if err != nil {
@@ -214,7 +226,11 @@ func (s *ImageTaskService) Complete(ctx context.Context, id string, statusCode i
 		return s.Fail(ctx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "upstream returned a non-JSON image response"))
 	}
 	if uploader, _ := s.current(); uploader != nil {
-		rewritten, err := uploader.Rewrite(ctx, id, result)
+		task, err := s.store.Get(ctx, id)
+		if err != nil {
+			return ErrImageTaskUnavailable.WithCause(err)
+		}
+		rewritten, err := uploader.RewriteWithResize(ctx, id, result, task.OutputResize)
 		if err != nil {
 			// 转存失败不回退存 base64，避免大 blob 撑爆 Redis：直接把任务标记为失败。
 			logger.L().Error("image_task.offload_failed", zap.String("task_id", id), zap.Error(err))

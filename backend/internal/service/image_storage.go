@@ -1,11 +1,16 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime"
 	"net/http"
@@ -15,9 +20,14 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/disintegration/imaging"
+	_ "golang.org/x/image/webp"
 )
 
-const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
+const (
+	defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
+	maxProcessedImageBytes             = 64 << 20 // 64 MiB
+)
 
 // ImageStorage 把图片字节写入对象存储并返回可访问 URL。
 //
@@ -94,6 +104,10 @@ func imageDownloadClientWithRedirectPolicy(client *http.Client) *http.Client {
 // 返回改写后的紧凑结果（data[i].url 指向对象存储，b64_json 被移除）。
 // 任一图片转存失败即返回 error（调用方据此将任务标记为失败，绝不把大 blob 落 Redis）。
 func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result json.RawMessage) (json.RawMessage, error) {
+	return u.RewriteWithResize(ctx, taskID, result, nil)
+}
+
+func (u *ImageResultUploader) RewriteWithResize(ctx context.Context, taskID string, result json.RawMessage, resize *ImageResizeSpec) (json.RawMessage, error) {
 	if u == nil || u.storage == nil {
 		return result, nil
 	}
@@ -123,6 +137,14 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 		if err != nil {
 			return nil, fmt.Errorf("image %d: %w", i, err)
 		}
+		if resize != nil {
+			data, contentType, err = resizeImageBytes(data, contentType, resize)
+			if err != nil {
+				return nil, fmt.Errorf("image %d: resize output: %w", i, err)
+			}
+			item["output_size"], _ = json.Marshal(fmt.Sprintf("%dx%d", resize.Width, resize.Height))
+			item["output_resize_filter"], _ = json.Marshal(resize.Filter)
+		}
 		key := u.buildKey(taskID, i, contentType)
 		url, err := u.storage.Save(ctx, key, contentType, data)
 		if err != nil {
@@ -146,6 +168,66 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 		return nil, fmt.Errorf("encode image response: %w", err)
 	}
 	return out, nil
+}
+
+func resizeImageBytes(data []byte, contentType string, resize *ImageResizeSpec) ([]byte, string, error) {
+	if err := ValidateImageResizeSpec(resize); err != nil {
+		return nil, "", err
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode source image: %w", err)
+	}
+	if source.Bounds().Dx() == resize.Width && source.Bounds().Dy() == resize.Height {
+		return data, contentType, nil
+	}
+	output := imaging.Resize(source, resize.Width, resize.Height, imaging.Lanczos)
+	var encoded bytes.Buffer
+	normalizedType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if normalizedType == "image/jpeg" || normalizedType == "image/jpg" {
+		err = jpeg.Encode(&encoded, output, &jpeg.Options{Quality: 95})
+		contentType = "image/jpeg"
+	} else {
+		err = png.Encode(&encoded, output)
+		contentType = "image/png"
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("encode resized image: %w", err)
+	}
+	if encoded.Len() > maxProcessedImageBytes {
+		return nil, "", fmt.Errorf("resized image exceeds %d bytes", maxProcessedImageBytes)
+	}
+	return encoded.Bytes(), contentType, nil
+}
+
+func ValidateImageResizeSpec(resize *ImageResizeSpec) error {
+	if resize == nil {
+		return nil
+	}
+	if resize.Filter != "lanczos" {
+		return fmt.Errorf("unsupported resize filter %q", resize.Filter)
+	}
+	if resize.Width <= 0 || resize.Height <= 0 {
+		return errors.New("resize dimensions must be positive")
+	}
+	if resize.Width%16 != 0 || resize.Height%16 != 0 {
+		return errors.New("resize dimensions must be multiples of 16")
+	}
+	if resize.Width > 3840 || resize.Height > 3840 {
+		return errors.New("resize dimensions must not exceed 3840 pixels per edge")
+	}
+	pixels := int64(resize.Width) * int64(resize.Height)
+	if pixels < 655360 || pixels > 8294400 {
+		return errors.New("resize pixel count must be between 655360 and 8294400")
+	}
+	longEdge, shortEdge := resize.Width, resize.Height
+	if longEdge < shortEdge {
+		longEdge, shortEdge = shortEdge, longEdge
+	}
+	if float64(longEdge)/float64(shortEdge) > 3 {
+		return errors.New("resize aspect ratio must not exceed 3:1")
+	}
+	return nil
 }
 
 func (u *ImageResultUploader) fetchImageBytes(ctx context.Context, item map[string]json.RawMessage) ([]byte, string, error) {
