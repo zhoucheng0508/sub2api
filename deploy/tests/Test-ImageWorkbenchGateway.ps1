@@ -42,7 +42,7 @@ function Invoke-GatewayProbe {
         if ($RequestOrigin) {
             [void]$request.Headers.TryAddWithoutValidation("Origin", $RequestOrigin)
             [void]$request.Headers.TryAddWithoutValidation("Access-Control-Request-Method", "POST")
-            [void]$request.Headers.TryAddWithoutValidation("Access-Control-Request-Headers", "authorization,content-type,x-request-id")
+            [void]$request.Headers.TryAddWithoutValidation("Access-Control-Request-Headers", "authorization,content-type,x-request-id,x-sub2api-image-output-size,x-sub2api-image-resize-filter")
         }
         if ($Authenticated) {
             $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $ApiKey)
@@ -80,6 +80,9 @@ try {
         Assert-Condition ([int]$allowed.StatusCode -eq 204) "Allowed-origin preflight returned $([int]$allowed.StatusCode), expected 204"
         Assert-Condition (((Get-HeaderValues $allowed "Access-Control-Allow-Origin") -join ",") -eq $allowedOrigin) "Allowed origin did not receive the exact Access-Control-Allow-Origin value"
         Assert-Condition (((Get-HeaderValues $allowed "Access-Control-Allow-Methods") -join ",") -match "(^|,)\s*POST\s*(,|$)") "Preflight response does not allow POST"
+        $allowedHeaders = (Get-HeaderValues $allowed "Access-Control-Allow-Headers") -join ","
+        Assert-Condition ($allowedHeaders -match "(?i)(^|,)\s*X-Sub2api-Image-Output-Size\s*(,|$)") "Preflight response does not allow X-Sub2api-Image-Output-Size"
+        Assert-Condition ($allowedHeaders -match "(?i)(^|,)\s*X-Sub2api-Image-Resize-Filter\s*(,|$)") "Preflight response does not allow X-Sub2api-Image-Resize-Filter"
         Assert-Condition (((Get-HeaderValues $allowed "Vary") -join ",") -match "(^|,)\s*Origin\s*(,|$)") "Preflight response is missing Vary: Origin"
         Assert-NoStore $allowed "Allowed-origin preflight response"
     }
