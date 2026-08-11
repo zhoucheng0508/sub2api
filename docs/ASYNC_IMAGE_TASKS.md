@@ -102,6 +102,21 @@ The server stores the initial task in Redis and responds with `202 Accepted`:
 
 Each API key may have only one active asynchronous image task. The reservation is acquired atomically in Redis before the task is created and released only when the task reaches `completed` or `failed`. A second submission with the same key returns `429 IMAGE_TASK_ALREADY_ACTIVE` and `Retry-After: 3`; another API key can submit independently. The reservation has a timeout slightly longer than the maximum execution time so a crashed process cannot block the key permanently.
 
+### Optional Lanczos output resizing
+
+Trusted image-workbench clients may ask Sub2API to resize the generated image before it is uploaded to object storage:
+
+```text
+X-Sub2api-Image-Output-Size: 3840x2160
+X-Sub2api-Image-Resize-Filter: lanczos
+```
+
+The workbench sends a same-aspect-ratio 1K `quality=low` request upstream, while the private headers describe the final output. Sub2API removes both headers before forwarding the request, decodes the returned image, applies Lanczos resampling, uploads the resized bytes, and stores only the compact object URL in Redis. The completed item also includes `output_size` and `output_resize_filter` metadata. When the source already has the requested dimensions, Sub2API preserves the original bytes without re-encoding.
+
+This is high-quality pixel resampling, not AI detail reconstruction or native 4K generation. It increases pixel dimensions and improves scaling quality, but it cannot create detail absent from the 1K source.
+
+Output dimensions must be positive multiples of 16, no edge may exceed 3840 pixels, total pixels must be between 655,360 and 8,294,400, and the longest edge may not exceed three times the shortest edge. Only `lanczos` is accepted. Invalid headers return `400` before task creation, moderation, billing, or upstream account selection. Browser clients also require both header names in the Sub2API CORS allowlist.
+
 ## Poll a task
 
 Use the same API key that submitted the task:

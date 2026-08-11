@@ -1,16 +1,21 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // pngBytes is a minimal payload whose signature makes http.DetectContentType
@@ -273,6 +278,42 @@ func TestImageResultUploaderNilStoragePassthrough(t *testing.T) {
 	out, err := uploader.Rewrite(context.Background(), "imgtask_nil", result)
 	require.NoError(t, err)
 	require.JSONEq(t, string(result), string(out))
+}
+
+func TestImageResultUploaderLanczosResizeBeforeUpload(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			source.Set(x, y, color.NRGBA{R: uint8(x * 8), G: uint8(y * 8), B: 128, A: 255})
+		}
+	}
+	var sourceBytes bytes.Buffer
+	require.NoError(t, png.Encode(&sourceBytes, source))
+	storage := &fakeImageStorage{}
+	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	result := json.RawMessage(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(sourceBytes.Bytes()) + `"}]}`)
+
+	out, err := uploader.RewriteWithResize(context.Background(), "imgtask_resize", result, &ImageResizeSpec{Width: 1024, Height: 1024, Filter: "lanczos"})
+	require.NoError(t, err)
+	require.Len(t, storage.saved, 1)
+	config, err := png.DecodeConfig(bytes.NewReader(storage.saved[0].data))
+	require.NoError(t, err)
+	require.Equal(t, 1024, config.Width)
+	require.Equal(t, 1024, config.Height)
+	require.JSONEq(t, `"1024x1024"`, gjson.GetBytes(out, "data.0.output_size").Raw)
+	require.Equal(t, "lanczos", gjson.GetBytes(out, "data.0.output_resize_filter").String())
+}
+
+func TestValidateImageResizeSpec(t *testing.T) {
+	require.NoError(t, ValidateImageResizeSpec(&ImageResizeSpec{Width: 3840, Height: 2160, Filter: "lanczos"}))
+	for _, resize := range []*ImageResizeSpec{
+		{Width: 3841, Height: 2160, Filter: "lanczos"},
+		{Width: 1025, Height: 1024, Filter: "lanczos"},
+		{Width: 1024, Height: 1024, Filter: "nearest"},
+		{Width: 3072, Height: 512, Filter: "lanczos"},
+	} {
+		require.Error(t, ValidateImageResizeSpec(resize))
+	}
 }
 
 func TestImageTaskServiceCompleteOffloadsToStorage(t *testing.T) {

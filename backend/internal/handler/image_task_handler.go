@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,7 +21,11 @@ import (
 	"go.uber.org/zap"
 )
 
-const asyncImageTaskTerminalWriteTimeout = 10 * time.Second
+const (
+	asyncImageTaskTerminalWriteTimeout = 10 * time.Second
+	imageOutputSizeHeader              = "X-Sub2api-Image-Output-Size"
+	imageResizeFilterHeader            = "X-Sub2api-Image-Resize-Filter"
+)
 
 type AsyncImageHandler struct {
 	tasks   *service.ImageTaskService
@@ -98,6 +103,13 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "n must be 1 for asynchronous image tasks")
 		return
 	}
+	resize, err := parseImageResizeHeaders(c.Request.Header)
+	if err != nil {
+		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	c.Request.Header.Del(imageOutputSizeHeader)
+	c.Request.Header.Del(imageResizeFilterHeader)
 	if err := h.validateRequest(c, platform, body); err != nil {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -107,7 +119,7 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	}
 
 	taskCtx, recorder, cancel := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout())
-	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID})
+	task, err := h.tasks.CreateWithResize(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID}, resize)
 	if err != nil {
 		cancel()
 		if errors.Is(err, service.ErrImageTaskActive) {
@@ -132,6 +144,34 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	})
 
 	go h.run(task.ID, platform, taskCtx, recorder, cancel)
+}
+
+func parseImageResizeHeaders(header http.Header) (*service.ImageResizeSpec, error) {
+	size := strings.ToLower(strings.TrimSpace(header.Get(imageOutputSizeHeader)))
+	filter := strings.ToLower(strings.TrimSpace(header.Get(imageResizeFilterHeader)))
+	if size == "" && filter == "" {
+		return nil, nil
+	}
+	if size == "" {
+		return nil, errors.New("image output size is required when a resize filter is set")
+	}
+	if filter == "" {
+		filter = "lanczos"
+	}
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	width, widthErr := strconv.Atoi(parts[0])
+	height, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	resize := &service.ImageResizeSpec{Width: width, Height: height, Filter: filter}
+	if err := service.ValidateImageResizeSpec(resize); err != nil {
+		return nil, err
+	}
+	return resize, nil
 }
 
 func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKey *service.APIKey, platform string, body []byte) bool {

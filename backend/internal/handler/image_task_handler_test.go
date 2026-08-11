@@ -204,6 +204,24 @@ func TestAsyncImageHandlerRejectsMultipleOutputsBeforeTaskCreation(t *testing.T)
 	require.Empty(t, store.active)
 }
 
+func TestParseImageResizeHeaders(t *testing.T) {
+	header := http.Header{}
+	header.Set(imageOutputSizeHeader, "3840x2160")
+	header.Set(imageResizeFilterHeader, "lanczos")
+	resize, err := parseImageResizeHeaders(header)
+	require.NoError(t, err)
+	require.Equal(t, &service.ImageResizeSpec{Width: 3840, Height: 2160, Filter: "lanczos"}, resize)
+
+	header.Set(imageResizeFilterHeader, "nearest")
+	_, err = parseImageResizeHeaders(header)
+	require.ErrorContains(t, err, "unsupported resize filter")
+
+	header.Set(imageResizeFilterHeader, "lanczos")
+	header.Set(imageOutputSizeHeader, "4000x2160")
+	_, err = parseImageResizeHeaders(header)
+	require.ErrorContains(t, err, "must not exceed 3840")
+}
+
 func TestAsyncImageHandlerRejectsMultipartMultipleOutputs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &AsyncImageHandler{openAI: &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}}

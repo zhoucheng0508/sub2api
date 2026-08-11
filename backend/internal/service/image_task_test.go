@@ -111,6 +111,15 @@ func TestImageTaskServiceRejectsSecondActiveTaskForSameAPIKey(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestImageTaskServiceStoresOutputResize(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	svc := NewImageTaskServiceWithOptions(store, time.Hour, time.Minute)
+	resize := &ImageResizeSpec{Width: 2048, Height: 1152, Filter: "lanczos"}
+	_, err := svc.CreateWithResize(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 9}, resize)
+	require.NoError(t, err)
+	require.Equal(t, resize, store.task.OutputResize)
+}
+
 func TestImageTaskServiceInvalidResultBecomesFailed(t *testing.T) {
 	store := &imageTaskMemoryStore{}
 	svc := NewImageTaskServiceWithOptions(store, time.Hour, time.Minute)
