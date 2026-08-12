@@ -32,6 +32,75 @@ const (
 	imageDownloadRetryBaseDelay        = 100 * time.Millisecond
 )
 
+// ImageResizeOutputSizeHeader and ImageResizeFilterHeader are opt-in headers
+// used by synchronous and asynchronous image endpoints alike.
+const (
+	ImageResizeOutputSizeHeader = "X-Sub2api-Image-Output-Size"
+	ImageResizeFilterHeader     = "X-Sub2api-Image-Resize-Filter"
+)
+
+// ParseImageResizeHeaders validates the opt-in resize request.
+func ParseImageResizeHeaders(header http.Header) (*ImageResizeSpec, error) {
+	size := strings.ToLower(strings.TrimSpace(header.Get(ImageResizeOutputSizeHeader)))
+	filter := strings.ToLower(strings.TrimSpace(header.Get(ImageResizeFilterHeader)))
+	if size == "" && filter == "" {
+		return nil, nil
+	}
+	if size == "" {
+		return nil, errors.New("image output size is required when a resize filter is set")
+	}
+	if filter == "" {
+		filter = "lanczos"
+	}
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	width, widthErr := strconv.Atoi(parts[0])
+	height, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	resize := &ImageResizeSpec{Width: width, Height: height, Filter: filter}
+	if err := ValidateImageResizeSpec(resize); err != nil {
+		return nil, err
+	}
+	return resize, nil
+}
+
+// ResizeImageResponseB64 applies the requested resize to b64_json image items.
+// It is intentionally used only for synchronous responses, where object
+// storage rewriting is not part of the response contract.
+func ResizeImageResponseB64(body []byte, resize *ImageResizeSpec) ([]byte, error) {
+	if resize == nil {
+		return body, nil
+	}
+	if err := ValidateImageResizeSpec(resize); err != nil {
+		return nil, err
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil { return nil, fmt.Errorf("parse image response: %w", err) }
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(top["data"], &items); err != nil { return nil, fmt.Errorf("parse image response data: %w", err) }
+	for i, item := range items {
+		raw, ok := item["b64_json"]
+		if !ok { continue }
+		var encoded string
+		if err := json.Unmarshal(raw, &encoded); err != nil { return nil, fmt.Errorf("decode image %d: %w", i, err) }
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil { return nil, fmt.Errorf("decode image %d: %w", i, err) }
+		out, contentType, err := resizeImageBytes(data, detectImageContentType(data), resize)
+		if err != nil { return nil, fmt.Errorf("resize image %d: %w", i, err) }
+		item["b64_json"] = json.RawMessage([]byte(strconv.Quote(base64.StdEncoding.EncodeToString(out))))
+		item["output_size"] = json.RawMessage([]byte(strconv.Quote(fmt.Sprintf("%dx%d", resize.Width, resize.Height))))
+		item["output_resize_filter"] = json.RawMessage([]byte(strconv.Quote(resize.Filter)))
+		item["mime_type"] = json.RawMessage([]byte(strconv.Quote(contentType)))
+		items[i] = item
+	}
+	top["data"], _ = json.Marshal(items)
+	return json.Marshal(top)
+}
+
 // ImageStorage 把图片字节写入对象存储并返回可访问 URL。
 //
 // 这是对象存储的可插拔抽象：适配一个新的对象存储厂商，只需实现本接口

@@ -911,6 +911,14 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 			contentType = upstreamType
 		}
 	}
+	if resize, resizeErr := ParseImageResizeHeaders(c.Request.Header); resizeErr != nil {
+		return OpenAIUsage{}, 0, nil, resizeErr
+	} else if resize != nil {
+		body, err = ResizeImageResponseB64(body, resize)
+		if err != nil {
+			return OpenAIUsage{}, 0, nil, err
+		}
+	}
 	c.Data(resp.StatusCode, contentType, body)
 
 	usage, _ := extractOpenAIUsageFromJSONBytes(body)
