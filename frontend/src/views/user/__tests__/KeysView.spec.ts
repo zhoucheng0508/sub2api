@@ -173,6 +173,9 @@ const DataTableStub = {
         <div data-test="current-concurrency">
           <slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" />
         </div>
+        <div data-test="actions">
+          <slot name="cell-actions" :row="row" />
+        </div>
         <div
           v-if="columns.some((col) => col.key === 'last_used_ip')"
           data-test="last-used-ip"
@@ -215,6 +218,12 @@ const IconStub = {
   template: '<span data-test="icon">{{ name }}</span>',
 }
 
+const CodexOneClickModalStub = {
+  name: 'CodexOneClickModal',
+  props: ['show', 'apiKey', 'keyName', 'baseUrl', 'providerName'],
+  template: '<div />',
+}
+
 const mountView = async () => {
   const wrapper = mount(KeysView, {
     global: {
@@ -230,6 +239,7 @@ const mountView = async () => {
         SearchInput: SearchInputStub,
         Icon: IconStub,
         UseKeyModal: true,
+        CodexOneClickModal: CodexOneClickModalStub,
         EndpointPopover: true,
         GroupBadge: true,
         GroupOptionItem: true,
@@ -392,6 +402,75 @@ describe('user KeysView column settings', () => {
     const wrapper = await mountView()
 
     expect(wrapper.get('[data-test="current-concurrency"]').text()).toBe('3')
+  })
+
+  it('shows the Codex banner for an active usable key and remembers dismissal', async () => {
+    listKeys.mockResolvedValueOnce({
+      items: [{ ...createApiKey(), group: { platform: 'openai' } as ApiKey['group'] }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-testid="codex-one-click-banner"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="codex-one-click-banner-action"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="codex-one-click-row"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="dismiss-codex-one-click-banner"]').trigger('click')
+    expect(wrapper.find('[data-testid="codex-one-click-banner"]').exists()).toBe(false)
+    expect(localStorage.getItem('sub2api_codex_one_click_banner_dismissed')).toBe('true')
+  })
+
+  it('keeps Codex setup visible but disabled for an inactive OpenAI key', async () => {
+    listKeys.mockResolvedValueOnce({
+      items: [{ ...createApiKey(), status: 'inactive', group: { platform: 'openai' } as ApiKey['group'] }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-testid="codex-one-click-banner"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="codex-one-click-banner-action"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="codex-one-click-row"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('opens one-click setup with the exact row that was clicked', async () => {
+    const first = {
+      ...createApiKey(),
+      id: 1,
+      key: 'sk-first-row',
+      name: 'first-row',
+      group: { platform: 'openai' } as ApiKey['group'],
+    }
+    const second = {
+      ...createApiKey(),
+      id: 2,
+      key: 'sk-second-row',
+      name: 'second-row',
+      group_id: null,
+      group: undefined,
+    }
+    listKeys.mockResolvedValueOnce({
+      items: [first, second],
+      total: 2,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = await mountView()
+    const rowActions = wrapper.findAll('[data-testid="codex-one-click-row"]')
+
+    expect(rowActions).toHaveLength(2)
+    expect(rowActions[1].attributes('disabled')).toBeUndefined()
+    await rowActions[1].trigger('click')
+
+    const modal = wrapper.findComponent({ name: 'CodexOneClickModal' })
+    expect(modal.props('show')).toBe(true)
+    expect(modal.props('apiKey')).toBe('sk-second-row')
+    expect(modal.props('keyName')).toBe('second-row')
   })
 
   it('marks current concurrency as sortable', async () => {

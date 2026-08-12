@@ -50,6 +50,37 @@ type openAIWSTurnChannelMappingSnapshot struct {
 	mapping service.ChannelMappingResult
 }
 
+type cyberPolicyConnectionBlockState struct {
+	blocked  bool
+	epoch    int64
+	epochSet bool
+}
+
+func (s *cyberPolicyConnectionBlockState) block(mark *service.CyberPolicyMark) {
+	if s == nil || mark == nil {
+		return
+	}
+	s.blocked = true
+	s.epoch = mark.ModerationEpoch
+	s.epochSet = mark.EpochSet
+}
+
+// reconcile keeps an indeterminate block fail-closed. Only a confirmed,
+// non-negative epoch advance proves that an administrator unbanned the user.
+func (s *cyberPolicyConnectionBlockState) reconcile(currentEpoch int64, currentEpochSet bool) bool {
+	if s == nil || !s.blocked {
+		return false
+	}
+	if !s.epochSet || s.epoch < 0 || !currentEpochSet || currentEpoch < 0 {
+		return true
+	}
+	if currentEpoch <= s.epoch {
+		return true
+	}
+	*s = cyberPolicyConnectionBlockState{}
+	return false
+}
+
 var errOpenAIWSUnsupportedModelSwitch = errors.New("selected account does not support websocket model switch")
 
 func newOpenAIWSUnsupportedModelSwitchError(model string) error {
@@ -522,6 +553,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, reqModel, body); decision != nil && !decision.AllowNextStage {
+			releaseSecurityAuditSelection(selection)
+			h.openAISecurityAuditError(c, decision)
+			return
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
@@ -1082,6 +1118,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
+			releaseSecurityAuditSelection(selection)
+			h.anthropicSecurityAuditError(c, decision)
+			return
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
@@ -1724,10 +1765,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, true)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
 
-	if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn"); decision != nil && !decision.AllowNextStage {
-		writeSecurityAuditWSError(ctx, wsConn, decision)
-		closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
-		return
+	firstTurnAuditPassed := false
+	if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn"); decision != nil {
+		if !decision.AllowNextStage {
+			writeSecurityAuditWSError(ctx, wsConn, decision)
+			closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
+			return
+		}
+		firstTurnAuditPassed = true
 	}
 
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
@@ -1745,7 +1790,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, cyberBlockKey)
 		return
 	}
-	cyberBlockedThisConn := false
+	var cyberConnectionBlock cyberPolicyConnectionBlockState
 
 	// 解析渠道级模型映射
 	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
@@ -1980,6 +2025,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			selection.Account = latest
 			accountReleaseFunc = fastReleaseFunc
 		}
+		if !firstTurnAuditPassed {
+			decision := h.checkSecurityAuditStageForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn")
+			if decision != nil {
+				if !decision.AllowNextStage {
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+					writeSecurityAuditWSError(ctx, wsConn, decision)
+					closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
+					return
+				}
+				firstTurnAuditPassed = true
+			}
+		}
 		// 准入完成：门并入连接 ctx，turn 级复核与 failover 重选共用。
 		ctx = admissionCtx
 		currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
@@ -2041,7 +2100,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if model == "" {
 					model = reqModel
 				}
-				if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, model, payload, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
+				if decision := h.checkSecurityAuditStageForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolOpenAIResponses, model, payload, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
 					writeSecurityAuditWSError(ctx, wsConn, decision)
 					return service.NewOpenAIWSClientCloseError(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision), nil)
 				}
@@ -2064,8 +2123,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return mapping.MappedModel, nil
 			},
 			BeforeTurn: func(turn int) error {
-				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内 flag 只拦截后续 turn。
-				if cyberBlockedThisConn {
+				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内状态只拦截后续 turn。
+				// 管理员解禁会推进 epoch，因此无需断开并重建现有 WebSocket 连接。
+				currentEpoch, currentEpochSet := int64(0), false
+				if cyberConnectionBlock.blocked && h.contentModerationService != nil {
+					currentEpoch, currentEpochSet = h.contentModerationService.SnapshotContentModerationUserEpoch(ctx, subject.UserID)
+				}
+				if cyberConnectionBlock.reconcile(currentEpoch, currentEpochSet) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, cyberSessionBlockedClientMsg, nil)
 				}
 				// 长连接跨峰谷/倍率刷新防护：每个 turn 按当前时刻重装门并复核
@@ -2136,10 +2200,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnUpstreamModel = turnRequestedModel
 				}
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
+				mark := service.GetOpsCyberPolicy(c)
 				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockKey, turnUsageFields, requestPayloadHash)
-				if service.GetOpsCyberPolicy(c) != nil {
-					cyberBlockedThisConn = true
-				}
+				cyberConnectionBlock.block(mark)
 				if turnErr != nil {
 					if result == nil || result.ImageCount <= 0 {
 						return
@@ -3241,9 +3304,12 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		cyberEnforcementCurrent := true
 		if cmSvc != nil {
-			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
+			cyberEnforcementCurrent = cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
 				RequestID:       requestID,
+				SessionID:       sessionID,
+				InputHash:       requestPayloadHash,
 				UserID:          userID,
 				UserEmail:       userEmail,
 				APIKeyID:        apiKeyID,
@@ -3257,6 +3323,8 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 				UpstreamStatus:  mark.UpstreamStatus,
 				UpstreamInTok:   mark.UpstreamInTok,
 				UpstreamOutTok:  mark.UpstreamOutTok,
+				ModerationEpoch: mark.ModerationEpoch,
+				EpochSet:        mark.EpochSet,
 			})
 		}
 		if forwardErrored && gwSvc != nil {
@@ -3279,7 +3347,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 				ChannelUsageFields: channelFields,
 			})
 		}
-		if gwSvc != nil && cyberBlockKey != "" {
+		if gwSvc != nil && cyberBlockKey != "" && cyberEnforcementCurrent {
 			gwSvc.MarkCyberSessionBlocked(ctx, cyberBlockKey)
 		}
 		if opsSvc != nil {
@@ -3296,6 +3364,7 @@ func clearCyberPolicyTurnState(c *gin.Context) {
 		return
 	}
 	service.ClearOpsCyberPolicy(c)
+	service.ClearOpsCyberPolicyEpochSnapshot(c)
 	c.Set(cyberPolicyRecordedKey, false)
 }
 

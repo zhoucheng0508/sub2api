@@ -178,7 +178,15 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 	if account == nil || !account.IsTLSFingerprintEnabled() {
 		return nil
 	}
-	id := account.GetTLSFingerprintProfileID()
+	return s.ResolveTLSProfileByID(account, account.GetTLSFingerprintProfileID())
+}
+
+// ResolveTLSProfileByID resolves a fixed account profile, always falling back to
+// the built-in Node.js 24.x ClientHello when TLS impersonation is enabled.
+func (s *TLSFingerprintProfileService) ResolveTLSProfileByID(account *Account, id int64) *tlsfingerprint.Profile {
+	if account == nil || !account.IsTLSFingerprintEnabled() {
+		return nil
+	}
 	if id > 0 {
 		if p := s.GetProfileByID(id); p != nil {
 			return p
@@ -192,6 +200,26 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 	}
 	// TLS 启用但无绑定 profile → 空 Profile → dialer 使用内置默认值
 	return &tlsfingerprint.Profile{Name: "Built-in Default (Node.js 24.x)"}
+}
+
+// ResolveRoutableTLSProfileByID distinguishes an invalid router target from a
+// valid built-in/random target so callers can fall back to the account profile.
+func (s *TLSFingerprintProfileService) ResolveRoutableTLSProfileByID(account *Account, id int64) (*tlsfingerprint.Profile, bool) {
+	if account == nil || !account.IsTLSFingerprintEnabled() {
+		return nil, false
+	}
+	if id > 0 {
+		profile := s.GetProfileByID(id)
+		return profile, profile != nil
+	}
+	if id == -1 {
+		profile := s.getRandomProfile()
+		return profile, profile != nil
+	}
+	if id == 0 {
+		return &tlsfingerprint.Profile{Name: "Built-in Default (Node.js 24.x)"}, true
+	}
+	return nil, false
 }
 
 // --- 缓存管理 ---

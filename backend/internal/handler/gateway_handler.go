@@ -371,6 +371,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					return
 				}
 			}
+			if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
+				releaseSecurityAuditSelection(selection)
+				h.anthropicSecurityAuditError(c, decision)
+				return
+			}
 
 			// 3. 获取账号并发槽位
 			accountReleaseFunc := selection.ReleaseFunc
@@ -693,6 +698,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					}
 					return
 				}
+			}
+			if decision := h.checkSecurityAuditForAccount(c, reqLog, currentAPIKey, subject, account, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
+				releaseSecurityAuditSelection(selection)
+				h.anthropicSecurityAuditError(c, decision)
+				return
 			}
 
 			// 3. 获取账号并发槽位
@@ -1973,7 +1983,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	_, ok = middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
@@ -2032,6 +2042,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	setOpsRequestContext(c, parsedReq.Model, parsedReq.Stream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsedReq.Stream, false)))
 
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, parsedReq.Model, body); decision != nil && !decision.AllowNextStage {
+		h.anthropicSecurityAuditError(c, decision)
+		return
+	}
+
 	// 获取订阅信息（可能为nil）
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 
@@ -2066,6 +2081,10 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 	setOpsSelectedAccount(c, account.ID, account.Platform)
+	if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, service.ContentModerationProtocolAnthropicMessages, parsedReq.Model, body); decision != nil && !decision.AllowNextStage {
+		h.anthropicSecurityAuditError(c, decision)
+		return
+	}
 
 	// 转发请求（不记录使用量）
 	if err := h.gatewayService.ForwardCountTokens(c.Request.Context(), c, account, parsedReq); err != nil {

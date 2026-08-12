@@ -397,6 +397,20 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		}
 	}
 
+	// CUSTOM(VOTE-AI-OPENAI-TLS): shared TLS fields for Anthropic and OpenAI OAuth.
+	if a.SupportsTLSFingerprint() {
+		if a.IsTLSFingerprintEnabled() {
+			enabled := true
+			out.EnableTLSFingerprint = &enabled
+		}
+		if profileID := a.GetTLSFingerprintProfileID(); profileID != 0 {
+			out.TLSFingerprintProfileID = &profileID
+		}
+		if routerID := a.GetTLSFingerprintRouterID(); routerID != 0 {
+			out.TLSFingerprintRouterID = &routerID
+		}
+	}
+
 	return out
 }
 

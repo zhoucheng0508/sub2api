@@ -18,7 +18,8 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
-ENV NODE_OPTIONS=--max-old-space-size=1536
+ARG FRONTEND_NODE_OPTIONS=--max-old-space-size=2048
+ENV NODE_OPTIONS=${FRONTEND_NODE_OPTIONS}
 
 # Install pnpm. Keep this pinned to the lockfile-compatible major version so
 # Docker builds remain reproducible when pnpm changes config validation rules.

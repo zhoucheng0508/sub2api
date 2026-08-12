@@ -52,6 +52,7 @@ type Options struct {
 	MaxIdleConns        int // 最大空闲连接总数（默认 100）
 	MaxIdleConnsPerHost int // 每主机最大空闲连接（默认 10）
 	MaxConnsPerHost     int // 每主机最大连接数（默认 0 无限制）
+	ForceAttemptHTTP2   bool
 }
 
 // sharedClients 存储按配置参数缓存的 http.Client 实例
@@ -121,6 +122,7 @@ func buildTransport(opts Options) (*http.Transport, error) {
 		MaxConnsPerHost:       opts.MaxConnsPerHost, // 0 表示无限制
 		IdleConnTimeout:       defaultIdleConnTimeout,
 		ResponseHeaderTimeout: opts.ResponseHeaderTimeout,
+		ForceAttemptHTTP2:     opts.ForceAttemptHTTP2,
 	}
 
 	if opts.InsecureSkipVerify {
@@ -144,7 +146,7 @@ func buildTransport(opts Options) (*http.Transport, error) {
 }
 
 func buildClientKey(opts Options) string {
-	return fmt.Sprintf("%s|%s|%s|%t|%t|%t|%d|%d|%d",
+	return fmt.Sprintf("%s|%s|%s|%t|%t|%t|%d|%d|%d|%t",
 		strings.TrimSpace(opts.ProxyURL),
 		opts.Timeout.String(),
 		opts.ResponseHeaderTimeout.String(),
@@ -154,6 +156,7 @@ func buildClientKey(opts Options) string {
 		opts.MaxIdleConns,
 		opts.MaxIdleConnsPerHost,
 		opts.MaxConnsPerHost,
+		opts.ForceAttemptHTTP2,
 	)
 }
 

@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,12 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+)
+
+const (
+	asyncImageTaskTerminalWriteTimeout = 10 * time.Second
+	imageOutputSizeHeader              = "X-Sub2api-Image-Output-Size"
+	imageResizeFilterHeader            = "X-Sub2api-Image-Resize-Filter"
 )
 
 type AsyncImageHandler struct {
@@ -92,6 +100,17 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "streaming image requests cannot be submitted as asynchronous tasks")
 		return
 	}
+	if !asyncImageRequestHasSingleOutput(c.GetHeader("Content-Type"), body) {
+		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "n must be 1 for asynchronous image tasks")
+		return
+	}
+	resize, err := parseImageResizeHeaders(c.Request.Header)
+	if err != nil {
+		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	c.Request.Header.Del(imageOutputSizeHeader)
+	c.Request.Header.Del(imageResizeFilterHeader)
 	if err := h.validateRequest(c, platform, body); err != nil {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -101,9 +120,12 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	}
 
 	taskCtx, recorder, cancel := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout())
-	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID})
+	task, err := h.tasks.CreateWithResize(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID}, resize)
 	if err != nil {
 		cancel()
+		if errors.Is(err, service.ErrImageTaskActive) {
+			c.Header("Retry-After", "3")
+		}
 		imageTaskError(c, err)
 		return
 	}
@@ -125,6 +147,34 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	go h.run(task.ID, platform, taskCtx, recorder, cancel)
 }
 
+func parseImageResizeHeaders(header http.Header) (*service.ImageResizeSpec, error) {
+	size := strings.ToLower(strings.TrimSpace(header.Get(imageOutputSizeHeader)))
+	filter := strings.ToLower(strings.TrimSpace(header.Get(imageResizeFilterHeader)))
+	if size == "" && filter == "" {
+		return nil, nil
+	}
+	if size == "" {
+		return nil, errors.New("image output size is required when a resize filter is set")
+	}
+	if filter == "" {
+		filter = "lanczos"
+	}
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	width, widthErr := strconv.Atoi(parts[0])
+	height, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	resize := &service.ImageResizeSpec{Width: width, Height: height, Filter: filter}
+	if err := service.ValidateImageResizeSpec(resize); err != nil {
+		return nil, err
+	}
+	return resize, nil
+}
+
 func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKey *service.APIKey, platform string, body []byte) bool {
 	if h == nil || h.openAI == nil {
 		return true
@@ -138,14 +188,14 @@ func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKe
 	moderationBody := body
 	if platform == service.PlatformGrok {
 		parsed := service.ParseGrokMediaRequest(c.GetHeader("Content-Type"), body)
-		model, moderationBody = parsed.Model, parsed.ModerationBody()
+		model, moderationBody = parsed.Model, parsed.PromptModerationBody()
 	} else if h.openAI.gatewayService != nil {
 		parsed, err := h.openAI.gatewayService.ParseOpenAIImagesRequest(c, body)
 		if err != nil {
 			imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return false
 		}
-		model, moderationBody = parsed.Model, parsed.ModerationBody()
+		model, moderationBody = parsed.Model, parsed.PromptModerationBody()
 	}
 	if len(moderationBody) == 0 {
 		c.Set(securityAuditCompletedContextKey, true)
@@ -205,6 +255,9 @@ func (h *AsyncImageHandler) validateRequest(c *gin.Context, platform string, bod
 	if parsed.Stream {
 		return errors.New("streaming image requests cannot be submitted as asynchronous tasks")
 	}
+	if parsed.N != 1 {
+		return errors.New("n must be 1 for asynchronous image tasks")
+	}
 	return nil
 }
 
@@ -240,11 +293,22 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		statusCode = http.StatusOK
 	}
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
-		if len(body) == 0 || !json.Valid(body) {
-			h.failTask(taskID, http.StatusBadGateway, imageTaskErrorPayload("api_error", "upstream returned an invalid image response"))
+		if err := validateAsyncImageSuccessResponse(body); err != nil {
+			// Some upstream adapters (and JSON keepalive) can commit a 2xx
+			// response before the final error payload arrives. Never persist that
+			// payload as a completed image task; retain the upstream error object
+			// when one is present and use 502 because the 2xx is not a real image
+			// success status.
+			taskErr := extractImageTaskError(body)
+			if !hasImageTaskError(body) {
+				taskErr = imageTaskErrorPayload("api_error", err.Error())
+			}
+			h.failTask(taskID, http.StatusBadGateway, taskErr)
 			return
 		}
-		if err := h.tasks.Complete(context.Background(), taskID, statusCode, json.RawMessage(body)); err != nil {
+		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), h.tasks.FinalizeTimeout())
+		defer finalizeCancel()
+		if err := h.tasks.Complete(finalizeCtx, taskID, statusCode, json.RawMessage(body)); err != nil {
 			logger.L().Error("image_task.complete_store_failed", zap.String("task_id", taskID), zap.Error(err))
 		}
 		return
@@ -252,8 +316,68 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 	h.failTask(taskID, statusCode, extractImageTaskError(body))
 }
 
+// validateAsyncImageSuccessResponse validates the subset of the Images API
+// response that an asynchronous task can safely persist. A syntactically valid
+// JSON error envelope is still a failed upstream request, not a completed task.
+func validateAsyncImageSuccessResponse(body []byte) error {
+	if len(body) == 0 || !json.Valid(body) {
+		return errors.New("upstream returned an invalid image response")
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return errors.New("upstream returned an invalid image response")
+	}
+	if rawError, ok := envelope["error"]; ok && !isJSONNullOrEmpty(rawError) {
+		return errors.New("upstream returned an image error response")
+	}
+	rawData, ok := envelope["data"]
+	if !ok || isJSONNullOrEmpty(rawData) {
+		return errors.New("upstream returned no image data")
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(rawData, &items); err != nil || len(items) == 0 {
+		return errors.New("upstream returned no image data")
+	}
+	for i, rawItem := range items {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(rawItem, &item); err != nil {
+			return fmt.Errorf("upstream image item %d is invalid", i)
+		}
+		if !nonEmptyJSONString(item["b64_json"]) && !nonEmptyJSONString(item["url"]) {
+			return fmt.Errorf("upstream image item %d has neither b64_json nor url", i)
+		}
+	}
+	return nil
+}
+
+func hasImageTaskError(body []byte) bool {
+	if !json.Valid(body) {
+		return false
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(body, &envelope) != nil {
+		return false
+	}
+	rawError, ok := envelope["error"]
+	return ok && !isJSONNullOrEmpty(rawError)
+}
+
+func isJSONNullOrEmpty(raw json.RawMessage) bool {
+	return len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func nonEmptyJSONString(raw json.RawMessage) bool {
+	if len(raw) == 0 || isJSONNullOrEmpty(raw) {
+		return false
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != ""
+}
+
 func (h *AsyncImageHandler) failTask(taskID string, statusCode int, taskErr json.RawMessage) {
-	if err := h.tasks.Fail(context.Background(), taskID, statusCode, taskErr); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), asyncImageTaskTerminalWriteTimeout)
+	defer cancel()
+	if err := h.tasks.Fail(ctx, taskID, statusCode, taskErr); err != nil {
 		logger.L().Error("image_task.failure_store_failed", zap.String("task_id", taskID), zap.Error(err))
 	}
 }
@@ -285,6 +409,20 @@ func asyncImageRequestStreams(contentType string, body []byte) bool {
 		Stream bool `json:"stream"`
 	}
 	return json.Unmarshal(body, &envelope) == nil && envelope.Stream
+}
+
+func asyncImageRequestHasSingleOutput(contentType string, body []byte) bool {
+	if isMultipartImagesContentType(contentType) {
+		// The platform parser performs the authoritative multipart validation.
+		return true
+	}
+	var envelope struct {
+		N *int `json:"n"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.N == nil {
+		return true
+	}
+	return *envelope.N == 1
 }
 
 func imageTaskPollURL(submitPath, taskID string) string {

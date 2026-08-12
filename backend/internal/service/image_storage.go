@@ -1,20 +1,117 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/disintegration/imaging"
+	_ "golang.org/x/image/webp"
 )
 
-const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
+const (
+	defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
+	maxProcessedImageBytes             = 64 << 20 // 64 MiB
+	imageDownloadMaxAttempts           = 3        // initial request plus two retries
+	imageDownloadRetryBaseDelay        = 100 * time.Millisecond
+)
+
+// ImageResizeOutputSizeHeader and ImageResizeFilterHeader are opt-in headers
+// used by synchronous and asynchronous image endpoints alike.
+const (
+	ImageResizeOutputSizeHeader = "X-Sub2api-Image-Output-Size"
+	ImageResizeFilterHeader     = "X-Sub2api-Image-Resize-Filter"
+)
+
+// ParseImageResizeHeaders validates the opt-in resize request.
+func ParseImageResizeHeaders(header http.Header) (*ImageResizeSpec, error) {
+	size := strings.ToLower(strings.TrimSpace(header.Get(ImageResizeOutputSizeHeader)))
+	filter := strings.ToLower(strings.TrimSpace(header.Get(ImageResizeFilterHeader)))
+	if size == "" && filter == "" {
+		return nil, nil
+	}
+	if size == "" {
+		return nil, errors.New("image output size is required when a resize filter is set")
+	}
+	if filter == "" {
+		filter = "lanczos"
+	}
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	width, widthErr := strconv.Atoi(parts[0])
+	height, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil {
+		return nil, errors.New("image output size must use WIDTHxHEIGHT format")
+	}
+	resize := &ImageResizeSpec{Width: width, Height: height, Filter: filter}
+	if err := ValidateImageResizeSpec(resize); err != nil {
+		return nil, err
+	}
+	return resize, nil
+}
+
+// ResizeImageResponseB64 applies the requested resize to b64_json image items.
+// It is intentionally used only for synchronous responses, where object
+// storage rewriting is not part of the response contract.
+func ResizeImageResponseB64(body []byte, resize *ImageResizeSpec) ([]byte, error) {
+	if resize == nil {
+		return body, nil
+	}
+	if err := ValidateImageResizeSpec(resize); err != nil {
+		return nil, err
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, fmt.Errorf("parse image response: %w", err)
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(top["data"], &items); err != nil {
+		return nil, fmt.Errorf("parse image response data: %w", err)
+	}
+	for i, item := range items {
+		raw, ok := item["b64_json"]
+		if !ok {
+			continue
+		}
+		var encoded string
+		if err := json.Unmarshal(raw, &encoded); err != nil {
+			return nil, fmt.Errorf("decode image %d: %w", i, err)
+		}
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode image %d: %w", i, err)
+		}
+		out, contentType, err := resizeImageBytes(data, detectImageContentType(data), resize)
+		if err != nil {
+			return nil, fmt.Errorf("resize image %d: %w", i, err)
+		}
+		item["b64_json"] = json.RawMessage([]byte(strconv.Quote(base64.StdEncoding.EncodeToString(out))))
+		item["output_size"] = json.RawMessage([]byte(strconv.Quote(fmt.Sprintf("%dx%d", resize.Width, resize.Height))))
+		item["output_resize_filter"] = json.RawMessage([]byte(strconv.Quote(resize.Filter)))
+		item["mime_type"] = json.RawMessage([]byte(strconv.Quote(contentType)))
+		items[i] = item
+	}
+	top["data"], _ = json.Marshal(items)
+	return json.Marshal(top)
+}
 
 // ImageStorage 把图片字节写入对象存储并返回可访问 URL。
 //
@@ -33,36 +130,73 @@ type ImageStorage interface {
 type ImageResultUploader struct {
 	storage          ImageStorage
 	httpClient       *http.Client
+	httpClientErr    error
 	prefix           string
 	maxDownloadBytes int64
 }
 
 // NewImageResultUploader 构造一个 uploader；storage 为 nil 时 Rewrite 直接透传。
 func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadBytes int64, httpClient *http.Client) *ImageResultUploader {
+	var clientErr error
 	if httpClient == nil {
-		httpClient = defaultImageDownloadHTTPClient()
+		httpClient, clientErr = defaultImageDownloadHTTPClient()
 	}
 	if maxDownloadBytes <= 0 {
 		maxDownloadBytes = defaultImageMaxDownloadBytes
 	}
 	return &ImageResultUploader{
 		storage:          storage,
-		httpClient:       httpClient,
+		httpClient:       imageDownloadClientWithRedirectPolicy(httpClient),
+		httpClientErr:    clientErr,
 		prefix:           prefix,
 		maxDownloadBytes: maxDownloadBytes,
 	}
 }
 
-func defaultImageDownloadHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+func defaultImageDownloadHTTPClient() (*http.Client, error) {
+	return httpclient.GetClient(httpclient.Options{
+		Timeout:            60 * time.Second,
+		ValidateResolvedIP: true,
+	})
+}
+
+func imageDownloadClientWithRedirectPolicy(client *http.Client) *http.Client {
+	if client == nil {
+		return nil
+	}
+	cloned := *client
+	original := client.CheckRedirect
+	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req == nil || req.URL == nil {
+			return errors.New("image download redirect URL is missing")
+		}
+		if err := validateImageDownloadURL(req.URL); err != nil {
+			return err
+		}
+		if original != nil {
+			return original(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("image download stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &cloned
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
 // 返回改写后的紧凑结果（data[i].url 指向对象存储，b64_json 被移除）。
 // 任一图片转存失败即返回 error（调用方据此将任务标记为失败，绝不把大 blob 落 Redis）。
 func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result json.RawMessage) (json.RawMessage, error) {
+	return u.RewriteWithResize(ctx, taskID, result, nil)
+}
+
+func (u *ImageResultUploader) RewriteWithResize(ctx context.Context, taskID string, result json.RawMessage, resize *ImageResizeSpec) (json.RawMessage, error) {
 	if u == nil || u.storage == nil {
 		return result, nil
+	}
+	if u.httpClientErr != nil {
+		return nil, fmt.Errorf("initialize secure image download client: %w", u.httpClientErr)
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(result, &top); err != nil {
@@ -70,20 +204,30 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 	}
 	rawData, ok := top["data"]
 	if !ok {
-		// 没有 data 数组（结构不符合预期），保持原样返回，交由上层决定。
-		return result, nil
+		return nil, errors.New("image response does not contain a data array")
 	}
 	var items []map[string]json.RawMessage
 	if err := json.Unmarshal(rawData, &items); err != nil {
 		return nil, fmt.Errorf("parse image response data: %w", err)
 	}
 	if len(items) == 0 {
-		return result, nil
+		return nil, errors.New("image response data array is empty")
+	}
+	if len(items) != 1 {
+		return nil, fmt.Errorf("image response must contain exactly one item, got %d", len(items))
 	}
 	for i, item := range items {
 		data, contentType, err := u.fetchImageBytes(ctx, item)
 		if err != nil {
 			return nil, fmt.Errorf("image %d: %w", i, err)
+		}
+		if resize != nil {
+			data, contentType, err = resizeImageBytes(data, contentType, resize)
+			if err != nil {
+				return nil, fmt.Errorf("image %d: resize output: %w", i, err)
+			}
+			item["output_size"], _ = json.Marshal(fmt.Sprintf("%dx%d", resize.Width, resize.Height))
+			item["output_resize_filter"], _ = json.Marshal(resize.Filter)
 		}
 		key := u.buildKey(taskID, i, contentType)
 		url, err := u.storage.Save(ctx, key, contentType, data)
@@ -108,6 +252,66 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 		return nil, fmt.Errorf("encode image response: %w", err)
 	}
 	return out, nil
+}
+
+func resizeImageBytes(data []byte, contentType string, resize *ImageResizeSpec) ([]byte, string, error) {
+	if err := ValidateImageResizeSpec(resize); err != nil {
+		return nil, "", err
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode source image: %w", err)
+	}
+	if source.Bounds().Dx() == resize.Width && source.Bounds().Dy() == resize.Height {
+		return data, contentType, nil
+	}
+	output := imaging.Resize(source, resize.Width, resize.Height, imaging.Lanczos)
+	var encoded bytes.Buffer
+	normalizedType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if normalizedType == "image/jpeg" || normalizedType == "image/jpg" {
+		err = jpeg.Encode(&encoded, output, &jpeg.Options{Quality: 95})
+		contentType = "image/jpeg"
+	} else {
+		err = png.Encode(&encoded, output)
+		contentType = "image/png"
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("encode resized image: %w", err)
+	}
+	if encoded.Len() > maxProcessedImageBytes {
+		return nil, "", fmt.Errorf("resized image exceeds %d bytes", maxProcessedImageBytes)
+	}
+	return encoded.Bytes(), contentType, nil
+}
+
+func ValidateImageResizeSpec(resize *ImageResizeSpec) error {
+	if resize == nil {
+		return nil
+	}
+	if resize.Filter != "lanczos" {
+		return fmt.Errorf("unsupported resize filter %q", resize.Filter)
+	}
+	if resize.Width <= 0 || resize.Height <= 0 {
+		return errors.New("resize dimensions must be positive")
+	}
+	if resize.Width%16 != 0 || resize.Height%16 != 0 {
+		return errors.New("resize dimensions must be multiples of 16")
+	}
+	if resize.Width > 3840 || resize.Height > 3840 {
+		return errors.New("resize dimensions must not exceed 3840 pixels per edge")
+	}
+	pixels := int64(resize.Width) * int64(resize.Height)
+	if pixels < 655360 || pixels > 8294400 {
+		return errors.New("resize pixel count must be between 655360 and 8294400")
+	}
+	longEdge, shortEdge := resize.Width, resize.Height
+	if longEdge < shortEdge {
+		longEdge, shortEdge = shortEdge, longEdge
+	}
+	if float64(longEdge)/float64(shortEdge) > 3 {
+		return errors.New("resize aspect ratio must not exceed 3:1")
+	}
+	return nil
 }
 
 func (u *ImageResultUploader) fetchImageBytes(ctx context.Context, item map[string]json.RawMessage) ([]byte, string, error) {
@@ -192,34 +396,123 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, "", fmt.Errorf("build download request: %w", err)
+		return nil, "", fmt.Errorf("parse image download URL: %w", err)
 	}
-	resp, err := u.httpClient.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("download image: %w", err)
+	if err := validateImageDownloadURL(parsedURL); err != nil {
+		return nil, "", err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", fmt.Errorf("download image: unexpected status %d", resp.StatusCode)
+	if u.httpClient == nil {
+		return nil, "", errors.New("secure image download client is unavailable")
 	}
-	limit := u.maxDownloadBytes
-	if limit <= 0 {
-		limit = defaultImageMaxDownloadBytes
+	var lastErr error
+	for attempt := 0; attempt < imageDownloadMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, "", fmt.Errorf("download image: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("build download request: %w", err)
+		}
+		resp, err := u.httpClient.Do(req)
+		if err != nil {
+			if !isRetryableImageDownloadError(err) || attempt+1 >= imageDownloadMaxAttempts {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			lastErr = err
+			if err := waitImageDownloadRetry(ctx, attempt); err != nil {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			continue
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			statusCode := resp.StatusCode
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			if !isRetryableImageDownloadStatus(statusCode) || attempt+1 >= imageDownloadMaxAttempts {
+				return nil, "", fmt.Errorf("download image: unexpected status %d", statusCode)
+			}
+			lastErr = fmt.Errorf("unexpected status %d", statusCode)
+			if err := waitImageDownloadRetry(ctx, attempt); err != nil {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			continue
+		}
+
+		limit := u.maxDownloadBytes
+		if limit <= 0 {
+			limit = defaultImageMaxDownloadBytes
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			if !isRetryableImageDownloadError(readErr) || attempt+1 >= imageDownloadMaxAttempts {
+				return nil, "", fmt.Errorf("read image body: %w", readErr)
+			}
+			lastErr = readErr
+			if err := waitImageDownloadRetry(ctx, attempt); err != nil {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			continue
+		}
+		if int64(len(data)) > limit {
+			return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
+		}
+		contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+		if !strings.HasPrefix(contentType, "image/") {
+			contentType = detectImageContentType(data)
+		}
+		return data, contentType, nil
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if err != nil {
-		return nil, "", fmt.Errorf("read image body: %w", err)
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("download image: %w", lastErr)
 	}
-	if int64(len(data)) > limit {
-		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
+	return nil, "", errors.New("download image failed")
+}
+
+func isRetryableImageDownloadStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func isRetryableImageDownloadError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
 	}
-	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-	if !strings.HasPrefix(contentType, "image/") {
-		contentType = detectImageContentType(data)
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
 	}
-	return data, contentType, nil
+	// Keep compatibility with transports that expose the legacy temporary
+	// marker without calling the deprecated net.Error method directly.
+	var temporary interface{ Temporary() bool }
+	return errors.As(err, &temporary) && temporary.Temporary()
+}
+
+func waitImageDownloadRetry(ctx context.Context, attempt int) error {
+	delay := imageDownloadRetryBaseDelay * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func validateImageDownloadURL(parsed *url.URL) error {
+	if parsed == nil || !strings.EqualFold(strings.TrimSpace(parsed.Scheme), "https") {
+		return errors.New("image download URL must use HTTPS")
+	}
+	if strings.TrimSpace(parsed.Hostname()) == "" {
+		return errors.New("image download URL host is missing")
+	}
+	if parsed.User != nil {
+		return errors.New("image download URL must not contain user information")
+	}
+	return nil
 }
 
 func (u *ImageResultUploader) buildKey(taskID string, index int, contentType string) string {

@@ -181,6 +181,7 @@ const embeddedUrl = computed(() => {
     authStore.token,
     pageTheme.value,
     locale.value,
+    menuItem.value.pass_user_context !== false,
   )
 })
 

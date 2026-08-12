@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -20,10 +22,11 @@ func NewContentModerationHandler(svc *service.ContentModerationService) *Content
 }
 
 type contentModerationConfigRequest struct {
-	Enabled *bool   `json:"enabled"`
-	Mode    *string `json:"mode"`
-	BaseURL *string `json:"base_url"`
-	Model   *string `json:"model"`
+	Enabled       *bool   `json:"enabled"`
+	Mode          *string `json:"mode"`
+	AuditProvider *string `json:"audit_provider"`
+	BaseURL       *string `json:"base_url"`
+	Model         *string `json:"model"`
 	// 审计请求使用的代理服务器：null 不修改；0 清除（直连）；>0 指定代理。
 	ProxyID              *int64              `json:"proxy_id"`
 	APIKey               *string             `json:"api_key"`
@@ -47,28 +50,84 @@ type contentModerationConfigRequest struct {
 	ViolationWindowHours *int                `json:"violation_window_hours"`
 	// cyber_policy 命中是否排除出自动封号计数；前端 RiskControlView 已发送该字段，
 	// service.UpdateContentModerationConfigInput 已支持，此前 handler 层缺透传导致开关静默失效。
-	CyberPolicyExcludeFromBanCount *bool                                 `json:"cyber_policy_exclude_from_ban_count"`
-	RetryCount                     *int                                  `json:"retry_count"`
-	HitRetentionDays               *int                                  `json:"hit_retention_days"`
-	NonHitRetentionDays            *int                                  `json:"non_hit_retention_days"`
-	PreHashCheckEnabled            *bool                                 `json:"pre_hash_check_enabled"`
-	BlockedKeywords                *[]string                             `json:"blocked_keywords"`
-	KeywordBlockingMode            *string                               `json:"keyword_blocking_mode"`
-	ModelFilter                    *service.ContentModerationModelFilter `json:"model_filter"`
+	CyberPolicyExcludeFromBanCount    *bool                                   `json:"cyber_policy_exclude_from_ban_count"`
+	RetryCount                        *int                                    `json:"retry_count"`
+	HitRetentionDays                  *int                                    `json:"hit_retention_days"`
+	NonHitRetentionDays               *int                                    `json:"non_hit_retention_days"`
+	PreHashCheckEnabled               *bool                                   `json:"pre_hash_check_enabled"`
+	BlockedKeywords                   *[]string                               `json:"blocked_keywords"`
+	KeywordBlockingMode               *string                                 `json:"keyword_blocking_mode"`
+	ModelFilter                       *service.ContentModerationModelFilter   `json:"model_filter"`
+	UserFilter                        *service.ContentModerationUserFilter    `json:"user_filter"`
+	AccountFilter                     *service.ContentModerationAccountFilter `json:"account_filter"`
+	AIConfidenceThreshold             *float64                                `json:"ai_confidence_threshold"`
+	AICacheEnabled                    *bool                                   `json:"ai_cache_enabled"`
+	AICacheTTLSeconds                 *int                                    `json:"ai_cache_ttl_seconds"`
+	AISystemPrompt                    *string                                 `json:"ai_system_prompt"`
+	AIFailurePolicy                   *string                                 `json:"ai_failure_policy"`
+	AIMaxInputChars                   *int                                    `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS             *int                                    `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS               *int                                    `json:"ai_fast_stage_budget_ms"`
+	AIFastInputChars                  *int                                    `json:"ai_fast_input_chars"`
+	AIFallbackInputChars              *int                                    `json:"ai_fallback_input_chars"`
+	AIThinkingMode                    *string                                 `json:"ai_thinking_mode"`
+	AIReasoningEffort                 *string                                 `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled               *bool                                   `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold                *float64                                `json:"ai_observe_threshold"`
+	AISessionRiskEnabled              *bool                                   `json:"ai_session_risk_enabled"`
+	AISessionRiskTTLMinutes           *int                                    `json:"ai_session_risk_ttl_minutes"`
+	AISessionRiskHalfLifeMinutes      *int                                    `json:"ai_session_risk_half_life_minutes"`
+	AISessionRiskBlockCooldownMinutes *int                                    `json:"ai_session_risk_block_cooldown_minutes"`
+	AIActorRiskEnabled                *bool                                   `json:"ai_actor_risk_enabled"`
+	// CUSTOM(VOTE-AI-AUDIT-COST/CONTEXT): incremental audit configuration bridge.
+	AIIncrementalAuditEnabled          *bool    `json:"ai_incremental_audit_enabled"`
+	AIInputProvenanceV2Enabled         *bool    `json:"ai_input_provenance_v2_enabled"`
+	AIDeterministicRiskV2Enabled       *bool    `json:"ai_deterministic_risk_v2_enabled"`
+	AIRecentUserTurns                  *int     `json:"ai_recent_user_turns"`
+	AISummaryMaxChars                  *int     `json:"ai_summary_max_chars"`
+	AIFullReviewThreshold              *float64 `json:"ai_full_review_threshold"`
+	AIFullReviewRiskDelta              *float64 `json:"ai_full_review_risk_delta"`
+	AIPeriodicFullReviewTurns          *int     `json:"ai_periodic_full_review_turns"`
+	AIFullReviewMaxInputChars          *int     `json:"ai_full_review_max_input_chars"`
+	AIFastMaxOutputTokens              *int     `json:"ai_fast_max_output_tokens"`
+	AIFullMaxOutputTokens              *int     `json:"ai_full_max_output_tokens"`
+	AIMaxReviewMaxOutputTokens         *int     `json:"ai_max_review_max_output_tokens"`
+	AIAuditContextTTLMinutes           *int     `json:"ai_audit_context_ttl_minutes"`
+	AIPricingConfigured                *bool    `json:"ai_pricing_configured"`
+	AIPricingVersion                   *string  `json:"ai_pricing_version"`
+	AIUncachedInputUSDPerMillionTokens *float64 `json:"ai_uncached_input_usd_per_million_tokens"`
+	AICachedInputUSDPerMillionTokens   *float64 `json:"ai_cached_input_usd_per_million_tokens"`
+	AIOutputUSDPerMillionTokens        *float64 `json:"ai_output_usd_per_million_tokens"`
 }
 
 type contentModerationAPIKeyTestRequest struct {
-	APIKeys   []string `json:"api_keys"`
-	BaseURL   string   `json:"base_url"`
-	Model     string   `json:"model"`
-	TimeoutMS int      `json:"timeout_ms"`
-	ProxyID   *int64   `json:"proxy_id"`
-	Prompt    string   `json:"prompt"`
-	Images    []string `json:"images"`
+	APIKeys               []string `json:"api_keys"`
+	AuditProvider         string   `json:"audit_provider"`
+	BaseURL               string   `json:"base_url"`
+	Model                 string   `json:"model"`
+	TimeoutMS             int      `json:"timeout_ms"`
+	ProxyID               *int64   `json:"proxy_id"`
+	Prompt                string   `json:"prompt"`
+	Images                []string `json:"images"`
+	AIConfidenceThreshold float64  `json:"ai_confidence_threshold"`
+	AISystemPrompt        string   `json:"ai_system_prompt"`
+	AIMaxInputChars       int      `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS int      `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS   int      `json:"ai_fast_stage_budget_ms"`
+	AIFastInputChars      int      `json:"ai_fast_input_chars"`
+	AIFallbackInputChars  int      `json:"ai_fallback_input_chars"`
+	AIThinkingMode        string   `json:"ai_thinking_mode"`
+	AIReasoningEffort     string   `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled   *bool    `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold    float64  `json:"ai_observe_threshold"`
 }
 
 type contentModerationHashRequest struct {
 	InputHash string `json:"input_hash"`
+}
+
+type contentModerationUnbanRequest struct {
+	Mode string `json:"mode"`
 }
 
 func (h *ContentModerationHandler) GetConfig(c *gin.Context) {
@@ -86,45 +145,93 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	cfg, err := h.service.UpdateConfig(c.Request.Context(), service.UpdateContentModerationConfigInput{
-		Enabled:                        req.Enabled,
-		Mode:                           req.Mode,
-		BaseURL:                        req.BaseURL,
-		Model:                          req.Model,
-		ProxyID:                        req.ProxyID,
-		APIKey:                         req.APIKey,
-		APIKeys:                        req.APIKeys,
-		APIKeysMode:                    req.APIKeysMode,
-		DeleteAPIKeyHashes:             req.DeleteAPIKeyHashes,
-		ClearAPIKey:                    req.ClearAPIKey,
-		TimeoutMS:                      req.TimeoutMS,
-		SampleRate:                     req.SampleRate,
-		AllGroups:                      req.AllGroups,
-		GroupIDs:                       req.GroupIDs,
-		RecordNonHits:                  req.RecordNonHits,
-		Thresholds:                     req.Thresholds,
-		WorkerCount:                    req.WorkerCount,
-		QueueSize:                      req.QueueSize,
-		BlockStatus:                    req.BlockStatus,
-		BlockMessage:                   req.BlockMessage,
-		EmailOnHit:                     req.EmailOnHit,
-		AutoBanEnabled:                 req.AutoBanEnabled,
-		BanThreshold:                   req.BanThreshold,
-		ViolationWindowHours:           req.ViolationWindowHours,
-		CyberPolicyExcludeFromBanCount: req.CyberPolicyExcludeFromBanCount,
-		RetryCount:                     req.RetryCount,
-		HitRetentionDays:               req.HitRetentionDays,
-		NonHitRetentionDays:            req.NonHitRetentionDays,
-		PreHashCheckEnabled:            req.PreHashCheckEnabled,
-		BlockedKeywords:                req.BlockedKeywords,
-		KeywordBlockingMode:            req.KeywordBlockingMode,
-		ModelFilter:                    req.ModelFilter,
-	})
+	input := service.UpdateContentModerationConfigInput{
+		Enabled:                           req.Enabled,
+		Mode:                              req.Mode,
+		AuditProvider:                     req.AuditProvider,
+		BaseURL:                           req.BaseURL,
+		Model:                             req.Model,
+		ProxyID:                           req.ProxyID,
+		APIKey:                            req.APIKey,
+		APIKeys:                           req.APIKeys,
+		APIKeysMode:                       req.APIKeysMode,
+		DeleteAPIKeyHashes:                req.DeleteAPIKeyHashes,
+		ClearAPIKey:                       req.ClearAPIKey,
+		TimeoutMS:                         req.TimeoutMS,
+		SampleRate:                        req.SampleRate,
+		AllGroups:                         req.AllGroups,
+		GroupIDs:                          req.GroupIDs,
+		RecordNonHits:                     req.RecordNonHits,
+		Thresholds:                        req.Thresholds,
+		WorkerCount:                       req.WorkerCount,
+		QueueSize:                         req.QueueSize,
+		BlockStatus:                       req.BlockStatus,
+		BlockMessage:                      req.BlockMessage,
+		EmailOnHit:                        req.EmailOnHit,
+		AutoBanEnabled:                    req.AutoBanEnabled,
+		BanThreshold:                      req.BanThreshold,
+		ViolationWindowHours:              req.ViolationWindowHours,
+		CyberPolicyExcludeFromBanCount:    req.CyberPolicyExcludeFromBanCount,
+		RetryCount:                        req.RetryCount,
+		HitRetentionDays:                  req.HitRetentionDays,
+		NonHitRetentionDays:               req.NonHitRetentionDays,
+		PreHashCheckEnabled:               req.PreHashCheckEnabled,
+		BlockedKeywords:                   req.BlockedKeywords,
+		KeywordBlockingMode:               req.KeywordBlockingMode,
+		ModelFilter:                       req.ModelFilter,
+		UserFilter:                        req.UserFilter,
+		AccountFilter:                     req.AccountFilter,
+		AIConfidenceThreshold:             req.AIConfidenceThreshold,
+		AICacheEnabled:                    req.AICacheEnabled,
+		AICacheTTLSeconds:                 req.AICacheTTLSeconds,
+		AISystemPrompt:                    req.AISystemPrompt,
+		AIFailurePolicy:                   req.AIFailurePolicy,
+		AIMaxInputChars:                   req.AIMaxInputChars,
+		AISynchronousBudgetMS:             req.AISynchronousBudgetMS,
+		AIFastStageBudgetMS:               req.AIFastStageBudgetMS,
+		AIFastInputChars:                  req.AIFastInputChars,
+		AIFallbackInputChars:              req.AIFallbackInputChars,
+		AIThinkingMode:                    req.AIThinkingMode,
+		AIReasoningEffort:                 req.AIReasoningEffort,
+		AIRiskLevelsEnabled:               req.AIRiskLevelsEnabled,
+		AIObserveThreshold:                req.AIObserveThreshold,
+		AISessionRiskEnabled:              req.AISessionRiskEnabled,
+		AISessionRiskTTLMinutes:           req.AISessionRiskTTLMinutes,
+		AISessionRiskHalfLifeMinutes:      req.AISessionRiskHalfLifeMinutes,
+		AISessionRiskBlockCooldownMinutes: req.AISessionRiskBlockCooldownMinutes,
+		AIActorRiskEnabled:                req.AIActorRiskEnabled,
+	}
+	applyContentModerationIncrementalConfig(&input, req)
+	cfg, err := h.service.UpdateConfig(c.Request.Context(), input)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, cfg)
+}
+
+// CUSTOM(VOTE-AI-AUDIT-COST/CONTEXT): applyContentModerationIncrementalConfig keeps the customization boundary
+// explicit so newly added controls cannot be accepted by JSON and then
+// silently dropped before reaching the service.
+func applyContentModerationIncrementalConfig(input *service.UpdateContentModerationConfigInput, req contentModerationConfigRequest) {
+	input.AIIncrementalAuditEnabled = req.AIIncrementalAuditEnabled
+	input.AIInputProvenanceV2Enabled = req.AIInputProvenanceV2Enabled
+	input.AIDeterministicRiskV2Enabled = req.AIDeterministicRiskV2Enabled
+	input.AIRecentUserTurns = req.AIRecentUserTurns
+	input.AISummaryMaxChars = req.AISummaryMaxChars
+	input.AIFullReviewThreshold = req.AIFullReviewThreshold
+	input.AIFullReviewRiskDelta = req.AIFullReviewRiskDelta
+	input.AIPeriodicFullReviewTurns = req.AIPeriodicFullReviewTurns
+	input.AIFullReviewMaxInputChars = req.AIFullReviewMaxInputChars
+	input.AIFastMaxOutputTokens = req.AIFastMaxOutputTokens
+	input.AIFullMaxOutputTokens = req.AIFullMaxOutputTokens
+	input.AIMaxReviewMaxOutputTokens = req.AIMaxReviewMaxOutputTokens
+	input.AIAuditContextTTLMinutes = req.AIAuditContextTTLMinutes
+	input.AIPricingConfigured = req.AIPricingConfigured
+	input.AIPricingVersion = req.AIPricingVersion
+	input.AIUncachedInputUSDPerMillionTokens = req.AIUncachedInputUSDPerMillionTokens
+	input.AICachedInputUSDPerMillionTokens = req.AICachedInputUSDPerMillionTokens
+	input.AIOutputUSDPerMillionTokens = req.AIOutputUSDPerMillionTokens
 }
 
 func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
@@ -134,13 +241,25 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		return
 	}
 	result, err := h.service.TestAPIKeys(c.Request.Context(), service.TestContentModerationAPIKeysInput{
-		APIKeys:   req.APIKeys,
-		BaseURL:   req.BaseURL,
-		Model:     req.Model,
-		TimeoutMS: req.TimeoutMS,
-		ProxyID:   req.ProxyID,
-		Prompt:    req.Prompt,
-		Images:    req.Images,
+		APIKeys:               req.APIKeys,
+		AuditProvider:         req.AuditProvider,
+		BaseURL:               req.BaseURL,
+		Model:                 req.Model,
+		TimeoutMS:             req.TimeoutMS,
+		ProxyID:               req.ProxyID,
+		Prompt:                req.Prompt,
+		Images:                req.Images,
+		AIConfidenceThreshold: req.AIConfidenceThreshold,
+		AISystemPrompt:        req.AISystemPrompt,
+		AIMaxInputChars:       req.AIMaxInputChars,
+		AISynchronousBudgetMS: req.AISynchronousBudgetMS,
+		AIFastStageBudgetMS:   req.AIFastStageBudgetMS,
+		AIFastInputChars:      req.AIFastInputChars,
+		AIFallbackInputChars:  req.AIFallbackInputChars,
+		AIThinkingMode:        req.AIThinkingMode,
+		AIReasoningEffort:     req.AIReasoningEffort,
+		AIRiskLevelsEnabled:   req.AIRiskLevelsEnabled,
+		AIObserveThreshold:    req.AIObserveThreshold,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -211,7 +330,12 @@ func (h *ContentModerationHandler) UnbanUser(c *gin.Context) {
 		response.BadRequest(c, "Invalid user_id")
 		return
 	}
-	result, err := h.service.UnbanUser(c.Request.Context(), userID)
+	var req contentModerationUnbanRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	result, err := h.service.UnbanUser(c.Request.Context(), userID, req.Mode)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

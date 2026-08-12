@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/internalprobe"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -61,18 +63,16 @@ type ChannelMonitorRepository interface {
 	UpdateAggregationWatermark(ctx context.Context, date time.Time) error
 }
 
-// channelMonitorRuntimeReader is the optional settings view used to gate V1
-// active probes by channel_monitor_enabled + channel_monitor_mode.
 type channelMonitorRuntimeReader interface {
 	GetChannelMonitorRuntime(ctx context.Context) ChannelMonitorRuntime
 }
 
 // ChannelMonitorService 渠道监控管理服务。
 type ChannelMonitorService struct {
-	repo      ChannelMonitorRepository
-	encryptor SecretEncryptor
-	// settings is optional; when nil, RunCheck fails closed for active probes
-	// (mode defaults to v2 / retired) so tests without settings never hit upstream.
+	repo                  ChannelMonitorRepository
+	encryptor             SecretEncryptor
+	internalProbeAuth     *internalprobe.Authenticator
+	internalProbeSettings *SettingService
 	settings channelMonitorRuntimeReader
 	// scheduler 由 wire 通过 SetScheduler 注入；CRUD 后调用对应钩子即时同步任务。
 	// 测试或未注入场景下保持 nil，所有钩子调用变为 no-op。
@@ -92,19 +92,20 @@ func NewChannelMonitorService(repo ChannelMonitorRepository, encryptor SecretEnc
 	return &ChannelMonitorService{repo: repo, encryptor: encryptor}
 }
 
-// SetRuntimeReader injects the settings reader used to gate active probes.
-// Optional: when unset, active probes are treated as mode=v2 (retired).
+func (s *ChannelMonitorService) setInternalProbeAuthenticator(
+	auth *internalprobe.Authenticator,
+	settings *SettingService,
+) {
+	s.internalProbeAuth = auth
+	s.internalProbeSettings = settings
+}
+
 func (s *ChannelMonitorService) SetRuntimeReader(r channelMonitorRuntimeReader) {
-	if s == nil {
-		return
-	}
-	s.settings = r
+	if s != nil { s.settings = r }
 }
 
 func (s *ChannelMonitorService) probeRuntime(ctx context.Context) ChannelMonitorRuntime {
-	if s == nil || s.settings == nil {
-		return ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2}
-	}
+	if s == nil || s.settings == nil { return ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2} }
 	return s.settings.GetChannelMonitorRuntime(ctx)
 }
 
@@ -452,16 +453,10 @@ func (s *ChannelMonitorService) ListHistory(ctx context.Context, id int64, model
 
 // RunCheck 同步触发对一个监控的检测：并发跑 primary + extra 模型，
 // 写历史记录并更新 last_checked_at。返回每个模型的检测结果。
-// 仅当 channel_monitor_enabled=true 且 channel_monitor_mode=v1 时真正探测；
-// mode=v2 时返回 ErrChannelMonitorActiveProbesRetired，不产生上游流量。
 func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*CheckResult, error) {
 	rt := s.probeRuntime(ctx)
-	if !rt.Enabled {
-		return nil, ErrChannelMonitorDisabled
-	}
-	if !rt.ActiveProbesAllowed() {
-		return nil, ErrChannelMonitorActiveProbesRetired
-	}
+	if !rt.Enabled { return nil, ErrChannelMonitorDisabled }
+	if !rt.ActiveProbesAllowed() { return nil, ErrChannelMonitorActiveProbesRetired }
 	m, err := s.Get(ctx, id) // 已解密 APIKey
 	if err != nil {
 		return nil, err
@@ -510,10 +505,11 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 
 	// 所有模型共用同一份 CheckOptions（来自监控的快照字段）。
 	opts := &CheckOptions{
-		APIMode:          m.APIMode,
-		ExtraHeaders:     m.ExtraHeaders,
-		BodyOverrideMode: m.BodyOverrideMode,
-		BodyOverride:     m.BodyOverride,
+		APIMode:                    m.APIMode,
+		ExtraHeaders:               m.ExtraHeaders,
+		BodyOverrideMode:           m.BodyOverrideMode,
+		BodyOverride:               m.BodyOverride,
+		InternalProbeAuthenticator: s.internalProbeAuthenticatorFor(ctx, m.Endpoint),
 	}
 
 	var eg errgroup.Group
@@ -531,6 +527,53 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 	}
 	_ = eg.Wait()
 	return results
+}
+
+func (s *ChannelMonitorService) internalProbeAuthenticatorFor(
+	ctx context.Context,
+	endpoint string,
+) *internalprobe.Authenticator {
+	if s == nil || s.internalProbeAuth == nil || s.internalProbeSettings == nil {
+		return nil
+	}
+	if sameHTTPOrigin(endpoint, s.internalProbeSettings.GetAPIBaseURL(ctx)) {
+		return s.internalProbeAuth
+	}
+	return nil
+}
+
+func sameHTTPOrigin(left, right string) bool {
+	leftURL, leftOK := parseHTTPOrigin(left)
+	rightURL, rightOK := parseHTTPOrigin(right)
+	if !leftOK || !rightOK {
+		return false
+	}
+	return strings.EqualFold(leftURL.Scheme, rightURL.Scheme) &&
+		strings.EqualFold(leftURL.Hostname(), rightURL.Hostname()) &&
+		originPort(leftURL) == originPort(rightURL)
+}
+
+func parseHTTPOrigin(raw string) (*url.URL, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return nil, false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed, true
+	default:
+		return nil, false
+	}
+}
+
+func originPort(parsed *url.URL) string {
+	if port := parsed.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 // ---------- 调度器协作 ----------

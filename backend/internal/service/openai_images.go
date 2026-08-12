@@ -112,6 +112,28 @@ func (r *OpenAIImagesRequest) ModerationBody() []byte {
 	return body
 }
 
+// PromptModerationBody is used by the asynchronous image workbench precheck.
+// Reference image bytes stay on the image path and are never forwarded to the
+// text-only moderation provider.
+func (r *OpenAIImagesRequest) PromptModerationBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return imagePromptModerationBody(r.Prompt)
+}
+
+func imagePromptModerationBody(prompt string) []byte {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]string{"prompt": prompt})
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
 func (r *OpenAIImagesRequest) moderationImages() []map[string]string {
 	if r == nil {
 		return nil
@@ -623,7 +645,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		proxyURL = account.Proxy.URL()
 	}
 	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.doOpenAIUpstream(c, upstreamReq, account, proxyURL)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -892,6 +914,14 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
 		if upstreamType := resp.Header.Get("Content-Type"); upstreamType != "" {
 			contentType = upstreamType
+		}
+	}
+	if resize, resizeErr := ParseImageResizeHeaders(c.Request.Header); resizeErr != nil {
+		return OpenAIUsage{}, 0, nil, resizeErr
+	} else if resize != nil {
+		body, err = ResizeImageResponseB64(body, resize)
+		if err != nil {
+			return OpenAIUsage{}, 0, nil, err
 		}
 	}
 	c.Data(resp.StatusCode, contentType, body)

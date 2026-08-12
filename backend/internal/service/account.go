@@ -1993,12 +1993,18 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
+// SupportsTLSFingerprint reports whether the account can use TLS impersonation.
+// CUSTOM(VOTE-AI-OPENAI-TLS): OpenAI OAuth shares the existing account-level switch.
+func (a *Account) SupportsTLSFingerprint() bool {
+	if a == nil {
+		return false
+	}
+	return a.IsAnthropicOAuthOrSetupToken() || (a.Platform == PlatformOpenAI && a.Type == AccountTypeOAuth)
+}
+
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
-// 仅适用于 Anthropic OAuth/SetupToken 类型账号
-// 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征
 func (a *Account) IsTLSFingerprintEnabled() bool {
-	// 仅支持 Anthropic OAuth/SetupToken 账号
-	if !a.IsAnthropicOAuthOrSetupToken() {
+	if !a.SupportsTLSFingerprint() {
 		return false
 	}
 	if a.Extra == nil {
@@ -2032,6 +2038,31 @@ func (a *Account) GetTLSFingerprintProfileID() int64 {
 	case json.Number:
 		if i, err := id.Int64(); err == nil {
 			return i
+		}
+	}
+	return 0
+}
+
+// GetTLSFingerprintRouterID returns the account's inbound User-Agent router ID.
+// CUSTOM(VOTE-AI-OPENAI-TLS): zero means that only the fixed account profile is used.
+func (a *Account) GetTLSFingerprintRouterID() int64 {
+	if a == nil || a.Extra == nil {
+		return 0
+	}
+	v, ok := a.Extra["tls_fingerprint_router_id"]
+	if !ok {
+		return 0
+	}
+	switch id := v.(type) {
+	case float64:
+		return int64(id)
+	case int64:
+		return id
+	case int:
+		return int64(id)
+	case json.Number:
+		if parsed, err := id.Int64(); err == nil {
+			return parsed
 		}
 	}
 	return 0

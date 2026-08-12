@@ -6686,6 +6686,21 @@
                       :placeholder="
                         t('admin.settings.customMenu.urlPlaceholder')
                       "
+                      />
+                  </div>
+
+                  <div class="flex items-center justify-between gap-4 sm:col-span-2">
+                    <div>
+                      <div class="text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {{ t("admin.settings.customMenu.passUserContext") }}
+                      </div>
+                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {{ t("admin.settings.customMenu.passUserContextHint") }}
+                      </p>
+                    </div>
+                    <Toggle
+                      :model-value="item.pass_user_context ?? true"
+                      @update:model-value="item.pass_user_context = $event"
                     />
                   </div>
 
@@ -9492,6 +9507,7 @@ const form = reactive<SettingsForm>({
     url: string;
     visibility: "user" | "admin";
     sort_order: number;
+    pass_user_context?: boolean;
   }>,
   custom_endpoints: [] as Array<{
     name: string;
@@ -10461,6 +10477,7 @@ function addMenuItem() {
     url: "",
     visibility: "user",
     sort_order: form.custom_menu_items.length,
+    pass_user_context: false,
   });
 }
 

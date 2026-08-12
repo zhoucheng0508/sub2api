@@ -77,6 +77,8 @@ Desktop.ini
 # ===================
 # 临时文件
 # ===================
+__pycache__/
+*.py[cod]
 tmp/
 temp/
 *.tmp
@@ -111,6 +113,7 @@ backend/data/
 backend/config.yaml
 deploy/config.yaml
 backend/.installed
+tools/channel_status_watcher/
 
 # ===================
 # 其他
@@ -132,6 +135,9 @@ deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/codex-one-click/
+docs/codex-one-click/*
+!docs/codex-one-click/*.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
@@ -139,6 +145,7 @@ docs/*
 !docs/CUSTOMIZATION_DIFF_V0.1.169_CN.md
 !docs/CUSTOMIZATION_DIFF_V0.1.170_CN.md
 !docs/SUB2API_CUSTOM_UPGRADE_PROMPT_CN.md
+!docs/RISK_CONTROL_PR2_PR4_TEST_PLAN_CN.md
 !docs/legal/
 !docs/legal/*.md
 .serena/

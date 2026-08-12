@@ -670,6 +670,8 @@ export default {
         visibility: '可见角色',
         visibilityUser: '普通用户',
         visibilityAdmin: '管理员',
+        passUserContext: '传递用户上下文',
+        passUserContextHint: '关闭后不向 iframe URL 传递用户 ID、登录 Token 和完整来源地址。',
         add: '添加菜单项',
         remove: '删除',
         moveUp: '上移',
@@ -1439,5 +1441,17 @@ export default {
       loadFailed: '加载模板失败',
       saveFailed: '保存模板失败',
       deleteFailed: '删除模板失败'
+    },
+    tlsFingerprintRouters: {
+      title: 'TLS 指纹路由器',
+      description: '根据入站 User-Agent 选择配套的 TLS 指纹、上游 User-Agent 和 Originator。',
+      create: '新建路由器', edit: '编辑路由器', empty: '暂无 TLS 路由器',
+      name: '名称', descriptionLabel: '描述', rules: '规则', status: '状态', enabled: '启用路由器',
+      firstMatch: '规则从上到下匹配，命中第一条后停止。', addRule: '添加规则', ruleNumber: '规则 {index}',
+      ruleName: '规则名称', profile: 'TLS 模板', builtin: '内置 Node.js 24.x', random: '随机自定义模板',
+      matchType: '匹配方式', pattern: 'User-Agent 匹配内容', caseSensitive: '区分大小写',
+      deleteTitle: '删除路由器', deleteMessage: '确定删除路由器“{name}”吗？',
+      loadFailed: '加载 TLS 路由器失败', saveFailed: '保存 TLS 路由器失败', deleteFailed: '删除 TLS 路由器失败',
+      required: '路由器名称和每条规则的匹配内容不能为空。', identityPair: 'User-Agent 和 Originator 必须同时配置。', saved: 'TLS 路由器已保存。'
     }
 }

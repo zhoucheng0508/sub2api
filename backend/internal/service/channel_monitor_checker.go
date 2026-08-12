@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/internalprobe"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 	"github.com/tidwall/gjson"
 )
@@ -50,6 +51,9 @@ type CheckOptions struct {
 	// BodyOverride 在 merge 模式下做浅合并（key 命中黑名单时静默丢弃），
 	// 在 replace 模式下直接当作完整 body。
 	BodyOverride map[string]any
+	// InternalProbeAuthenticator is set only for checks targeting this
+	// deployment's own public gateway origin.
+	InternalProbeAuthenticator *internalprobe.Authenticator
 }
 
 // runCheckForModel 对单个 (provider, model) 做一次完整检测。
@@ -287,7 +291,7 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
 	full := joinURL(endpoint, adapter.buildPath(model))
-	respBytes, status, err := postRawJSON(ctx, full, body, headers)
+	respBytes, status, err := postRawJSON(ctx, full, body, headers, internalProbeAuthenticator(opts))
 	if err != nil {
 		return "", "", status, err
 	}
@@ -504,7 +508,13 @@ func hasNonEmptyBodyValue(v any) bool {
 
 // postRawJSON 发送 POST + 已序列化好的 JSON 字节，限制响应体大小，返回响应字节、HTTP status、错误。
 // adapter 自行 marshal 是为了精确控制字段顺序与类型，所以这里直接收 []byte 而不是 any。
-func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers map[string]string) ([]byte, int, error) {
+func postRawJSON(
+	ctx context.Context,
+	fullURL string,
+	payload []byte,
+	headers map[string]string,
+	probeAuth *internalprobe.Authenticator,
+) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, 0, fmt.Errorf("build request: %w", err)
@@ -514,8 +524,17 @@ func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers ma
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	if probeAuth != nil {
+		if err := probeAuth.SignRequest(req); err != nil {
+			return nil, 0, fmt.Errorf("sign internal probe request: %w", err)
+		}
+	}
 
-	resp, err := monitorHTTPClient.Do(req)
+	client := monitorHTTPClient
+	if probeAuth != nil {
+		client = withoutInternalProbeOnRedirect(client)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("do request: %w", err)
 	}
@@ -526,6 +545,32 @@ func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers ma
 		return nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
 	}
 	return respBody, resp.StatusCode, nil
+}
+
+func withoutInternalProbeOnRedirect(client *http.Client) *http.Client {
+	if client == nil {
+		return nil
+	}
+	redirectSafeClient := *client
+	previousCheckRedirect := client.CheckRedirect
+	redirectSafeClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		req.Header.Del(internalprobe.HeaderName)
+		if previousCheckRedirect != nil {
+			return previousCheckRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &redirectSafeClient
+}
+
+func internalProbeAuthenticator(opts *CheckOptions) *internalprobe.Authenticator {
+	if opts == nil {
+		return nil
+	}
+	return opts.InternalProbeAuthenticator
 }
 
 // joinURL 把 base origin 与 path 拼成完整 URL。

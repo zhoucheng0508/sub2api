@@ -2,6 +2,7 @@ package securityaudit
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -67,24 +68,36 @@ const (
 )
 
 type Request struct {
-	RequestID  string
-	UserID     int64
-	Username   string
-	UserEmail  string
-	APIKeyID   int64
-	APIKeyName string
-	GroupID    *int64
-	GroupName  string
-	Provider   string
-	Endpoint   string
-	Protocol   string
-	Model      string
-	Body       []byte
-	Stage      string
+	RequestID     string
+	SessionID     string
+	SessionSource string
+	UserID        int64
+	Username      string
+	UserEmail     string
+	APIKeyID      int64
+	APIKeyName    string
+	AccountID     int64
+	AccountName   string
+	GroupID       *int64
+	GroupName     string
+	Provider      string
+	Endpoint      string
+	Protocol      string
+	Model         string
+	Body          []byte
+	Stage         string
+	// ClientHeaders contains only the bounded identity observations selected by
+	// the gateway. Clone must own this map because async prompt-audit work can
+	// outlive the HTTP handler.
+	ClientHeaders             http.Header
+	TrustedMetadataProvenance bool
+	ModerationEpoch           int64
+	ModerationEpochSet        bool
 }
 
 func (r Request) Clone() Request {
 	r.Body = append([]byte(nil), r.Body...)
+	r.ClientHeaders = r.ClientHeaders.Clone()
 	if r.GroupID != nil {
 		id := *r.GroupID
 		r.GroupID = &id

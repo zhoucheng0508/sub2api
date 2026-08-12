@@ -1,10 +1,17 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+)
+
+const (
+	ContentModerationSessionSourceHeader         = "header"
+	ContentModerationSessionSourcePromptCacheKey = "prompt_cache_key"
+	ContentModerationSessionSourceNone           = "none"
 )
 
 // maxPersistedSessionIDLength bounds the persisted client session identifier to the
@@ -43,6 +50,37 @@ func ExtractClientSessionID(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// ExtractContentModerationSessionIdentity resolves the stable identity used by
+// content moderation. Explicit, sanitized session headers take precedence. For
+// OpenAI-compatible clients that do not send one, a top-level string
+// prompt_cache_key is an intentional session signal and may be used after the
+// same strict sanitization. Request/message IDs and content-derived seeds are
+// deliberately excluded so unrelated calls can never be joined accidentally.
+func ExtractContentModerationSessionIdentity(c *gin.Context, body []byte) (string, string) {
+	if sessionID := ExtractClientSessionID(c); sessionID != "" {
+		return sessionID, ContentModerationSessionSourceHeader
+	}
+	if len(body) == 0 {
+		return "", ContentModerationSessionSourceNone
+	}
+	if len(body) > maxContentModerationExtractionBodyBytes {
+		return "", ContentModerationSessionSourceNone
+	}
+	var envelope struct {
+		PromptCacheKey *string `json:"prompt_cache_key"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "", ContentModerationSessionSourceNone
+	}
+	if envelope.PromptCacheKey == nil {
+		return "", ContentModerationSessionSourceNone
+	}
+	if sessionID := sanitizeSessionID(*envelope.PromptCacheKey); sessionID != "" {
+		return sessionID, ContentModerationSessionSourcePromptCacheKey
+	}
+	return "", ContentModerationSessionSourceNone
 }
 
 // sanitizeSessionID normalizes a raw client-supplied session identifier for safe

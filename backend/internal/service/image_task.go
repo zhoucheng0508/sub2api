@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,27 +24,44 @@ const (
 
 	defaultImageTaskTTL              = 24 * time.Hour
 	defaultImageTaskExecutionTimeout = 30 * time.Minute
+	defaultImageTaskFinalizeTimeout  = 2 * time.Minute
+	imageTaskTerminalWriteTimeout    = 10 * time.Second
+	imageTaskActiveSlotGrace         = 5 * time.Minute
 )
 
 var (
-	ErrImageTaskNotFound    = infraerrors.New(http.StatusNotFound, "IMAGE_TASK_NOT_FOUND", "image task not found")
-	ErrImageTaskForbidden   = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
-	ErrImageTaskUnavailable = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
+	ErrImageTaskNotFound              = infraerrors.New(http.StatusNotFound, "IMAGE_TASK_NOT_FOUND", "image task not found")
+	ErrImageTaskForbidden             = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
+	ErrImageTaskActive                = infraerrors.New(http.StatusTooManyRequests, "IMAGE_TASK_ALREADY_ACTIVE", "this API key already has an active image task")
+	ErrImageTaskUnavailable           = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
+	ErrImageTaskIdempotencyKeyInvalid = infraerrors.New(http.StatusBadRequest, "IMAGE_TASK_IDEMPOTENCY_KEY_INVALID", "idempotency key is invalid")
+	ErrImageTaskIdempotencyConflict   = infraerrors.New(http.StatusConflict, "IMAGE_TASK_IDEMPOTENCY_CONFLICT", "idempotency key reused with a different image request")
 )
 
 // ImageTaskRecord is the private Redis representation of an asynchronous image
 // request. Ownership fields are intentionally omitted from the public view.
 type ImageTaskRecord struct {
-	ID          string          `json:"id"`
-	UserID      int64           `json:"user_id"`
-	APIKeyID    int64           `json:"api_key_id"`
-	Status      string          `json:"status"`
-	HTTPStatus  int             `json:"http_status,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       json.RawMessage `json:"error,omitempty"`
-	CreatedAt   int64           `json:"created_at"`
-	CompletedAt *int64          `json:"completed_at,omitempty"`
-	ExpiresAt   int64           `json:"expires_at"`
+	ID           string           `json:"id"`
+	UserID       int64            `json:"user_id"`
+	APIKeyID     int64            `json:"api_key_id"`
+	Status       string           `json:"status"`
+	HTTPStatus   int              `json:"http_status,omitempty"`
+	Result       json.RawMessage  `json:"result,omitempty"`
+	Error        json.RawMessage  `json:"error,omitempty"`
+	CreatedAt    int64            `json:"created_at"`
+	CompletedAt  *int64           `json:"completed_at,omitempty"`
+	ExpiresAt    int64            `json:"expires_at"`
+	OutputResize *ImageResizeSpec `json:"output_resize,omitempty"`
+	// Idempotency fields are private task-store metadata and are never exposed
+	// through imageTaskToPublic.
+	IdempotencyKeyHash string `json:"idempotency_key_hash,omitempty"`
+	RequestFingerprint string `json:"request_fingerprint,omitempty"`
+}
+
+type ImageResizeSpec struct {
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Filter string `json:"filter"`
 }
 
 // ImageTask is the API-safe task representation returned to callers.
@@ -67,6 +87,8 @@ type ImageTaskOwner struct {
 type ImageTaskStore interface {
 	Save(ctx context.Context, task *ImageTaskRecord, ttl time.Duration) error
 	Get(ctx context.Context, id string) (*ImageTaskRecord, error)
+	Acquire(ctx context.Context, apiKeyID int64, taskID string, ttl time.Duration) (bool, error)
+	Release(ctx context.Context, apiKeyID int64, taskID string) error
 }
 
 // ImageStorageResolver reports the currently effective object-storage binding.
@@ -150,23 +172,110 @@ func (s *ImageTaskService) ExecutionTimeout() time.Duration {
 	return s.executionTimeout
 }
 
+func (s *ImageTaskService) FinalizeTimeout() time.Duration {
+	timeout := defaultImageTaskFinalizeTimeout
+	if s != nil && s.executionTimeout > 0 && s.executionTimeout < timeout {
+		timeout = s.executionTimeout
+	}
+	return timeout
+}
+
 func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*ImageTask, error) {
+	return s.CreateWithResize(ctx, owner, nil)
+}
+
+func (s *ImageTaskService) CreateWithResize(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec) (*ImageTask, error) {
+	task, _, err := s.createWithResizeAndIdempotency(ctx, owner, resize, "", "")
+	return task, err
+}
+
+// CreateWithResizeAndIdempotency creates a task or replays the task previously
+// accepted with the same idempotency key. The key is optional for backwards
+// compatibility; callers that provide it must also provide a stable request
+// fingerprint (the raw prompt/body is never persisted).
+func (s *ImageTaskService) CreateWithResizeAndIdempotency(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec, idempotencyKey, requestFingerprint string) (*ImageTask, bool, error) {
+	return s.createWithResizeAndIdempotency(ctx, owner, resize, idempotencyKey, requestFingerprint)
+}
+
+func (s *ImageTaskService) createWithResizeAndIdempotency(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec, idempotencyKey, requestFingerprint string) (*ImageTask, bool, error) {
 	if s == nil || s.store == nil {
-		return nil, ErrImageTaskUnavailable
+		return nil, false, ErrImageTaskUnavailable
+	}
+	normalizedKey, err := NormalizeIdempotencyKey(idempotencyKey)
+	if err != nil {
+		return nil, false, ErrImageTaskIdempotencyKeyInvalid.WithCause(err)
+	}
+	requestFingerprint = strings.TrimSpace(requestFingerprint)
+	if normalizedKey != "" && requestFingerprint == "" {
+		return nil, false, ErrImageTaskIdempotencyConflict
+	}
+	keyHash := ""
+	deterministicID := ""
+	if normalizedKey != "" {
+		keyHash = HashImageTaskIdempotencyKey(owner, normalizedKey)
+		deterministicID = "imgtask_" + keyHash[:40]
+		// A retry after a lost 202 response should observe the already accepted
+		// task, regardless of whether it is still processing or terminal.
+		if existing, lookupErr := s.store.Get(ctx, deterministicID); lookupErr == nil && existing != nil {
+			if existing.UserID != owner.UserID || existing.APIKeyID != owner.APIKeyID {
+				return nil, false, ErrImageTaskNotFound
+			}
+			if existing.IdempotencyKeyHash != keyHash || existing.RequestFingerprint != requestFingerprint {
+				return nil, false, ErrImageTaskIdempotencyConflict
+			}
+			return imageTaskToPublic(existing), true, nil
+		} else if lookupErr != nil && !errors.Is(lookupErr, ErrImageTaskNotFound) {
+			return nil, false, ErrImageTaskUnavailable.WithCause(lookupErr)
+		}
 	}
 	now := time.Now().UTC()
 	task := &ImageTaskRecord{
-		ID:        "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		UserID:    owner.UserID,
-		APIKeyID:  owner.APIKeyID,
-		Status:    ImageTaskStatusProcessing,
-		CreatedAt: now.Unix(),
-		ExpiresAt: now.Add(s.ttl).Unix(),
+		ID:                 "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+		UserID:             owner.UserID,
+		APIKeyID:           owner.APIKeyID,
+		Status:             ImageTaskStatusProcessing,
+		CreatedAt:          now.Unix(),
+		ExpiresAt:          now.Add(s.ttl).Unix(),
+		OutputResize:       resize,
+		IdempotencyKeyHash: keyHash,
+		RequestFingerprint: requestFingerprint,
+	}
+	if deterministicID != "" {
+		task.ID = deterministicID
+	}
+	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
+	if err != nil {
+		return nil, false, ErrImageTaskUnavailable.WithCause(err)
+	}
+	if !acquired {
+		// Close the small race between the lookup above and SETNX: the first
+		// request may have saved the deterministic task just before this call.
+		if deterministicID != "" {
+			if existing, lookupErr := s.store.Get(ctx, deterministicID); lookupErr == nil && existing != nil {
+				if existing.UserID != owner.UserID || existing.APIKeyID != owner.APIKeyID {
+					return nil, false, ErrImageTaskNotFound
+				}
+				if existing.IdempotencyKeyHash != keyHash || existing.RequestFingerprint != requestFingerprint {
+					return nil, false, ErrImageTaskIdempotencyConflict
+				}
+				return imageTaskToPublic(existing), true, nil
+			}
+		}
+		return nil, false, ErrImageTaskActive
 	}
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
-		return nil, ErrImageTaskUnavailable.WithCause(err)
+		_ = s.store.Release(ctx, owner.APIKeyID, task.ID)
+		return nil, false, ErrImageTaskUnavailable.WithCause(err)
 	}
-	return imageTaskToPublic(task), nil
+	return imageTaskToPublic(task), false, nil
+}
+
+// HashImageTaskIdempotencyKey scopes a client key to the authenticated owner;
+// the raw key is never stored in Redis or logs.
+func HashImageTaskIdempotencyKey(owner ImageTaskOwner, key string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(key) + "\n" +
+		strconv.FormatInt(owner.UserID, 10) + "\n" + strconv.FormatInt(owner.APIKeyID, 10)))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func (s *ImageTaskService) Get(ctx context.Context, owner ImageTaskOwner, id string) (*ImageTask, error) {
@@ -192,15 +301,29 @@ func (s *ImageTaskService) Complete(ctx context.Context, id string, statusCode i
 		return s.Fail(ctx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "upstream returned a non-JSON image response"))
 	}
 	if uploader, _ := s.current(); uploader != nil {
-		rewritten, err := uploader.Rewrite(ctx, id, result)
+		task, err := s.store.Get(ctx, id)
+		if err != nil {
+			return ErrImageTaskUnavailable.WithCause(err)
+		}
+		rewritten, err := uploader.RewriteWithResize(ctx, id, result, task.OutputResize)
 		if err != nil {
 			// 转存失败不回退存 base64，避免大 blob 撑爆 Redis：直接把任务标记为失败。
 			logger.L().Error("image_task.offload_failed", zap.String("task_id", id), zap.Error(err))
-			return s.Fail(ctx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "failed to store generated image to object storage"))
+			terminalCtx, cancel := imageTaskTerminalContext(ctx)
+			defer cancel()
+			return s.Fail(terminalCtx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "failed to store generated image to object storage"))
 		}
 		result = rewritten
 	}
 	return s.finish(ctx, id, ImageTaskStatusCompleted, statusCode, result, nil)
+}
+
+func imageTaskTerminalContext(parent context.Context) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if parent != nil {
+		base = context.WithoutCancel(parent)
+	}
+	return context.WithTimeout(base, imageTaskTerminalWriteTimeout)
 }
 
 func (s *ImageTaskService) Fail(ctx context.Context, id string, statusCode int, taskErr json.RawMessage) error {
@@ -229,8 +352,10 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	task.Error = taskErr
 	task.CompletedAt = &completedAt
 	task.ExpiresAt = now.Add(s.ttl).Unix()
-	if err := s.store.Save(ctx, task, s.ttl); err != nil {
-		return ErrImageTaskUnavailable.WithCause(err)
+	saveErr := s.store.Save(ctx, task, s.ttl)
+	releaseErr := s.store.Release(ctx, task.APIKeyID, task.ID)
+	if saveErr != nil || releaseErr != nil {
+		return ErrImageTaskUnavailable.WithCause(errors.Join(saveErr, releaseErr))
 	}
 	return nil
 }

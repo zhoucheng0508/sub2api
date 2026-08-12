@@ -30,7 +30,9 @@
 3. 后台站点 Logo 驱动的首页、登录页和控制台品牌展示；
 4. Vote AI 主题、构建接入和专项测试；
 5. `custom-v*` 标签触发的自定义镜像发布工作流；
-6. `/pricing` 到官方 `/model-plaza` 的兼容跳转。
+6. `/pricing` 到官方 `/model-plaza` 的兼容跳转；
+7. OpenAI OAuth 账号的 TLS 指纹、客户端身份路由和代理保持能力；
+8. 可按用户和最终上游账号限定范围的 DeepSeek 语义审核、三级会话风险、通知和解禁闭环。
 
 二开没有重写官方账号调度、利润控制、计费、渠道、鉴权或网关转发核心。
 
@@ -47,15 +49,17 @@
 - 内容审核请求通过配置代理转发；
 - 提示词安全审计的“仅审计最新输入”范围。
 
-官方新增迁移：
+0.1.170 官方和本轮二开新增迁移：
 
-| 文件 | 作用 | 兼容性 |
-| --- | --- | --- |
-| `192_group_profit_control.sql` | 为 `groups` 增加利润控制开关、最低利润率和安全缓冲字段 | 字段均有默认值，功能默认关闭 |
-| `193_group_profit_control_auth_cache_invalidation.sql` | 扩展分组认证缓存失效函数 | `CREATE OR REPLACE`，不删除业务数据 |
+| 文件 | 归属 | 作用 | 兼容性 |
+| --- | --- | --- | --- |
+| `192_group_profit_control.sql` | 官方 | 为 `groups` 增加利润控制开关、最低利润率和安全缓冲字段 | 字段均有默认值，功能默认关闭 |
+| `193_group_profit_control_auth_cache_invalidation.sql` | 官方 | 扩展分组认证缓存失效函数 | `CREATE OR REPLACE`，不删除业务数据 |
+| `194_add_tls_fingerprint_routers.sql` | Vote AI 二开 | 新增按入站 User-Agent 匹配的 TLS 指纹路由表及 Codex CLI 固定路由 | 新表和默认路由，不修改现有账号数据；账号开关默认关闭 |
+| `195_vote_ai_content_moderation_side_effect_state.sql` | Vote AI 二开 | 为审核日志增加审核、处置和通知状态，并记录用户风控封禁归属 | 新字段均有默认值；用于可靠邮件去重、失败重试和安全解禁 |
 
-二开没有修改这两个迁移，也没有新增自己的迁移。生产升级前仍必须完成 PostgreSQL
-备份和实际恢复验证；应用启动后会自动执行这两个迁移。
+二开没有修改官方的 `192`、`193` 迁移。本次新增 `194`、`195` 迁移；生产升级前仍必须完成
+PostgreSQL 备份和实际恢复验证，应用启动后会自动执行尚未执行的迁移。
 
 ## 4. Vote AI 二开边界
 
@@ -178,6 +182,150 @@ frontend/src/style.css
 `cobe` 用于首页地球渲染。主题色影响公开页和控制台，因此每次升级都要同时进行桌面端、
 移动端、亮色和暗色视觉回归。
 
+## 6.1 OpenAI OAuth TLS 指纹
+
+本次同版本二开发布新增以下能力：
+
+- OpenAI OAuth 账号复用账号级 `enable_tls_fingerprint` 开关；
+- 内置 Codex CLI 固定 TLS 身份和默认 User-Agent 路由；
+- 可按入站 User-Agent 选择 TLS 指纹模板、上游 User-Agent 和 Originator；
+- 路由身份缺失、路由模板无效或未命中时回退到固定 Codex CLI 身份；
+- TLS 请求和 WebSocket 请求始终保留账号原有代理绑定，TLS 失败不会绕过代理直连；
+- TLS 未启用或无法解析模板时继续使用官方普通 HTTP 路径，保持原有行为；
+- 所有 OpenAI 上游入口统一经过 `doOpenAIUpstream`，AST 守卫测试防止后续同步新增直连旁路。
+
+主要接入文件：
+
+```text
+backend/internal/service/openai_gateway_service.go
+backend/internal/service/openai_ws_client.go
+backend/internal/service/tls_fingerprint_router_service.go
+backend/internal/service/openai_tls_router_test.go
+frontend/src/components/admin/TLSFingerprintRoutersModal.vue
+frontend/src/components/account/CreateAccountModal.vue
+frontend/src/components/account/EditAccountModal.vue
+```
+
+该能力以 OpenAI OAuth 账号开关为边界，OpenAI API Key 账号不启用 TLS 指纹模拟。
+
+## 6.2 内容审核 PR1-PR4
+
+本次同版本二开把内容审核按可独立审阅和回退的四个阶段实现：
+
+- PR1：用户和上游账号范围过滤；管理员测试用户可排除，账号范围以调度后最终账号为准，Spark 影子账号归一化到母账号；
+- PR2：默认 4800 ms 的同步审核预算、12000 字符快审、4000 字符超时降级和有界异步补审，限制对首字时间的影响；多 Key 时首 Key 默认约 3150 ms，并为备用 Key 保留约 1500 ms，避免故障 Key 吃完整体预算；
+- PR3：审核、处置、通知状态结构化；邮件按输入和会话去重；自动封禁、显式解禁和 Redis 风险状态清理可分别核对和重试；普通异步任务及上游 `cyber_policy` 事件均携带用户 epoch，解禁前的旧事件只保留不可计数的证据行，不再发信、累计、封禁或重建会话屏蔽；
+- PR4：后端统一维护推荐提示词和版本，管理员自定义提示词不会被静默覆盖；管理端可配置性能预算，并显示原始风险分、最终风险等级、分类、signals 和补审状态。
+
+DeepSeek 适配器使用普通 Chat Completions 模型输出约定 JSON。三级风险状态按
+`用户 ID + API Key + 客户端会话 ID` 隔离，并支持短期 actor 加分。仅有
+`defensive_context` 或 `ownership_unverified`、且没有强类别或强信号的结果不会累计或升级为高风险。
+
+推荐提示词版本 `2026-08-04.v1` 增加了元讨论、关键词配置、防御请求和官方账号恢复流程的误报规则。前端只消费后端返回的推荐内容，只有管理员显式点击“应用推荐版”才会替换当前提示词。
+
+当前 epoch 屏障由 Redis generation 和应用进程内分片读写锁共同保证，适用于现有单应用容器部署。若未来同时运行多个应用副本，进程锁不能跨实例覆盖“检查后执行”窗口，扩容前必须改成 Redis/数据库侧的分布式原子屏障。
+
+主要隔离目录和接入文件：
+
+```text
+backend/internal/custom/voteai/moderation/
+backend/internal/custom/voteai/riskstate/
+backend/internal/service/content_moderation*.go
+frontend/src/custom/vote-ai/risk-control/
+frontend/src/views/admin/RiskControlView.vue
+```
+
+完整专项测试矩阵见 `docs/RISK_CONTROL_PR2_PR4_TEST_PLAN_CN.md`。
+
+## 6.3 OpenAI API Key GPT-5.6 提示缓存优化
+
+本轮二开为支持 Responses API 的 OpenAI API Key 账号增加独立、默认关闭的
+`openai_prompt_cache_mode` 配置：
+
+- `off`：不自动生成缓存键或断点，保留客户端明确传入的标准字段；
+- `key_only`：按本地 API Key、上游账号、最终模型和稳定会话身份生成脱敏缓存键；
+- `gpt56_explicit`：在稳定键基础上，为 GPT-5.6 家族注入显式缓存策略和最多 4 个滚动断点。
+
+该功能只作用于 OpenAI API Key 的 Chat Completions → Responses 转换链路，不改变
+OAuth 缓存、原始 Chat 直转、账号代理、模型映射、Fast 计费、安全审计或故障切换。
+上游拒绝由 Sub2API 自动注入的缓存字段时，只使用同一账号和同一代理进行一次兼容
+重试；客户端主动提供的字段不会被静默删除。功能不需要数据库迁移，配置存储在
+`accounts.extra`。
+
+后续同步官方版本时，优先搜索：
+
+```text
+CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE)
+openai_prompt_cache_mode
+```
+
+独立实现主要位于：
+
+```text
+backend/internal/pkg/openai_compat/prompt_cache.go
+backend/internal/service/openai_apikey_prompt_cache.go
+```
+
+官方核心接入点仅限 Chat → Responses 转换、Responses 原生字段保留和账号创建/编辑
+界面，便于后续版本重放和冲突审查。
+
+## 6.4 DeepSeek 增量审核与成本诊断
+
+本次同版本二开在 PR1-PR4 的审核闭环上增加了可灰度的增量审核路径，减少正常长对话每轮重复发送的上下文，同时保留渐进风险识别能力：
+
+- `incremental_audit_enabled` 控制增量快审与按条件完整复核，默认关闭；
+- `input_provenance_v2_enabled` 默认开启，统一提取真实最终用户请求，并把工具输出、客户端元数据和上下文摘要限制为辅助信息；
+- `deterministic_risk_v2_enabled` 默认开启，使用来源边界、词法边界、否定和防御语境识别可解释的本地确定性风险，歧义结果进入语义复核而不是固定高分拦截；
+- 正常请求优先执行增量快审；风险分、风险变化、强信号、周期轮次和管理员策略可以触发完整复核；
+- 默认完整复核阈值为 `0.40`、周期为 `10` 轮，快审、完整复核、最高风险复核输出上限分别为 `256`、`1024`、`1536` Token；
+- 快审输入默认上限为 `6000` 字符，超时降级输入为 `3000` 字符，完整复核输入默认上限为 `60000` 字符；
+- 审核目标、阶段、触发原因、前缀稳定性、缓存、Token、延迟、成本估算和本地规则诊断以脱敏结构保存和展示；完整对话、密码、Cookie、Token 和 API Key 不进入诊断字段；
+- 会话风险、结果缓存、异步补审、邮件和封禁副作用继续使用 epoch、幂等和范围隔离，避免旧任务在管理员解禁后重新产生处置。
+
+新增迁移 `196_vote_ai_content_moderation_audit_details.sql`，为
+`content_moderation_logs` 增加 `audit_details JSONB NOT NULL DEFAULT '{}'::jsonb`。
+迁移使用 `ADD COLUMN IF NOT EXISTS`，并设置 5 秒锁等待和 10 分钟语句超时。已执行的
+`194`、`195` 迁移不得改名、改内容或改变 checksum。
+
+主要隔离目录和接入文件：
+
+```text
+backend/internal/custom/voteai/auditcontext/
+backend/internal/custom/voteai/inputprovenance/
+backend/internal/custom/voteai/deterministicrisk/
+backend/internal/service/content_moderation_*.go
+frontend/src/custom/vote-ai/risk-control/IncrementalAuditSettings.vue
+frontend/src/custom/vote-ai/risk-control/AuditStageDiagnostics.vue
+backend/migrations/196_vote_ai_content_moderation_audit_details.sql
+```
+
+生产发布时先保持 `incremental_audit_enabled=false`，验证迁移、旧审核路径和诊断数据后，按“测试身份 -> 单个 Pro 上游账号 -> 多个 Pro 上游账号”逐级启用。关闭增量审核只回退快审/完整复核路由，不会自动关闭来源归一化和确定性规则 V2；两者有独立紧急开关。
+
+## 6.5 DeepSeek 审核成本与稳定性优化
+
+在增量上下文审核首次生产测试后，本轮同版本修复继续收紧输入和状态边界：
+
+- 普通低风险请求优先发送当前审核目标；仅在请求依赖上下文或存在会话风险时附带最近历史；
+- 纯周期完整复核使用最近 10 个用户轮次的紧凑轨迹，强信号、累计风险、风险上升、
+  截断风险和强制复核仍使用最大 60,000 字符的完整历史；
+- 低风险且没有类别或信号的模型理由只保留在审核日志，不再写入短期会话风险状态；
+- 调整确定性风险证据门，避免把被引用、被报告或明确防御性的高风险词语机械拼接成执行意图；
+- DeepSeek 主请求接近超时时可进行有预算的并行降级，并保持整体同步审核截止时间；
+- 审核异常按配置执行 fail-closed，不能因降级失败进入业务号池；
+- `false`、`0` 等有效诊断值保留原类型，不再在管理端显示为“未知”。
+
+主要改动仍位于既有隔离目录和接入文件：
+
+```text
+backend/internal/custom/voteai/auditcontext/
+backend/internal/custom/voteai/deterministicrisk/
+backend/internal/custom/voteai/inputprovenance/
+backend/internal/custom/voteai/moderation/
+backend/internal/service/content_moderation*.go
+```
+
+该修复不新增数据库迁移，不修改用户余额、计费、账号调度、代理绑定或业务模型请求。
+
 ## 7. 发布工作流
 
 `.github/workflows/custom-image.yml` 在推送 `custom-v<版本>-<序号>` 标签时构建
@@ -219,6 +367,8 @@ go test -tags=integration ./...
 - 模型广场显示真实模型与分组价格；
 - 管理员账号、分组和利润控制页面；
 - 内容审核代理配置和“仅审计最新输入”；
+- DeepSeek 增量审核三开关、快审/完整复核参数和审核阶段诊断；
+- TLS 指纹路由器默认 Codex CLI 路由和 OpenAI OAuth 账号 TLS 开关；
 - 桌面端、移动端、亮色和暗色布局；
 - 浏览器控制台无应用错误。
 
@@ -236,6 +386,8 @@ go test -tags=integration ./...
 - 只重建应用服务，不重启 PostgreSQL 和 Redis，不删除数据卷；
 - 旧镜像只能回退应用代码，不能自动回退已执行的数据库迁移；
 - 如旧应用无法兼容迁移后的数据库，必须恢复升级前 PostgreSQL 备份；
+- 上线迁移 `196` 前必须在实际恢复出的数据库副本验证首次执行、重复启动、旧记录默认值和旧应用兼容性；锁超时或迁移失败时停止发布，不得反复重启应用重试；
+- 增量审核先保持关闭；异常时先关闭增量路径，再根据诊断分别处理来源归一化或确定性规则 V2，不恢复旧的固定高分子串检测器；
 - 0.1.170 利润控制和账号倍率同步在验证前保持关闭。
 
 ## 10. 本地验收记录
@@ -245,12 +397,43 @@ go test -tags=integration ./...
 - 前端二开专项测试：6 个测试文件、31 个测试全部通过；
 - 前端 lint、类型检查、生产构建和完整 Vitest 测试通过；
 - 后端 `go test -tags=unit ./...` 通过；
-- 构建并运行 `linux/amd64` 候选镜像，镜像内版本为 `0.1.170`；
+- 构建并运行 `linux/amd64` 候选镜像 `sub2api-custom:0.1.170-openai-tls-candidate`，镜像内版本为 `0.1.170`；
 - `/health` 返回 `{"status":"ok"}`；
-- 迁移 `192`、`193` 已应用，现有用户和分组数据仍可读取；
+- 迁移 `192`、`193`、`194` 已应用，现有用户和分组数据仍可读取；
+- TLS 路由器弹窗可读取默认 `OpenAI Codex CLI` 路由；OpenAI OAuth 创建表单显示 TLS 指纹开关；
+- OpenAI TLS 身份归一化、固定模板回退、代理保持、HTTP/WebSocket 统一入口及 AST 守卫测试通过；
 - 浏览器验证 Vote AI 首页、模型广场、`/pricing` 跳转、站内文档、后台仪表盘和分组管理正常；
 - 分组编辑界面显示“启用利润控制”；
 - 系统设置显示“启用风控中心”和内容审计配置入口；当前本地配置仍为关闭，因此风控页面按设计跳回系统设置；
+- DeepSeek 增量审核专项回归覆盖来源归一化、确定性规则、快审/完整复核路由、工具续传、缓存、Redis 故障、邮件去重、解禁、隐私脱敏和成本指标；
+- 管理端显示增量审核、来源归一化和确定性规则 V2 开关，以及快审/完整复核参数和逐阶段诊断；
+- 本地候选镜像中增量审核请求仅执行快审，审核阶段耗时约 1.1 秒；该结果只证明本地功能路径可用，不代表生产延迟和成本目标已经达成；
+- GitHub PR #8 的后端测试、`golangci-lint`、前端、安全和 shell 检查均通过；
 - 390 px 移动端视口下首页和分组页无横向溢出，浏览器控制台无应用错误。
+
+本轮 OpenAI API Key GPT-5.6 提示缓存优化补充验收：
+
+- `internal/pkg/apicompat`、`internal/pkg/openai_compat` 和 `internal/service` 缓存专项及回归测试通过；
+- 前端账号创建/编辑测试、二开专项测试、ESLint、`vue-tsc --noEmit` 和生产构建通过；
+- 构建并运行本地镜像 `sub2api-custom:0.1.170-prompt-cache-local`，应用容器健康，原 PostgreSQL、Redis 和数据挂载未替换；
+- 浏览器验证 OpenAI API Key 创建和编辑界面均显示“关闭”“仅稳定缓存键”“稳定缓存键 + 显式滚动断点”三个模式，默认关闭，边界说明完整；
+- 使用一次性 PostgreSQL、Redis、Sub2API 和本机 Mock Responses 上游完成隔离转发验证，未使用真实上游 API Key；
+- Mock 首次请求包含稳定缓存键、`prompt_cache_options.mode=explicit` 和 2 个显式断点，`service_tier=fast` 按现有策略规范化为 `priority`；
+- Mock 返回 `unsupported_parameter: prompt_cache_options` 后只发生一次兼容重试，重试移除系统自动字段，同时保留模型、消息角色、文本、顺序和 `service_tier=priority`；
+- 隔离验收容器、网络、临时数据库、Mock 脚本和抓包已删除；未创建 PR、未推送、未部署生产，也未产生外部 API 费用。
+
+本轮 DeepSeek 审核成本与稳定性补充验收：
+
+- 后端完整 unit-tag 测试通过，仅跳过依赖 OpenAI 官方外部 API 的 3 个既有子用例；
+- 前端二开测试 83/83、生产构建通过；
+- 正常/防御请求 17/17 放行，明确高风险请求 9/9 在业务号池前拦截；
+- 长对话矩阵 10/10 断言通过，渐进诱导在第 7～8 轮拦截，不同 Session 无串扰；
+- 100 次正常请求全部成功，审核异常为 0，P95 为 2,206 ms，完整复核比例 13%；
+- 相比旧基线总 Token 降低 72.19%，估算审核成本降低 71.36%；
+- 综合 DeepSeek 输入缓存率 77.90%，长会话完整复核最高 81.50%，固定块覆盖率 100%；
+- 两个独立 DeepSeek Key 均通过真实健康检查，相同 4,403 Token 前缀在两把 Key 上
+  各采样 3 次，每次缓存 4,224 Token，缓存率均为 95.93%；
+- 本地 Docker、管理员 Web 页面、邮件去重、解禁 epoch、故障切换和结果缓存均通过；
+- 测试完成后账号和审核配置已恢复，临时网关 Key 已清理，生产环境未在本阶段修改。
 
 本地测试库没有 API Key 和上游账号，因此本次无法执行真实模型请求、余额扣减、`gpt-5.6-luna`、`gpt-5.6-terra` 和 fast 2 倍计费的端到端验证。这些项目仍是生产切换前的业务验收项。

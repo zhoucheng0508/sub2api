@@ -236,7 +236,7 @@ func newOpenAIRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo U
 		NewBillingService(cfg, nil),
 		nil,
 		&BillingCacheService{},
-		nil,
+		nil, // httpUpstream
 		&DeferredService{},
 		nil,
 		nil,

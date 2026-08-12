@@ -19,10 +19,13 @@ func (a *LegacyModerationAdapter) Check(ctx context.Context, req Request) (*Lega
 		return nil, nil
 	}
 	decision, err := a.service.Check(ctx, service.ContentModerationCheckInput{
-		RequestID: req.RequestID, UserID: req.UserID, UserEmail: req.UserEmail,
-		APIKeyID: req.APIKeyID, APIKeyName: req.APIKeyName, GroupID: cloneInt64Ptr(req.GroupID),
+		RequestID: req.RequestID, SessionID: req.SessionID, SessionSource: req.SessionSource,
+		UserID: req.UserID, UserEmail: req.UserEmail,
+		APIKeyID: req.APIKeyID, APIKeyName: req.APIKeyName, AccountID: req.AccountID, GroupID: cloneInt64Ptr(req.GroupID),
 		GroupName: req.GroupName, Endpoint: req.Endpoint, Provider: req.Provider,
 		Model: req.Model, Protocol: req.Protocol, Body: req.Body,
+		ClientHeaders: req.ClientHeaders.Clone(), TrustedMetadataProvenance: req.TrustedMetadataProvenance,
+		ModerationEpoch: req.ModerationEpoch, ModerationEpochSet: req.ModerationEpochSet,
 	})
 	if err != nil || decision == nil {
 		return nil, err
@@ -30,6 +33,13 @@ func (a *LegacyModerationAdapter) Check(ctx context.Context, req Request) (*Lega
 	return &LegacyDecision{
 		Allowed: decision.Allowed, Blocked: decision.Blocked, Flagged: decision.Flagged,
 		Message: decision.Message, StatusCode: decision.StatusCode,
-		ErrorCode: "content_policy_violation", Action: decision.Action,
+		ErrorCode: moderationErrorCode(decision), Action: decision.Action,
 	}, nil
+}
+
+func moderationErrorCode(decision *service.ContentModerationDecision) string {
+	if decision != nil && decision.Action == service.ContentModerationActionUnavailable {
+		return service.ContentModerationErrorCodeUnavailable
+	}
+	return "content_policy_violation"
 }

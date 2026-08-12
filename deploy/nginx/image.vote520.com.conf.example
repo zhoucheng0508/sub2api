@@ -1,0 +1,109 @@
+# Install this file in nginx's http context (for example /etc/nginx/conf.d/).
+# Replace the certificate paths and upstream address before enabling it.
+
+map $http_origin $vote_image_cors_origin {
+    default "";
+    "https://canvas.vote520.com" $http_origin;
+}
+
+log_format vote_image_gateway '$remote_addr - $remote_user [$time_local] '
+                              '"$request_method $uri $server_protocol" $status $body_bytes_sent '
+                              '"$http_referer" "$http_user_agent" request_id=$request_id';
+
+server {
+    listen 443 ssl http2;
+    server_name image.vote520.com;
+
+    ssl_certificate /etc/letsencrypt/live/image.vote520.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/image.vote520.com/privkey.pem;
+
+    access_log /var/log/nginx/image.vote520.com.access.log vote_image_gateway;
+    error_log /var/log/nginx/image.vote520.com.error.log warn;
+
+    client_max_body_size 100m;
+    client_body_timeout 120s;
+    proxy_connect_timeout 10s;
+    proxy_send_timeout 35m;
+    proxy_read_timeout 35m;
+    proxy_request_buffering off;
+    proxy_buffering off;
+
+    add_header Access-Control-Allow-Origin $vote_image_cors_origin always;
+    add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Request-ID, X-Client-Request-ID, X-Sub2api-Image-Output-Size, X-Sub2api-Image-Resize-Filter" always;
+    add_header Access-Control-Max-Age "600" always;
+    add_header Cache-Control "no-store" always;
+    add_header Pragma "no-cache" always;
+    add_header Vary "Origin" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    proxy_hide_header Access-Control-Allow-Origin;
+    proxy_hide_header Access-Control-Allow-Credentials;
+    proxy_hide_header Access-Control-Allow-Headers;
+    proxy_hide_header Access-Control-Allow-Methods;
+    proxy_hide_header Cache-Control;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-ID $request_id;
+
+    # Change this to the private Sub2API listener or Docker service address.
+    set $sub2api_image_upstream http://127.0.0.1:8080;
+
+    location = /v1/models {
+        if ($request_method !~ ^(GET|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    location = /v1/sub2api/billing {
+        if ($request_method !~ ^(GET|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    location = /v1/images/generations {
+        if ($request_method !~ ^(POST|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    location = /v1/images/edits {
+        if ($request_method !~ ^(POST|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    location = /v1/images/generations/async {
+        if ($request_method !~ ^(POST|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    location = /v1/images/edits/async {
+        if ($request_method !~ ^(POST|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    location ~ ^/v1/images/tasks/[A-Za-z0-9_-]+$ {
+        if ($request_method !~ ^(GET|OPTIONS)$) { return 405; }
+        if ($request_method = OPTIONS) { return 204; }
+        proxy_pass $sub2api_image_upstream;
+    }
+
+    # Fail closed: chat, responses, admin, user and operational endpoints are
+    # deliberately unavailable on the public image-only hostname.
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 80;
+    server_name image.vote520.com;
+    access_log /var/log/nginx/image.vote520.com.access.log vote_image_gateway;
+    return 301 https://image.vote520.com$uri;
+}

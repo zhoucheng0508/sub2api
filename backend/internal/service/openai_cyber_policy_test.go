@@ -42,6 +42,27 @@ func TestMarkOpsCyberPolicyNilContext(t *testing.T) {
 	require.Nil(t, GetOpsCyberPolicy(nil))
 }
 
+func TestMarkOpsCyberPolicyCarriesPreUpstreamEpochSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	SetOpsCyberPolicyEpochSnapshot(c, 12, true)
+	epoch, epochSet, captured := GetOpsCyberPolicyEpochSnapshot(c)
+	require.True(t, captured)
+	require.True(t, epochSet)
+	require.EqualValues(t, 12, epoch)
+
+	MarkOpsCyberPolicy(c, CyberPolicyMark{Message: "blocked"})
+	mark := GetOpsCyberPolicy(c)
+	require.NotNil(t, mark)
+	require.True(t, mark.EpochSet)
+	require.EqualValues(t, 12, mark.ModerationEpoch)
+
+	ClearOpsCyberPolicyEpochSnapshot(c)
+	_, _, captured = GetOpsCyberPolicyEpochSnapshot(c)
+	require.False(t, captured, "a shared WebSocket context must capture a fresh epoch on the next turn")
+}
+
 // TestClearOpsCyberPolicy_AllowsRemark verifies F1: after Clear, Get returns nil
 // and a subsequent Mark takes effect (per-turn lifecycle in WS connections).
 func TestClearOpsCyberPolicy_AllowsRemark(t *testing.T) {

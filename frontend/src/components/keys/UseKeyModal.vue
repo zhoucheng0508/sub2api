@@ -202,6 +202,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import type { GroupPlatform } from '@/types'
+import { buildCodexConfigFiles, type CodexAuthMode } from '@/utils/codexOneClick'
 
 interface Props {
   show: boolean
@@ -237,7 +238,6 @@ const { copyToClipboard: clipboardCopy } = useClipboard()
 const copiedIndex = ref<number | null>(null)
 const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
-type CodexAuthMode = 'legacy' | 'api-key'
 const codexAuthMode = ref<CodexAuthMode>('legacy')
 
 // Reset tabs when platform changes
@@ -713,50 +713,11 @@ ${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model
 function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-
-  // config.toml content
-  const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-network_access = "enabled"
-windows_wsl_setup_acknowledged = true
-
-[model_providers.OpenAI]
-name = "OpenAI"
-base_url = "${baseUrl}"
-wire_api = "responses"
-${generateCodexProviderAuthConfig()}
-
-[features]
-goals = true`
-
-  // auth.json content
-  const authContent = `{
-  "OPENAI_API_KEY": "${apiKey}"
-}`
-
-  return [
-    {
-      path: `${configDir}/config.toml`,
-      content: configContent,
-      hint: t('keys.useKeyModal.openai.configTomlHint')
-    },
-    {
-      path: `${configDir}/auth.json`,
-      content: authContent
-    }
-  ]
-}
-
-function generateCodexProviderAuthConfig(): string {
-  if (codexAuthMode.value === 'api-key') {
-    return `requires_openai_auth = false
-http_headers = { "x-openai-actor-authorization" = "local-image-extension" }`
-  }
-
-  return 'requires_openai_auth = true'
+  return buildCodexConfigFiles(baseUrl, apiKey, codexAuthMode.value).map((file) => ({
+    ...file,
+    path: `${configDir}/${file.path}`,
+    hint: file.path === 'config.toml' ? t('keys.useKeyModal.openai.configTomlHint') : undefined
+  }))
 }
 
 function joinConfigPath(dir: string, file: string, windows: boolean): string {
@@ -976,43 +937,11 @@ supports_websockets = false
 function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-
-  // config.toml content with WebSocket v2
-  const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-network_access = "enabled"
-windows_wsl_setup_acknowledged = true
-
-[model_providers.OpenAI]
-name = "OpenAI"
-base_url = "${baseUrl}"
-wire_api = "responses"
-supports_websockets = true
-${generateCodexProviderAuthConfig()}
-
-[features]
-responses_websockets_v2 = true
-goals = true`
-
-  // auth.json content
-  const authContent = `{
-  "OPENAI_API_KEY": "${apiKey}"
-}`
-
-  return [
-    {
-      path: `${configDir}/config.toml`,
-      content: configContent,
-      hint: t('keys.useKeyModal.openai.configTomlHint')
-    },
-    {
-      path: `${configDir}/auth.json`,
-      content: authContent
-    }
-  ]
+  return buildCodexConfigFiles(baseUrl, apiKey, codexAuthMode.value, true).map((file) => ({
+    ...file,
+    path: `${configDir}/${file.path}`,
+    hint: file.path === 'config.toml' ? t('keys.useKeyModal.openai.configTomlHint') : undefined
+  }))
 }
 
 function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: string, pathLabel?: string): FileConfig {

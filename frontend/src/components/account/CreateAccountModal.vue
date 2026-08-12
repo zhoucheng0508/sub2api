@@ -2948,6 +2948,18 @@
         </div>
       </div>
 
+      <!-- CUSTOM(VOTE-AI-OPENAI-TLS): OpenAI OAuth TLS identity controls. -->
+      <div v-if="form.platform === 'openai' && accountCategory === 'oauth-based'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="flex items-center justify-between gap-4">
+          <div><label class="input-label mb-0">{{ t('admin.accounts.quotaControl.tlsFingerprint.label') }}</label><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.quotaControl.tlsFingerprint.hint') }}</p></div>
+          <button type="button" role="switch" :aria-checked="tlsFingerprintEnabled" @click="tlsFingerprintEnabled = !tlsFingerprintEnabled" :class="['relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors', tlsFingerprintEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"><span :class="['inline-block h-5 w-5 rounded-full bg-white shadow transition-transform', tlsFingerprintEnabled ? 'translate-x-5' : 'translate-x-0']" /></button>
+        </div>
+        <div v-if="tlsFingerprintEnabled" class="mt-3 grid gap-3 md:grid-cols-2">
+          <div><label class="input-label">{{ t('admin.tlsFingerprintRouters.profile') }}</label><select v-model.number="tlsFingerprintProfileId" class="input"><option :value="null">{{ t('admin.tlsFingerprintRouters.builtin') }}</option><option :value="-1">{{ t('admin.tlsFingerprintRouters.random') }}</option><option v-for="profile in tlsFingerprintProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option></select></div>
+          <div><label class="input-label">{{ t('admin.tlsFingerprintRouters.title') }}</label><select v-model.number="tlsFingerprintRouterId" class="input"><option :value="null">{{ t('common.none') }}</option><option v-for="router in tlsFingerprintRouters" :key="router.id" :value="router.id">{{ router.name }}</option></select></div>
+        </div>
+      </div>
+
       <div
         v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -3069,6 +3081,26 @@
           data-testid="openai-responses-mode-not-applicable"
         >
           {{ t('admin.accounts.openai.responsesModeTextDisabledHint') }}
+        </p>
+        <!-- CUSTOM(VOTE-AI-OPENAI-PROMPT-CACHE): OpenAI API Key opt-in configuration. -->
+        <div class="flex items-center justify-between gap-4" data-testid="openai-prompt-cache-settings">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.promptCacheMode') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.promptCacheModeDesc') }}
+            </p>
+          </div>
+          <div class="w-64">
+            <Select
+              v-model="openAIPromptCacheMode"
+              :options="openAIPromptCacheModeOptions"
+              :disabled="!openAITextGenerationCapabilityEnabled || openAIResponsesMode === 'force_chat_completions'"
+              data-testid="openai-prompt-cache-mode-select"
+            />
+          </div>
+        </div>
+        <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+          {{ t('admin.accounts.openai.promptCacheModeWarning') }}
         </p>
         <div>
           <label class="input-label mb-2 block">{{ t('admin.accounts.openai.endpointCapabilities') }}</label>
@@ -3577,6 +3609,7 @@ import type {
   CodexSessionImportMessage,
   OpenAICompactMode,
   OpenAIResponsesMode,
+  OpenAIPromptCacheMode,
   OpenAIEndpointCapability
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -3831,6 +3864,7 @@ const openAILongContextBillingEnabled = ref(false)
 const openAILongContextBillingTouched = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
+const openAIPromptCacheMode = ref<OpenAIPromptCacheMode>('off')
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -3902,6 +3936,11 @@ const openAIResponsesModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.responsesModeAuto') },
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
+])
+const openAIPromptCacheModeOptions = computed(() => [
+  { value: 'off', label: t('admin.accounts.openai.promptCacheModeOff') },
+  { value: 'key_only', label: t('admin.accounts.openai.promptCacheModeKeyOnly') },
+  { value: 'gpt56_explicit', label: t('admin.accounts.openai.promptCacheModeGPT56Explicit') }
 ])
 const openAITextEndpointCapabilityLabel = computed(() => {
   if (openAIResponsesMode.value === 'force_responses') {
@@ -3996,6 +4035,8 @@ const umqModeOptions = computed(() => [
 const tlsFingerprintEnabled = ref(false)
 const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
+const tlsFingerprintRouterId = ref<number | null>(null)
+const tlsFingerprintRouters = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
 const cacheTTLOverrideEnabled = ref(false)
 const cacheTTLOverrideTarget = ref<string>('5m')
@@ -4172,6 +4213,9 @@ watch(
       adminAPI.tlsFingerprintProfiles.list()
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
         .catch(() => { tlsFingerprintProfiles.value = [] })
+      adminAPI.tlsFingerprintRouters.list()
+        .then(routers => { tlsFingerprintRouters.value = routers.map(router => ({ id: router.id, name: router.name })) })
+        .catch(() => { tlsFingerprintRouters.value = [] })
       // Modal opened - fill related models
       allowedModels.value = [...getModelsByPlatform(form.platform)]
       // Antigravity: 默认使用映射模式并填充默认映射
@@ -4710,6 +4754,7 @@ const resetForm = () => {
   openAILongContextBillingTouched.value = false
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
+  openAIPromptCacheMode.value = 'off'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -4732,6 +4777,7 @@ const resetForm = () => {
   userMsgQueueMode.value = ''
   tlsFingerprintEnabled.value = false
   tlsFingerprintProfileId.value = null
+  tlsFingerprintRouterId.value = null
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
   cacheTTLOverrideTarget.value = '5m'
@@ -4777,9 +4823,21 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   if (accountCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+    if (tlsFingerprintEnabled.value) {
+      extra.enable_tls_fingerprint = true
+      if (tlsFingerprintProfileId.value != null) extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+      if (tlsFingerprintRouterId.value != null) extra.tls_fingerprint_router_id = tlsFingerprintRouterId.value
+    } else {
+      delete extra.enable_tls_fingerprint
+      delete extra.tls_fingerprint_profile_id
+      delete extra.tls_fingerprint_router_id
+    }
   } else if (accountCategory.value === 'apikey') {
     extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
     extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
+    delete extra.enable_tls_fingerprint
+    delete extra.tls_fingerprint_profile_id
+    delete extra.tls_fingerprint_router_id
   }
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled
@@ -4827,6 +4885,17 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     extra.openai_responses_mode = openAIResponsesMode.value
   } else {
     delete extra.openai_responses_mode
+  }
+
+  if (
+    accountCategory.value === 'apikey' &&
+    openAITextGenerationCapabilityEnabled.value &&
+    openAIResponsesMode.value !== 'force_chat_completions' &&
+    openAIPromptCacheMode.value !== 'off'
+  ) {
+    extra.openai_prompt_cache_mode = openAIPromptCacheMode.value
+  } else {
+    delete extra.openai_prompt_cache_mode
   }
 
   return Object.keys(extra).length > 0 ? extra : undefined

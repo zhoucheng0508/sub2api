@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -585,11 +586,17 @@ func TestPromptAuditSyntheticAsyncBaseline(t *testing.T) {
 
 func TestRequestCloneOwnsMutableInputs(t *testing.T) {
 	groupID := int64(7)
-	req := Request{Body: []byte("original"), GroupID: &groupID}
+	req := Request{
+		Body:          []byte("original"),
+		GroupID:       &groupID,
+		ClientHeaders: http.Header{"X-Codex-Signal": {"original"}},
+	}
 	clone := req.Clone()
 	clone.Body[0] = 'X'
 	*clone.GroupID = 8
+	clone.ClientHeaders["X-Codex-Signal"][0] = "changed"
 	require.Equal(t, []byte("original"), req.Body)
 	require.Equal(t, int64(7), *req.GroupID)
+	require.Equal(t, "original", req.ClientHeaders.Get("X-Codex-Signal"))
 	require.False(t, reflect.ValueOf(req.Body).Pointer() == reflect.ValueOf(clone.Body).Pointer())
 }

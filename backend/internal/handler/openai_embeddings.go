@@ -169,6 +169,11 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if decision := h.checkSecurityAuditForAccount(c, reqLog, apiKey, subject, account, "openai_embeddings", reqModel, body); decision != nil && !decision.AllowNextStage {
+			releaseSecurityAuditSelection(selection)
+			h.openAISecurityAuditError(c, decision)
+			return
+		}
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
