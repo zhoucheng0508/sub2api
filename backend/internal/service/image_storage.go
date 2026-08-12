@@ -79,18 +79,30 @@ func ResizeImageResponseB64(body []byte, resize *ImageResizeSpec) ([]byte, error
 		return nil, err
 	}
 	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil { return nil, fmt.Errorf("parse image response: %w", err) }
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, fmt.Errorf("parse image response: %w", err)
+	}
 	var items []map[string]json.RawMessage
-	if err := json.Unmarshal(top["data"], &items); err != nil { return nil, fmt.Errorf("parse image response data: %w", err) }
+	if err := json.Unmarshal(top["data"], &items); err != nil {
+		return nil, fmt.Errorf("parse image response data: %w", err)
+	}
 	for i, item := range items {
 		raw, ok := item["b64_json"]
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		var encoded string
-		if err := json.Unmarshal(raw, &encoded); err != nil { return nil, fmt.Errorf("decode image %d: %w", i, err) }
+		if err := json.Unmarshal(raw, &encoded); err != nil {
+			return nil, fmt.Errorf("decode image %d: %w", i, err)
+		}
 		data, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil { return nil, fmt.Errorf("decode image %d: %w", i, err) }
+		if err != nil {
+			return nil, fmt.Errorf("decode image %d: %w", i, err)
+		}
 		out, contentType, err := resizeImageBytes(data, detectImageContentType(data), resize)
-		if err != nil { return nil, fmt.Errorf("resize image %d: %w", i, err) }
+		if err != nil {
+			return nil, fmt.Errorf("resize image %d: %w", i, err)
+		}
 		item["b64_json"] = json.RawMessage([]byte(strconv.Quote(base64.StdEncoding.EncodeToString(out))))
 		item["output_size"] = json.RawMessage([]byte(strconv.Quote(fmt.Sprintf("%dx%d", resize.Width, resize.Height))))
 		item["output_resize_filter"] = json.RawMessage([]byte(strconv.Quote(resize.Filter)))
@@ -469,7 +481,7 @@ func isRetryableImageDownloadError(err error) bool {
 		return false
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func waitImageDownloadRetry(ctx context.Context, attempt int) error {
