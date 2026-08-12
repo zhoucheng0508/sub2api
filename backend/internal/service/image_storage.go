@@ -481,7 +481,13 @@ func isRetryableImageDownloadError(err error) bool {
 		return false
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// Keep compatibility with transports that expose the legacy temporary
+	// marker without calling the deprecated net.Error method directly.
+	var temporary interface{ Temporary() bool }
+	return errors.As(err, &temporary) && temporary.Temporary()
 }
 
 func waitImageDownloadRetry(ctx context.Context, attempt int) error {
