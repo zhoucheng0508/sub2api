@@ -339,8 +339,8 @@ func TestRunSecurityAuditLogsWebSocketChecksAndCacheHits(t *testing.T) {
 }
 
 type turnCountingEngine struct {
-	mode     securityaudit.Mode
-	enqueues atomic.Int64
+	mode      securityaudit.Mode
+	enqueues  atomic.Int64
 	evaluates atomic.Int64
 }
 

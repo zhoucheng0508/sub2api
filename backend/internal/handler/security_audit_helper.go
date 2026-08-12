@@ -20,13 +20,23 @@ const (
 	securityAuditWSDedupeContextKey  = "sub2api.security_audit.ws_dedupe"
 )
 
-type securityAuditWSDedupeEntry struct { stage string; turn int; bodyHash [sha256.Size]byte; decision securityaudit.Decision }
+type securityAuditWSDedupeEntry struct {
+	stage    string
+	turn     int
+	bodyHash [sha256.Size]byte
+	decision securityaudit.Decision
+}
 
-func isSecurityAuditWebSocketStage(stage string) bool { stage = strings.TrimSpace(stage); return stage == "first_turn" || stage == "subsequent_turn" }
+func isSecurityAuditWebSocketStage(stage string) bool {
+	stage = strings.TrimSpace(stage)
+	return stage == "first_turn" || stage == "subsequent_turn"
+}
 
 func securityAuditWSTurn(c *gin.Context) (int, bool) {
 	turn, exists := c.Get(securityAuditWSTurnContextKey)
-	if !exists { return 0, false }
+	if !exists {
+		return 0, false
+	}
 	turnNo, ok := turn.(int)
 	return turnNo, ok
 }
@@ -179,14 +189,22 @@ func runSecurityAuditForAccount(c *gin.Context, reqLog *zap.Logger, coordinator 
 			if cached, exists := c.Get(securityAuditWSDedupeContextKey); exists {
 				if entry, ok := cached.(securityAuditWSDedupeEntry); ok && entry.stage == request.Stage && entry.turn == turnNo && entry.bodyHash == bodyHash {
 					decision := entry.decision
-					if reqLog != nil { reqLog.Info("security_audit.gateway_check_done", zap.String("request_id", request.RequestID), zap.String("decision", string(decision.Kind)), zap.String("stage", request.Stage), zap.Bool("cached", true)) }
+					if reqLog != nil {
+						reqLog.Info("security_audit.gateway_check_done", zap.String("request_id", request.RequestID), zap.String("decision", string(decision.Kind)), zap.String("stage", request.Stage), zap.Bool("cached", true))
+					}
 					return &decision
 				}
 			}
-			if reqLog != nil { reqLog.Info("security_audit.gateway_check_start", zap.String("request_id", request.RequestID), zap.String("stage", request.Stage), zap.Int("body_bytes", len(body)), zap.Bool("cached", false)) }
+			if reqLog != nil {
+				reqLog.Info("security_audit.gateway_check_start", zap.String("request_id", request.RequestID), zap.String("stage", request.Stage), zap.Int("body_bytes", len(body)), zap.Bool("cached", false))
+			}
 			decision := coordinator.Check(c.Request.Context(), request)
-			if decision.Kind == securityaudit.DecisionAllow { c.Set(securityAuditWSDedupeContextKey, securityAuditWSDedupeEntry{stage: request.Stage, turn: turnNo, bodyHash: bodyHash, decision: decision}) }
-			if reqLog != nil { reqLog.Info("security_audit.gateway_check_done", zap.String("request_id", request.RequestID), zap.String("decision", string(decision.Kind)), zap.String("stage", request.Stage), zap.Bool("cached", false)) }
+			if decision.Kind == securityaudit.DecisionAllow {
+				c.Set(securityAuditWSDedupeContextKey, securityAuditWSDedupeEntry{stage: request.Stage, turn: turnNo, bodyHash: bodyHash, decision: decision})
+			}
+			if reqLog != nil {
+				reqLog.Info("security_audit.gateway_check_done", zap.String("request_id", request.RequestID), zap.String("decision", string(decision.Kind)), zap.String("stage", request.Stage), zap.Bool("cached", false))
+			}
 			return &decision
 		}
 	}

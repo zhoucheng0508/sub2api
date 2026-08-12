@@ -41,14 +41,19 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 		"/images/generations/async": {"image_task_handler.go"},
 		"/images/edits/async":       {"image_task_handler.go"},
 		"/images/batches":           {"batch_image_handler.go"},
+		"/videos":                   {"grok_media.go"},
 		"/videos/generations":       {"grok_media.go"},
 		"/videos/edits":             {"grok_media.go"},
 		"/videos/extensions":        {"grok_media.go"},
 		"/models/*modelAction":      {"gemini_v1beta_handler.go"},
 		"/messages/count_tokens":    {"gateway_handler.go", "openai_gateway_count_tokens.go"},
+		"/tts":                      {"grok_audio.go"},
+		"/web_search":               {"gateway_web_search.go"},
 	}
 	excluded := map[string]string{
 		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
+		"/stt":                       "speech transcription does not contain a text-generation prompt",
+		"/custom-voices":             "voice profile management has no model prompt",
 	}
 
 	unclassified := make([]string, 0)
