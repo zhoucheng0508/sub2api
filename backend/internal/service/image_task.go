@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +34,8 @@ var (
 	ErrImageTaskForbidden   = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
 	ErrImageTaskActive      = infraerrors.New(http.StatusTooManyRequests, "IMAGE_TASK_ALREADY_ACTIVE", "this API key already has an active image task")
 	ErrImageTaskUnavailable = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
+	ErrImageTaskIdempotencyKeyInvalid = infraerrors.New(http.StatusBadRequest, "IMAGE_TASK_IDEMPOTENCY_KEY_INVALID", "idempotency key is invalid")
+	ErrImageTaskIdempotencyConflict    = infraerrors.New(http.StatusConflict, "IMAGE_TASK_IDEMPOTENCY_CONFLICT", "idempotency key reused with a different image request")
 )
 
 // ImageTaskRecord is the private Redis representation of an asynchronous image
@@ -47,6 +52,10 @@ type ImageTaskRecord struct {
 	CompletedAt  *int64           `json:"completed_at,omitempty"`
 	ExpiresAt    int64            `json:"expires_at"`
 	OutputResize *ImageResizeSpec `json:"output_resize,omitempty"`
+	// Idempotency fields are private task-store metadata and are never exposed
+	// through imageTaskToPublic.
+	IdempotencyKeyHash  string `json:"idempotency_key_hash,omitempty"`
+	RequestFingerprint  string `json:"request_fingerprint,omitempty"`
 }
 
 type ImageResizeSpec struct {
@@ -176,8 +185,48 @@ func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*I
 }
 
 func (s *ImageTaskService) CreateWithResize(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec) (*ImageTask, error) {
+	task, _, err := s.createWithResizeAndIdempotency(ctx, owner, resize, "", "")
+	return task, err
+}
+
+// CreateWithResizeAndIdempotency creates a task or replays the task previously
+// accepted with the same idempotency key. The key is optional for backwards
+// compatibility; callers that provide it must also provide a stable request
+// fingerprint (the raw prompt/body is never persisted).
+func (s *ImageTaskService) CreateWithResizeAndIdempotency(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec, idempotencyKey, requestFingerprint string) (*ImageTask, bool, error) {
+	return s.createWithResizeAndIdempotency(ctx, owner, resize, idempotencyKey, requestFingerprint)
+}
+
+func (s *ImageTaskService) createWithResizeAndIdempotency(ctx context.Context, owner ImageTaskOwner, resize *ImageResizeSpec, idempotencyKey, requestFingerprint string) (*ImageTask, bool, error) {
 	if s == nil || s.store == nil {
-		return nil, ErrImageTaskUnavailable
+		return nil, false, ErrImageTaskUnavailable
+	}
+	normalizedKey, err := NormalizeIdempotencyKey(idempotencyKey)
+	if err != nil {
+		return nil, false, ErrImageTaskIdempotencyKeyInvalid.WithCause(err)
+	}
+	requestFingerprint = strings.TrimSpace(requestFingerprint)
+	if normalizedKey != "" && requestFingerprint == "" {
+		return nil, false, ErrImageTaskIdempotencyConflict
+	}
+	keyHash := ""
+	deterministicID := ""
+	if normalizedKey != "" {
+		keyHash = HashImageTaskIdempotencyKey(owner, normalizedKey)
+		deterministicID = "imgtask_" + keyHash[:40]
+		// A retry after a lost 202 response should observe the already accepted
+		// task, regardless of whether it is still processing or terminal.
+		if existing, lookupErr := s.store.Get(ctx, deterministicID); lookupErr == nil && existing != nil {
+			if existing.UserID != owner.UserID || existing.APIKeyID != owner.APIKeyID {
+				return nil, false, ErrImageTaskNotFound
+			}
+			if existing.IdempotencyKeyHash != keyHash || existing.RequestFingerprint != requestFingerprint {
+				return nil, false, ErrImageTaskIdempotencyConflict
+			}
+			return imageTaskToPublic(existing), true, nil
+		} else if lookupErr != nil && !errors.Is(lookupErr, ErrImageTaskNotFound) {
+			return nil, false, ErrImageTaskUnavailable.WithCause(lookupErr)
+		}
 	}
 	now := time.Now().UTC()
 	task := &ImageTaskRecord{
@@ -188,19 +237,45 @@ func (s *ImageTaskService) CreateWithResize(ctx context.Context, owner ImageTask
 		CreatedAt:    now.Unix(),
 		ExpiresAt:    now.Add(s.ttl).Unix(),
 		OutputResize: resize,
+		IdempotencyKeyHash: keyHash,
+		RequestFingerprint: requestFingerprint,
+	}
+	if deterministicID != "" {
+		task.ID = deterministicID
 	}
 	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
 	if err != nil {
-		return nil, ErrImageTaskUnavailable.WithCause(err)
+		return nil, false, ErrImageTaskUnavailable.WithCause(err)
 	}
 	if !acquired {
-		return nil, ErrImageTaskActive
+		// Close the small race between the lookup above and SETNX: the first
+		// request may have saved the deterministic task just before this call.
+		if deterministicID != "" {
+			if existing, lookupErr := s.store.Get(ctx, deterministicID); lookupErr == nil && existing != nil {
+				if existing.UserID != owner.UserID || existing.APIKeyID != owner.APIKeyID {
+					return nil, false, ErrImageTaskNotFound
+				}
+				if existing.IdempotencyKeyHash != keyHash || existing.RequestFingerprint != requestFingerprint {
+					return nil, false, ErrImageTaskIdempotencyConflict
+				}
+				return imageTaskToPublic(existing), true, nil
+			}
+		}
+		return nil, false, ErrImageTaskActive
 	}
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
 		_ = s.store.Release(ctx, owner.APIKeyID, task.ID)
-		return nil, ErrImageTaskUnavailable.WithCause(err)
+		return nil, false, ErrImageTaskUnavailable.WithCause(err)
 	}
-	return imageTaskToPublic(task), nil
+	return imageTaskToPublic(task), false, nil
+}
+
+// HashImageTaskIdempotencyKey scopes a client key to the authenticated owner;
+// the raw key is never stored in Redis or logs.
+func HashImageTaskIdempotencyKey(owner ImageTaskOwner, key string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(key) + "\n" +
+		strconv.FormatInt(owner.UserID, 10) + "\n" + strconv.FormatInt(owner.APIKeyID, 10)))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func (s *ImageTaskService) Get(ctx context.Context, owner ImageTaskOwner, id string) (*ImageTask, error) {

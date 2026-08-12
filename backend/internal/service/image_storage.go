@@ -13,6 +13,7 @@ import (
 	"image/png"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,6 +28,8 @@ import (
 const (
 	defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
 	maxProcessedImageBytes             = 64 << 20 // 64 MiB
+	imageDownloadMaxAttempts           = 3        // initial request plus two retries
+	imageDownloadRetryBaseDelay        = 100 * time.Millisecond
 )
 
 // ImageStorage 把图片字节写入对象存储并返回可访问 URL。
@@ -322,34 +325,94 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 	if u.httpClient == nil {
 		return nil, "", errors.New("secure image download client is unavailable")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("build download request: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < imageDownloadMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, "", fmt.Errorf("download image: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("build download request: %w", err)
+		}
+		resp, err := u.httpClient.Do(req)
+		if err != nil {
+			if !isRetryableImageDownloadError(err) || attempt+1 >= imageDownloadMaxAttempts {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			lastErr = err
+			if err := waitImageDownloadRetry(ctx, attempt); err != nil {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			continue
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			statusCode := resp.StatusCode
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			if !isRetryableImageDownloadStatus(statusCode) || attempt+1 >= imageDownloadMaxAttempts {
+				return nil, "", fmt.Errorf("download image: unexpected status %d", statusCode)
+			}
+			lastErr = fmt.Errorf("unexpected status %d", statusCode)
+			if err := waitImageDownloadRetry(ctx, attempt); err != nil {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			continue
+		}
+
+		limit := u.maxDownloadBytes
+		if limit <= 0 {
+			limit = defaultImageMaxDownloadBytes
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			if !isRetryableImageDownloadError(readErr) || attempt+1 >= imageDownloadMaxAttempts {
+				return nil, "", fmt.Errorf("read image body: %w", readErr)
+			}
+			lastErr = readErr
+			if err := waitImageDownloadRetry(ctx, attempt); err != nil {
+				return nil, "", fmt.Errorf("download image: %w", err)
+			}
+			continue
+		}
+		if int64(len(data)) > limit {
+			return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
+		}
+		contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+		if !strings.HasPrefix(contentType, "image/") {
+			contentType = detectImageContentType(data)
+		}
+		return data, contentType, nil
 	}
-	resp, err := u.httpClient.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("download image: %w", err)
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("download image: %w", lastErr)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, "", fmt.Errorf("download image: unexpected status %d", resp.StatusCode)
+	return nil, "", errors.New("download image failed")
+}
+
+func isRetryableImageDownloadStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func isRetryableImageDownloadError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
 	}
-	limit := u.maxDownloadBytes
-	if limit <= 0 {
-		limit = defaultImageMaxDownloadBytes
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+func waitImageDownloadRetry(ctx context.Context, attempt int) error {
+	delay := imageDownloadRetryBaseDelay * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if err != nil {
-		return nil, "", fmt.Errorf("read image body: %w", err)
-	}
-	if int64(len(data)) > limit {
-		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
-	}
-	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-	if !strings.HasPrefix(contentType, "image/") {
-		contentType = detectImageContentType(data)
-	}
-	return data, contentType, nil
 }
 
 func validateImageDownloadURL(parsed *url.URL) error {

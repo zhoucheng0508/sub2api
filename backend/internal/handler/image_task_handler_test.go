@@ -309,3 +309,55 @@ func TestAsyncImageHandlerPollHidesOtherAPIKeyAndIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAsyncImageSuccessResponse(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "valid URL", body: `{"created":1,"data":[{"url":"https://cdn.test/image.png"}]}`},
+		{name: "valid base64", body: `{"data":[{"b64_json":"aGVsbG8="}]}`},
+		{name: "top-level error", body: `{"error":{"type":"image_generation_user_error","message":"blocked"}}`, wantErr: "image error"},
+		{name: "missing data", body: `{"created":1}`, wantErr: "no image data"},
+		{name: "empty data", body: `{"data":[]}`, wantErr: "no image data"},
+		{name: "missing image payload", body: `{"data":[{"revised_prompt":"cat"}]}`, wantErr: "neither b64_json nor url"},
+		{name: "invalid JSON", body: `{`, wantErr: "invalid image response"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAsyncImageSuccessResponse([]byte(tt.body))
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestAsyncImageHandlerRunTreatsTopLevelErrorAsFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	owner := service.ImageTaskOwner{UserID: 7, APIKeyID: 9}
+	created, err := tasks.Create(context.Background(), owner)
+	require.NoError(t, err)
+
+	baseWriter := httptest.NewRecorder()
+	baseCtx, _ := gin.CreateTestContext(baseWriter)
+	baseCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{}`))
+	taskCtx, recorder, cancel := newAsyncImageContext(baseCtx, []byte(`{}`), time.Minute)
+	h := &AsyncImageHandler{tasks: tasks}
+	h.execute = func(_ string, c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"error": gin.H{"type": "image_generation_user_error", "message": "blocked"}})
+	}
+
+	h.run(created.ID, service.PlatformOpenAI, taskCtx, recorder, cancel)
+	got, err := tasks.Get(context.Background(), owner, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.ImageTaskStatusFailed, got.Status)
+	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
+	require.JSONEq(t, `{"type":"image_generation_user_error","message":"blocked"}`, string(got.Error))
+	require.Nil(t, got.Result)
+}
