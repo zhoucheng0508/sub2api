@@ -30,12 +30,12 @@ const (
 )
 
 var (
-	ErrImageTaskNotFound    = infraerrors.New(http.StatusNotFound, "IMAGE_TASK_NOT_FOUND", "image task not found")
-	ErrImageTaskForbidden   = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
-	ErrImageTaskActive      = infraerrors.New(http.StatusTooManyRequests, "IMAGE_TASK_ALREADY_ACTIVE", "this API key already has an active image task")
-	ErrImageTaskUnavailable = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
+	ErrImageTaskNotFound              = infraerrors.New(http.StatusNotFound, "IMAGE_TASK_NOT_FOUND", "image task not found")
+	ErrImageTaskForbidden             = infraerrors.New(http.StatusForbidden, "IMAGE_TASK_FORBIDDEN", "image task does not belong to this API key")
+	ErrImageTaskActive                = infraerrors.New(http.StatusTooManyRequests, "IMAGE_TASK_ALREADY_ACTIVE", "this API key already has an active image task")
+	ErrImageTaskUnavailable           = infraerrors.New(http.StatusServiceUnavailable, "IMAGE_TASK_UNAVAILABLE", "image task storage is unavailable")
 	ErrImageTaskIdempotencyKeyInvalid = infraerrors.New(http.StatusBadRequest, "IMAGE_TASK_IDEMPOTENCY_KEY_INVALID", "idempotency key is invalid")
-	ErrImageTaskIdempotencyConflict    = infraerrors.New(http.StatusConflict, "IMAGE_TASK_IDEMPOTENCY_CONFLICT", "idempotency key reused with a different image request")
+	ErrImageTaskIdempotencyConflict   = infraerrors.New(http.StatusConflict, "IMAGE_TASK_IDEMPOTENCY_CONFLICT", "idempotency key reused with a different image request")
 )
 
 // ImageTaskRecord is the private Redis representation of an asynchronous image
@@ -54,8 +54,8 @@ type ImageTaskRecord struct {
 	OutputResize *ImageResizeSpec `json:"output_resize,omitempty"`
 	// Idempotency fields are private task-store metadata and are never exposed
 	// through imageTaskToPublic.
-	IdempotencyKeyHash  string `json:"idempotency_key_hash,omitempty"`
-	RequestFingerprint  string `json:"request_fingerprint,omitempty"`
+	IdempotencyKeyHash string `json:"idempotency_key_hash,omitempty"`
+	RequestFingerprint string `json:"request_fingerprint,omitempty"`
 }
 
 type ImageResizeSpec struct {
@@ -230,13 +230,13 @@ func (s *ImageTaskService) createWithResizeAndIdempotency(ctx context.Context, o
 	}
 	now := time.Now().UTC()
 	task := &ImageTaskRecord{
-		ID:           "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		UserID:       owner.UserID,
-		APIKeyID:     owner.APIKeyID,
-		Status:       ImageTaskStatusProcessing,
-		CreatedAt:    now.Unix(),
-		ExpiresAt:    now.Add(s.ttl).Unix(),
-		OutputResize: resize,
+		ID:                 "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+		UserID:             owner.UserID,
+		APIKeyID:           owner.APIKeyID,
+		Status:             ImageTaskStatusProcessing,
+		CreatedAt:          now.Unix(),
+		ExpiresAt:          now.Add(s.ttl).Unix(),
+		OutputResize:       resize,
 		IdempotencyKeyHash: keyHash,
 		RequestFingerprint: requestFingerprint,
 	}
