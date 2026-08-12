@@ -9,8 +9,10 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +48,12 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
+
+type temporaryImageDownloadError struct{}
+
+func (temporaryImageDownloadError) Error() string   { return "temporary network error" }
+func (temporaryImageDownloadError) Timeout() bool   { return false }
+func (temporaryImageDownloadError) Temporary() bool { return true }
 
 func (f *fakeImageStorage) Save(_ context.Context, key, contentType string, data []byte) (string, error) {
 	if f.err != nil {
@@ -107,6 +115,66 @@ func TestImageResultUploaderRewritesURL(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out, &parsed))
 	require.JSONEq(t, `"https://cdn.test/images/imgtask_xyz-0.png"`, string(parsed.Data[0]["url"]))
+}
+
+func TestImageResultUploaderRetriesTransientDownloadStatus(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("temporary")), Header: make(http.Header), Request: req}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(pngBytes)), Header: http.Header{"Content-Type": []string{"image/png"}}, Request: req}, nil
+	})}
+	storage := &fakeImageStorage{}
+	uploader := NewImageResultUploader(storage, "images/", 0, client)
+	out, err := uploader.Rewrite(context.Background(), "imgtask_retry", json.RawMessage(`{"data":[{"url":"https://cdn.test/retry.png"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, 3, attempts)
+	require.Contains(t, string(out), "cdn.test/images/imgtask_retry-0.png")
+}
+
+func TestImageResultUploaderDoesNotRetryPermanentDownloadStatus(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("forbidden")), Header: make(http.Header), Request: req}, nil
+	})}
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+	_, err := uploader.Rewrite(context.Background(), "imgtask_forbidden", json.RawMessage(`{"data":[{"url":"https://cdn.test/private.png"}]}`))
+	require.ErrorContains(t, err, "unexpected status 403")
+	require.Equal(t, 1, attempts)
+}
+
+func TestImageResultUploaderRetriesTransientNetworkError(t *testing.T) {
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, temporaryImageDownloadError{}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(pngBytes)), Header: http.Header{"Content-Type": []string{"image/png"}}, Request: req}, nil
+	})}
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+	_, err := uploader.Rewrite(context.Background(), "imgtask_network", json.RawMessage(`{"data":[{"url":"https://cdn.test/network.png"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, 2, attempts)
+}
+
+func TestImageResultUploaderRetryBackoffHonorsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		cancel()
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("busy")), Header: make(http.Header), Request: req}, nil
+	})}
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+	started := time.Now()
+	_, err := uploader.Rewrite(ctx, "imgtask_cancel", json.RawMessage(`{"data":[{"url":"https://cdn.test/cancel.png"}]}`))
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, attempts)
+	require.Less(t, time.Since(started), imageDownloadRetryBaseDelay)
 }
 
 func TestImageResultUploaderRejectsInsecureImageURLAndRedirect(t *testing.T) {

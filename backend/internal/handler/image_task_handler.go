@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -292,8 +293,17 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		statusCode = http.StatusOK
 	}
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
-		if len(body) == 0 || !json.Valid(body) {
-			h.failTask(taskID, http.StatusBadGateway, imageTaskErrorPayload("api_error", "upstream returned an invalid image response"))
+		if err := validateAsyncImageSuccessResponse(body); err != nil {
+			// Some upstream adapters (and JSON keepalive) can commit a 2xx
+			// response before the final error payload arrives. Never persist that
+			// payload as a completed image task; retain the upstream error object
+			// when one is present and use 502 because the 2xx is not a real image
+			// success status.
+			taskErr := extractImageTaskError(body)
+			if !hasImageTaskError(body) {
+				taskErr = imageTaskErrorPayload("api_error", err.Error())
+			}
+			h.failTask(taskID, http.StatusBadGateway, taskErr)
 			return
 		}
 		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), h.tasks.FinalizeTimeout())
@@ -304,6 +314,64 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		return
 	}
 	h.failTask(taskID, statusCode, extractImageTaskError(body))
+}
+
+// validateAsyncImageSuccessResponse validates the subset of the Images API
+// response that an asynchronous task can safely persist. A syntactically valid
+// JSON error envelope is still a failed upstream request, not a completed task.
+func validateAsyncImageSuccessResponse(body []byte) error {
+	if len(body) == 0 || !json.Valid(body) {
+		return errors.New("upstream returned an invalid image response")
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return errors.New("upstream returned an invalid image response")
+	}
+	if rawError, ok := envelope["error"]; ok && !isJSONNullOrEmpty(rawError) {
+		return errors.New("upstream returned an image error response")
+	}
+	rawData, ok := envelope["data"]
+	if !ok || isJSONNullOrEmpty(rawData) {
+		return errors.New("upstream returned no image data")
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(rawData, &items); err != nil || len(items) == 0 {
+		return errors.New("upstream returned no image data")
+	}
+	for i, rawItem := range items {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(rawItem, &item); err != nil {
+			return fmt.Errorf("upstream image item %d is invalid", i)
+		}
+		if !nonEmptyJSONString(item["b64_json"]) && !nonEmptyJSONString(item["url"]) {
+			return fmt.Errorf("upstream image item %d has neither b64_json nor url", i)
+		}
+	}
+	return nil
+}
+
+func hasImageTaskError(body []byte) bool {
+	if !json.Valid(body) {
+		return false
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(body, &envelope) != nil {
+		return false
+	}
+	rawError, ok := envelope["error"]
+	return ok && !isJSONNullOrEmpty(rawError)
+}
+
+func isJSONNullOrEmpty(raw json.RawMessage) bool {
+	return len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func nonEmptyJSONString(raw json.RawMessage) bool {
+	if len(raw) == 0 || isJSONNullOrEmpty(raw) {
+		return false
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != ""
 }
 
 func (h *AsyncImageHandler) failTask(taskID string, statusCode int, taskErr json.RawMessage) {
