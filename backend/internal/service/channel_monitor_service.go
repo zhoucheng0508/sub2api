@@ -73,7 +73,7 @@ type ChannelMonitorService struct {
 	encryptor             SecretEncryptor
 	internalProbeAuth     *internalprobe.Authenticator
 	internalProbeSettings *SettingService
-	settings channelMonitorRuntimeReader
+	settings              channelMonitorRuntimeReader
 	// scheduler 由 wire 通过 SetScheduler 注入；CRUD 后调用对应钩子即时同步任务。
 	// 测试或未注入场景下保持 nil，所有钩子调用变为 no-op。
 	scheduler MonitorScheduler
@@ -101,11 +101,15 @@ func (s *ChannelMonitorService) setInternalProbeAuthenticator(
 }
 
 func (s *ChannelMonitorService) SetRuntimeReader(r channelMonitorRuntimeReader) {
-	if s != nil { s.settings = r }
+	if s != nil {
+		s.settings = r
+	}
 }
 
 func (s *ChannelMonitorService) probeRuntime(ctx context.Context) ChannelMonitorRuntime {
-	if s == nil || s.settings == nil { return ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2} }
+	if s == nil || s.settings == nil {
+		return ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2}
+	}
 	return s.settings.GetChannelMonitorRuntime(ctx)
 }
 
@@ -455,8 +459,12 @@ func (s *ChannelMonitorService) ListHistory(ctx context.Context, id int64, model
 // 写历史记录并更新 last_checked_at。返回每个模型的检测结果。
 func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*CheckResult, error) {
 	rt := s.probeRuntime(ctx)
-	if !rt.Enabled { return nil, ErrChannelMonitorDisabled }
-	if !rt.ActiveProbesAllowed() { return nil, ErrChannelMonitorActiveProbesRetired }
+	if !rt.Enabled {
+		return nil, ErrChannelMonitorDisabled
+	}
+	if !rt.ActiveProbesAllowed() {
+		return nil, ErrChannelMonitorActiveProbesRetired
+	}
 	m, err := s.Get(ctx, id) // 已解密 APIKey
 	if err != nil {
 		return nil, err
