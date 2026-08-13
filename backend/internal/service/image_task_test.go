@@ -18,7 +18,7 @@ type imageTaskMemoryStore struct {
 	getErr       error
 	releaseErr   error
 	releaseCalls int
-	active       map[int64]string
+	active       map[int64]map[string]struct{}
 }
 
 func (s *imageTaskMemoryStore) Save(_ context.Context, task *ImageTaskRecord, ttl time.Duration) error {
@@ -42,14 +42,17 @@ func (s *imageTaskMemoryStore) Get(_ context.Context, _ string) (*ImageTaskRecor
 	return &copy, nil
 }
 
-func (s *imageTaskMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID string, _ time.Duration) (bool, error) {
+func (s *imageTaskMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID string, maxActive int, _ time.Duration) (bool, error) {
 	if s.active == nil {
-		s.active = make(map[int64]string)
+		s.active = make(map[int64]map[string]struct{})
 	}
-	if s.active[apiKeyID] != "" {
+	if s.active[apiKeyID] == nil {
+		s.active[apiKeyID] = make(map[string]struct{})
+	}
+	if len(s.active[apiKeyID]) >= maxActive {
 		return false, nil
 	}
-	s.active[apiKeyID] = taskID
+	s.active[apiKeyID][taskID] = struct{}{}
 	return true, nil
 }
 
@@ -58,7 +61,8 @@ func (s *imageTaskMemoryStore) Release(_ context.Context, apiKeyID int64, taskID
 	if s.releaseErr != nil {
 		return s.releaseErr
 	}
-	if s.active[apiKeyID] == taskID {
+	delete(s.active[apiKeyID], taskID)
+	if len(s.active[apiKeyID]) == 0 {
 		delete(s.active, apiKeyID)
 	}
 	return nil
@@ -109,6 +113,24 @@ func TestImageTaskServiceRejectsSecondActiveTaskForSameAPIKey(t *testing.T) {
 
 	_, err = svc.Create(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 10})
 	require.NoError(t, err)
+}
+
+func TestImageTaskServiceAllowsConfiguredActiveTasksPerAPIKey(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	svc := NewImageTaskServiceWithOptions(store, time.Hour, 10*time.Minute).SetMaxActivePerAPIKey(2)
+	owner := ImageTaskOwner{UserID: 7, APIKeyID: 9}
+
+	first, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	second, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	_, err = svc.Create(context.Background(), owner)
+	require.ErrorIs(t, err, ErrImageTaskActive)
+
+	require.NoError(t, svc.Complete(context.Background(), first.ID, http.StatusOK, json.RawMessage(`{"data":[]}`)))
+	third, err := svc.Create(context.Background(), owner)
+	require.NoError(t, err)
+	require.NotEqual(t, second.ID, third.ID)
 }
 
 func TestImageTaskServiceStoresOutputResize(t *testing.T) {

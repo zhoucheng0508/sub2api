@@ -51,12 +51,12 @@ func TestImageTaskStoreActiveSlotIsAtomicAndOwnerSafe(t *testing.T) {
 	store := NewImageTaskStore(rdb)
 	ctx := context.Background()
 
-	acquired, err := store.Acquire(ctx, 9, "imgtask_first", 35*time.Minute)
+	acquired, err := store.Acquire(ctx, 9, "imgtask_first", 1, 35*time.Minute)
 	require.NoError(t, err)
 	require.True(t, acquired)
-	require.Equal(t, 35*time.Minute, mr.TTL(imageTaskActiveKey(9)))
+	require.InDelta(t, (35 * time.Minute).Seconds(), mr.TTL(imageTaskActiveKey(9)).Seconds(), 1)
 
-	acquired, err = store.Acquire(ctx, 9, "imgtask_second", 35*time.Minute)
+	acquired, err = store.Acquire(ctx, 9, "imgtask_second", 1, 35*time.Minute)
 	require.NoError(t, err)
 	require.False(t, acquired)
 
@@ -65,13 +65,13 @@ func TestImageTaskStoreActiveSlotIsAtomicAndOwnerSafe(t *testing.T) {
 	require.NoError(t, store.Release(ctx, 9, "imgtask_first"))
 	require.False(t, mr.Exists(imageTaskActiveKey(9)))
 
-	acquired, err = store.Acquire(ctx, 9, "imgtask_new", 35*time.Minute)
+	acquired, err = store.Acquire(ctx, 9, "imgtask_new", 1, 35*time.Minute)
 	require.NoError(t, err)
 	require.True(t, acquired)
 	require.NoError(t, store.Release(ctx, 9, "imgtask_first"))
-	activeTaskID, err := mr.Get(imageTaskActiveKey(9))
+	members, err := mr.ZMembers(imageTaskActiveKey(9))
 	require.NoError(t, err)
-	require.Equal(t, "imgtask_new", activeTaskID)
+	require.Equal(t, []string{"imgtask_new"}, members)
 }
 
 func TestImageTaskStoreOnlyOneConcurrentAcquireWins(t *testing.T) {
@@ -89,7 +89,7 @@ func TestImageTaskStoreOnlyOneConcurrentAcquireWins(t *testing.T) {
 		go func(index int) {
 			defer wg.Done()
 			taskID := fmt.Sprintf("imgtask_%d", index)
-			acquired, err := store.Acquire(ctx, 99, taskID, 35*time.Minute)
+			acquired, err := store.Acquire(ctx, 99, taskID, 1, 35*time.Minute)
 			require.NoError(t, err)
 			if acquired {
 				winners <- taskID
@@ -104,7 +104,74 @@ func TestImageTaskStoreOnlyOneConcurrentAcquireWins(t *testing.T) {
 		winnerIDs = append(winnerIDs, taskID)
 	}
 	require.Len(t, winnerIDs, 1)
-	activeTaskID, err := mr.Get(imageTaskActiveKey(99))
+	members, err := mr.ZMembers(imageTaskActiveKey(99))
 	require.NoError(t, err)
-	require.Equal(t, winnerIDs[0], activeTaskID)
+	require.Equal(t, winnerIDs, members)
+}
+
+func TestImageTaskStoreAllowsConfiguredSlotsAndReclaimsExpired(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewImageTaskStore(rdb)
+	ctx := context.Background()
+
+	first, err := store.Acquire(ctx, 9, "first", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, first)
+	second, err := store.Acquire(ctx, 9, "second", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, second)
+	third, err := store.Acquire(ctx, 9, "third", 2, time.Minute)
+	require.NoError(t, err)
+	require.False(t, third)
+
+	mr.FastForward(61 * time.Second)
+	third, err = store.Acquire(ctx, 9, "third", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, third)
+}
+
+func TestImageTaskStoreDuplicateTaskDoesNotConsumeAnotherSlot(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewImageTaskStore(rdb)
+	ctx := context.Background()
+
+	acquired, err := store.Acquire(ctx, 9, "same-task", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	acquired, err = store.Acquire(ctx, 9, "same-task", 2, time.Minute)
+	require.NoError(t, err)
+	require.False(t, acquired)
+
+	acquired, err = store.Acquire(ctx, 9, "other-task", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	members, err := mr.ZMembers(imageTaskActiveKey(9))
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"same-task", "other-task"}, members)
+}
+
+func TestImageTaskStoreWaitsForLegacyStringLock(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewImageTaskStore(rdb)
+	ctx := context.Background()
+
+	require.NoError(t, rdb.Set(ctx, imageTaskActiveKey(9), "legacy-task", time.Minute).Err())
+	acquired, err := store.Acquire(ctx, 9, "new-task", 2, time.Minute)
+	require.NoError(t, err)
+	require.False(t, acquired)
+
+	require.NoError(t, store.Release(ctx, 9, "different-task"))
+	require.True(t, mr.Exists(imageTaskActiveKey(9)))
+	require.NoError(t, store.Release(ctx, 9, "legacy-task"))
+	require.False(t, mr.Exists(imageTaskActiveKey(9)))
+
+	acquired, err = store.Acquire(ctx, 9, "new-task", 2, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
 }

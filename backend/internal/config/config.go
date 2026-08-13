@@ -98,8 +98,17 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+	ImageTask               ImageTaskConfig               `mapstructure:"image_task"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 }
+
+// ImageTaskConfig controls admission for recoverable asynchronous image tasks.
+// Upstream account concurrency remains enforced by the gateway scheduler.
+type ImageTaskConfig struct {
+	MaxActivePerAPIKey int `mapstructure:"max_active_per_api_key"`
+}
+
+const MaxActiveImageTasksPerAPIKey = 32
 
 type LogConfig struct {
 	Level           string            `mapstructure:"level"`
@@ -2356,6 +2365,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
 	viper.SetDefault("gateway.image_concurrency.wait_timeout_seconds", 30)
 	viper.SetDefault("gateway.image_concurrency.max_waiting_requests", 100)
+	viper.SetDefault("image_task.max_active_per_api_key", 1)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -2957,6 +2967,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Redis.MinIdleConns > c.Redis.PoolSize {
 		return fmt.Errorf("redis.min_idle_conns cannot exceed redis.pool_size")
+	}
+	if c.ImageTask.MaxActivePerAPIKey < 1 || c.ImageTask.MaxActivePerAPIKey > MaxActiveImageTasksPerAPIKey {
+		return fmt.Errorf("image_task.max_active_per_api_key must be between 1 and %d", MaxActiveImageTasksPerAPIKey)
 	}
 	if c.BatchImage.QueueEnabled {
 		if strings.TrimSpace(c.BatchImage.QueueReadyKey) == "" {

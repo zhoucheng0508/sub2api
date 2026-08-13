@@ -87,7 +87,7 @@ type ImageTaskOwner struct {
 type ImageTaskStore interface {
 	Save(ctx context.Context, task *ImageTaskRecord, ttl time.Duration) error
 	Get(ctx context.Context, id string) (*ImageTaskRecord, error)
-	Acquire(ctx context.Context, apiKeyID int64, taskID string, ttl time.Duration) (bool, error)
+	Acquire(ctx context.Context, apiKeyID int64, taskID string, maxActive int, ttl time.Duration) (bool, error)
 	Release(ctx context.Context, apiKeyID int64, taskID string) error
 }
 
@@ -104,6 +104,7 @@ type ImageTaskService struct {
 	resolve          ImageStorageResolver
 	ttl              time.Duration
 	executionTimeout time.Duration
+	maxActivePerKey  int
 }
 
 func NewImageTaskService(store ImageTaskStore) *ImageTaskService {
@@ -117,7 +118,15 @@ func NewImageTaskServiceWithOptions(store ImageTaskStore, ttl, executionTimeout 
 	if executionTimeout <= 0 {
 		executionTimeout = defaultImageTaskExecutionTimeout
 	}
-	return &ImageTaskService{store: store, ttl: ttl, executionTimeout: executionTimeout}
+	return &ImageTaskService{store: store, ttl: ttl, executionTimeout: executionTimeout, maxActivePerKey: 1}
+}
+
+func (s *ImageTaskService) SetMaxActivePerAPIKey(maxActive int) *ImageTaskService {
+	if maxActive < 1 {
+		maxActive = 1
+	}
+	s.maxActivePerKey = maxActive
+	return s
 }
 
 // NewImageTaskServiceWithUploader 构造一个已启用的图片任务服务：结果会先经 uploader
@@ -243,7 +252,7 @@ func (s *ImageTaskService) createWithResizeAndIdempotency(ctx context.Context, o
 	if deterministicID != "" {
 		task.ID = deterministicID
 	}
-	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
+	acquired, err := s.store.Acquire(ctx, owner.APIKeyID, task.ID, s.maxActivePerKey, s.ExecutionTimeout()+imageTaskActiveSlotGrace)
 	if err != nil {
 		return nil, false, ErrImageTaskUnavailable.WithCause(err)
 	}

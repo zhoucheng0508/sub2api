@@ -100,7 +100,18 @@ The server stores the initial task in Redis and responds with `202 Accepted`:
 
 `Location` contains the polling path and `Retry-After: 3` provides the recommended polling interval.
 
-Each API key may have only one active asynchronous image task. The reservation is acquired atomically in Redis before the task is created and released only when the task reaches `completed` or `failed`. A second submission with the same key returns `429 IMAGE_TASK_ALREADY_ACTIVE` and `Retry-After: 3`; another API key can submit independently. The reservation has a timeout slightly longer than the maximum execution time so a crashed process cannot block the key permanently.
+Each API key may have a configurable number of active asynchronous image tasks. The default remains one for backward compatibility. Configure the admission limit in `config.yaml` or with `IMAGE_TASK_MAX_ACTIVE_PER_API_KEY`:
+
+```yaml
+image_task:
+  max_active_per_api_key: 4 # valid range: 1-32
+```
+
+The reservation is acquired atomically in Redis before each task is created and released only when that task reaches `completed` or `failed`. A submission above the configured limit returns `429 IMAGE_TASK_ALREADY_ACTIVE` and `Retry-After: 3`; another API key has an independent limit. Reservations expire slightly after the maximum execution time so a crashed process cannot block a slot permanently.
+
+This setting controls task admission only. It does not bypass the image gateway's account scheduler, per-account concurrency, or waiting limits. Size it to the tested capacity of the upstream image account pool and the object-storage/Lanczos processing path. Increasing it too far can turn a clear `429` into long queues or upstream failures.
+
+Upgrades from the previous single-value Redis lock are automatic. While an old-format active lock still exists, new submissions for that API key are rejected; after the old task releases it or its TTL expires, the key transparently starts using the multi-slot format.
 
 ### Optional Lanczos output resizing
 
