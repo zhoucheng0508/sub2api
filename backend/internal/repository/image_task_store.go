@@ -16,11 +16,37 @@ const (
 	imageTaskActiveKeyPrefix = "image_task_active:"
 )
 
-var releaseImageTaskSlotScript = redis.NewScript(`
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-  return redis.call("DEL", KEYS[1])
+var acquireImageTaskSlotScript = redis.NewScript(`
+local key = KEYS[1]
+local task_id = ARGV[1]
+local now_ms = tonumber(ARGV[2])
+local expires_ms = tonumber(ARGV[3])
+local max_active = tonumber(ARGV[4])
+local key_type = redis.call("TYPE", key)["ok"]
+if key_type == "string" then
+  return 0
 end
-return 0
+redis.call("ZREMRANGEBYSCORE", key, "-inf", now_ms)
+if redis.call("ZSCORE", key, task_id) then
+  return 0
+end
+if redis.call("ZCARD", key) >= max_active then
+  return 0
+end
+redis.call("ZADD", key, expires_ms, task_id)
+redis.call("PEXPIREAT", key, expires_ms)
+return 1
+`)
+
+var releaseImageTaskSlotScript = redis.NewScript(`
+local key_type = redis.call("TYPE", KEYS[1])["ok"]
+if key_type == "string" then
+  if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+  end
+  return 0
+end
+return redis.call("ZREM", KEYS[1], ARGV[1])
 `)
 
 type imageTaskStore struct {
@@ -54,8 +80,14 @@ func (s *imageTaskStore) Get(ctx context.Context, id string) (*service.ImageTask
 	return &task, nil
 }
 
-func (s *imageTaskStore) Acquire(ctx context.Context, apiKeyID int64, taskID string, ttl time.Duration) (bool, error) {
-	return s.rdb.SetNX(ctx, imageTaskActiveKey(apiKeyID), strings.TrimSpace(taskID), ttl).Result()
+func (s *imageTaskStore) Acquire(ctx context.Context, apiKeyID int64, taskID string, maxActive int, ttl time.Duration) (bool, error) {
+	if maxActive < 1 {
+		maxActive = 1
+	}
+	now := time.Now()
+	result, err := acquireImageTaskSlotScript.Run(ctx, s.rdb, []string{imageTaskActiveKey(apiKeyID)},
+		strings.TrimSpace(taskID), now.UnixMilli(), now.Add(ttl).UnixMilli(), maxActive).Int()
+	return result == 1, err
 }
 
 func (s *imageTaskStore) Release(ctx context.Context, apiKeyID int64, taskID string) error {

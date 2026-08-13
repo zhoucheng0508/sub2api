@@ -1300,6 +1300,12 @@ update:
 #
 # 换其它厂商对象存储：只要它兼容 S3 API 即可直接用；如需完全自定义，实现
 # service.ImageStorage 接口（Save(ctx, key, contentType, data) -> url）即可。
+# Admission limit for recoverable asynchronous image tasks. This does not
+# bypass the gateway's upstream account concurrency controls. Keep the value
+# aligned with the capacity of the image account pool and object-storage path.
+image_task:
+  max_active_per_api_key: 1 # 1-32; env: IMAGE_TASK_MAX_ACTIVE_PER_API_KEY
+
 image_storage:
   enabled: false
   # S3 兼容端点。AWS 官方可留空；R2 形如 https://<account_id>.r2.cloudflarestorage.com

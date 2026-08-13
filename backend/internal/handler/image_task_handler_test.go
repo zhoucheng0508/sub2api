@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +20,7 @@ import (
 type asyncImageMemoryStore struct {
 	mu     sync.RWMutex
 	tasks  map[string]*service.ImageTaskRecord
-	active map[int64]string
+	active map[int64]map[string]struct{}
 }
 
 func (s *asyncImageMemoryStore) Save(_ context.Context, task *service.ImageTaskRecord, _ time.Duration) error {
@@ -45,23 +46,27 @@ func (s *asyncImageMemoryStore) Get(_ context.Context, id string) (*service.Imag
 	return &copy, nil
 }
 
-func (s *asyncImageMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID string, _ time.Duration) (bool, error) {
+func (s *asyncImageMemoryStore) Acquire(_ context.Context, apiKeyID int64, taskID string, maxActive int, _ time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active == nil {
-		s.active = make(map[int64]string)
+		s.active = make(map[int64]map[string]struct{})
 	}
-	if s.active[apiKeyID] != "" {
+	if s.active[apiKeyID] == nil {
+		s.active[apiKeyID] = make(map[string]struct{})
+	}
+	if len(s.active[apiKeyID]) >= maxActive {
 		return false, nil
 	}
-	s.active[apiKeyID] = taskID
+	s.active[apiKeyID][taskID] = struct{}{}
 	return true, nil
 }
 
 func (s *asyncImageMemoryStore) Release(_ context.Context, apiKeyID int64, taskID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active[apiKeyID] == taskID {
+	delete(s.active[apiKeyID], taskID)
+	if len(s.active[apiKeyID]) == 0 {
 		delete(s.active, apiKeyID)
 	}
 	return nil
@@ -135,6 +140,69 @@ func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	require.Equal(t, "no-store", pollWriter.Header().Get("Cache-Control"))
 	require.Empty(t, pollWriter.Header().Get("Retry-After"))
 	require.Contains(t, pollWriter.Body.String(), "https://example.test/image.png")
+}
+
+func TestAsyncImageHandlerAllowsConfiguredConcurrentTasks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute).SetMaxActivePerAPIKey(4)
+	release := make(chan struct{})
+	h := &AsyncImageHandler{tasks: tasks}
+	h.execute = func(_ string, c *gin.Context) {
+		<-release
+		c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"url": "https://example.test/image.png"}}})
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		groupID := int64(3)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			ID: 9, UserID: 7, GroupID: &groupID,
+			Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, AllowImageGeneration: true},
+		})
+		c.Next()
+	})
+	router.POST("/v1/images/generations/async", h.Submit)
+
+	submit := func(prompt string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async",
+			strings.NewReader(`{"model":"gpt-image-2","prompt":"`+prompt+`","n":1}`))
+		req.Header.Set("Content-Type", "application/json")
+		writer := httptest.NewRecorder()
+		router.ServeHTTP(writer, req)
+		return writer
+	}
+
+	taskIDs := make([]string, 0, 4)
+	for i := 0; i < 4; i++ {
+		writer := submit(fmt.Sprintf("image-%d", i))
+		require.Equal(t, http.StatusAccepted, writer.Code)
+		var response struct {
+			TaskID string `json:"task_id"`
+		}
+		require.NoError(t, json.Unmarshal(writer.Body.Bytes(), &response))
+		require.NotEmpty(t, response.TaskID)
+		taskIDs = append(taskIDs, response.TaskID)
+	}
+
+	fifth := submit("over-limit")
+	require.Equal(t, http.StatusTooManyRequests, fifth.Code)
+	require.Equal(t, "3", fifth.Header().Get("Retry-After"))
+	require.Contains(t, fifth.Body.String(), "IMAGE_TASK_ALREADY_ACTIVE")
+
+	close(release)
+	require.Eventually(t, func() bool {
+		for _, taskID := range taskIDs {
+			task, err := tasks.Get(context.Background(), service.ImageTaskOwner{UserID: 7, APIKeyID: 9}, taskID)
+			if err != nil || task.Status != service.ImageTaskStatusCompleted {
+				return false
+			}
+		}
+		return true
+	}, time.Second, 10*time.Millisecond)
+
+	sixth := submit("after-release")
+	require.Equal(t, http.StatusAccepted, sixth.Code)
 }
 
 // When object storage is not configured the feature is fully disabled: the

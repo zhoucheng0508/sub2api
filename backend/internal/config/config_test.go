@@ -49,6 +49,35 @@ func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
 	require.Equal(t, "app-user", cfg.Redis.Username)
 }
 
+func TestLoadImageTaskConcurrency(t *testing.T) {
+	t.Run("defaults to one active task per API key", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Equal(t, 1, cfg.ImageTask.MaxActivePerAPIKey)
+	})
+
+	t.Run("loads environment override", func(t *testing.T) {
+		resetViperWithJWTSecret(t)
+		t.Setenv("IMAGE_TASK_MAX_ACTIVE_PER_API_KEY", "4")
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Equal(t, 4, cfg.ImageTask.MaxActivePerAPIKey)
+	})
+
+	for _, value := range []string{"0", "33"} {
+		t.Run("rejects out of range value "+value, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("IMAGE_TASK_MAX_ACTIVE_PER_API_KEY", value)
+
+			_, err := Load()
+			require.ErrorContains(t, err, "image_task.max_active_per_api_key must be between 1 and 32")
+		})
+	}
+}
+
 func TestLoadHTTPIngressSafetyDefaults(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
