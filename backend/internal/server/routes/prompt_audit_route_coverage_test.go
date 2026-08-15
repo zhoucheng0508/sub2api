@@ -49,6 +49,7 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 		"/messages/count_tokens":    {"gateway_handler.go", "openai_gateway_count_tokens.go"},
 		"/tts":                      {"grok_audio.go"},
 		"/web_search":               {"gateway_web_search.go"},
+		"/x_search":                 {"gateway_web_search.go"},
 	}
 	excluded := map[string]string{
 		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
