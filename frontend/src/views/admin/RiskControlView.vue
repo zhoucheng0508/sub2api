@@ -1347,7 +1347,7 @@
           <div v-if="inputDetailAuditDetails" class="border-t border-gray-100 pt-4 dark:border-dark-700" data-test="supporting-context">
             <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.supportingContext') }}</p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.supportingContextHint') }}</p>
-            <pre class="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-100 p-4 text-xs leading-5 text-gray-700 dark:bg-dark-900 dark:text-gray-200">{{ supportingContextText }}</pre>
+            <pre class="mt-3 max-h-[560px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-100 p-4 text-xs leading-5 text-gray-700 dark:bg-dark-900 dark:text-gray-200">{{ supportingContextText }}</pre>
           </div>
 
           <AuditStageDiagnostics :stages="inputDetailAuditDetails?.stages" />
