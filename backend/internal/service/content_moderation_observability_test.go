@@ -128,7 +128,7 @@ func TestPopulateContentModerationAuditDetails_RedactsAndBoundsPersistedExcerpts
 	require.Equal(t, "user_intent", details.AuditTargetKind)
 	require.Equal(t, "openai_responses", details.AuditTargetSource)
 	require.LessOrEqual(t, len([]rune(details.AuditTargetExcerpt)), 1200)
-	require.LessOrEqual(t, len([]rune(details.SupportingContextExcerpt)), 1600)
+	require.LessOrEqual(t, len([]rune(details.SupportingContextExcerpt)), 8000)
 	require.NotEqual(t, targetRaw, details.AuditTargetExcerpt)
 	require.NotContains(t, details.SupportingContextExcerpt, toolRaw)
 	require.NotContains(t, details.SupportingContextExcerpt, "MIDDLE-RAW-TOOL-SENTINEL")
@@ -250,7 +250,7 @@ func assertContentModerationAuditFieldRedacted(t *testing.T, name, value string,
 	}
 }
 
-func TestPopulateContentModerationAuditDetails_BoundsSupportingContextAndKeepsOnlyFourTurns(t *testing.T) {
+func TestPopulateContentModerationAuditDetails_PrioritizesRecentConversationContext(t *testing.T) {
 	turns := []ContentModerationTurn{
 		{Role: "user", Source: "chat", Purpose: "audit_target", Text: "current request"},
 	}
@@ -278,11 +278,45 @@ func TestPopulateContentModerationAuditDetails_BoundsSupportingContextAndKeepsOn
 	}, nil, nil, false)
 
 	excerpt := log.AuditDetails.SupportingContextExcerpt
-	require.LessOrEqual(t, len([]rune(excerpt)), 1600)
-	require.Contains(t, excerpt, "supporting-turn-1")
-	require.Contains(t, excerpt, "supporting-turn-2")
-	require.Contains(t, excerpt, "supporting-turn-3")
-	require.NotContains(t, excerpt, "supporting-turn-5")
+	require.LessOrEqual(t, len([]rune(excerpt)), 8000)
+	for i := 1; i <= 5; i++ {
+		require.Contains(t, excerpt, fmt.Sprintf("supporting-turn-%d", i))
+	}
+
+	// Metadata must not crowd out the actual conversation when the payload is
+	// large enough to contain only a bounded diagnostic excerpt.
+	metadataTurns := make([]ContentModerationTurn, 0, 20)
+	for i := 0; i < 20; i++ {
+		metadataTurns = append(metadataTurns, ContentModerationTurn{
+			Role: "developer", Source: "client_instruction", Purpose: "supporting_context",
+			Text: fmt.Sprintf("client-metadata-%d", i),
+		})
+	}
+	metadataTurns = append(metadataTurns, ContentModerationTurn{
+		Role: "user", Source: "openai_responses", Purpose: "supporting_context", Text: "recent-user-intent",
+	})
+	populateContentModerationAuditDetails(log, cfg, ContentModerationInput{
+		AuditTargetText: "current request", AuditTargetKind: "user_intent",
+		Turns: metadataTurns,
+	}, nil, nil, false)
+	require.Contains(t, log.AuditDetails.SupportingContextExcerpt, "recent-user-intent")
+
+	longTurns := make([]ContentModerationTurn, 0, 12)
+	for i := 0; i < 11; i++ {
+		longTurns = append(longTurns, ContentModerationTurn{
+			Role: "assistant", Source: "openai_responses", Purpose: "supporting_context",
+			Text: fmt.Sprintf("older-long-turn-%d-%s", i, strings.Repeat("旧", 1180)),
+		})
+	}
+	longTurns = append(longTurns, ContentModerationTurn{
+		Role: "user", Source: "openai_responses", Purpose: "supporting_context",
+		Text: "latest-user-turn-must-survive-total-budget",
+	})
+	populateContentModerationAuditDetails(log, cfg, ContentModerationInput{
+		AuditTargetText: "current request", AuditTargetKind: "user_intent", Turns: longTurns,
+	}, nil, nil, false)
+	require.LessOrEqual(t, len([]rune(log.AuditDetails.SupportingContextExcerpt)), 8000)
+	require.Contains(t, log.AuditDetails.SupportingContextExcerpt, "latest-user-turn-must-survive-total-budget")
 }
 
 func TestPopulateContentModerationAuditDetails_CompleteProviderUsageAndReviewFlags(t *testing.T) {
