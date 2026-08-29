@@ -108,6 +108,10 @@ func (c *githubReleaseClientError) FetchLatestRelease(ctx context.Context, repo 
 	return nil, c.err
 }
 
+func (c *githubReleaseClientError) FetchReleaseByTag(ctx context.Context, repo, tag string) (*service.GitHubRelease, error) {
+	return nil, c.err
+}
+
 func (c *githubReleaseClientError) FetchRecentReleases(ctx context.Context, repo string, perPage int) ([]*service.GitHubRelease, error) {
 	return nil, c.err
 }
@@ -143,6 +147,37 @@ func (c *githubReleaseClient) FetchLatestRelease(ctx context.Context, repo strin
 		return nil, err
 	}
 
+	return &release, nil
+}
+
+// FetchReleaseByTag fetches one explicitly requested release. The tag is
+// escaped as a single path segment so callers cannot alter the repository API
+// path; CC Switch version validation is performed by the service layer too.
+func (c *githubReleaseClient) FetchReleaseByTag(ctx context.Context, repo, tag string) (*service.GitHubRelease, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, url.PathEscape(tag))
+
+	req, err := c.newAPIRequest(ctx, apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, service.ErrGitHubReleaseNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var release service.GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, err
+	}
 	return &release, nil
 }
 

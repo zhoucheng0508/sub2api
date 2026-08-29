@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import CodexOneClickModal from '../CodexOneClickModal.vue'
 import { buildCodexSetupScript } from '@/utils/codexOneClick'
+import type { ApiKey, GroupPlatform } from '@/types'
+import type { CcSwitchAppType } from '@/utils/ccswitchImport'
 
 const openSpy = vi.fn()
 const clipboardCopySpy = vi.hoisted(() => vi.fn())
 const resolveCCSwitchDownloadSpy = vi.hoisted(() => vi.fn())
 const startCCSwitchDownloadSpy = vi.hoisted(() => vi.fn())
+const listCCSwitchVersionsSpy = vi.hoisted(() => vi.fn())
+const buildCCSwitchDirectDownloadURLSpy = vi.hoisted(() => vi.fn())
 const mountedWrappers: Array<{ unmount: () => void }> = []
 
 vi.mock('vue-i18n', () => ({
@@ -19,7 +23,9 @@ vi.mock('@/composables/useClipboard', () => ({
 
 vi.mock('@/api/downloads', () => ({
   resolveCCSwitchDownload: resolveCCSwitchDownloadSpy,
-  startCCSwitchDownload: startCCSwitchDownloadSpy
+  startCCSwitchDownload: startCCSwitchDownloadSpy,
+  listCCSwitchVersions: listCCSwitchVersionsSpy,
+  buildCCSwitchDirectDownloadURL: buildCCSwitchDirectDownloadURLSpy
 }))
 
 describe('CodexOneClickModal', () => {
@@ -34,6 +40,10 @@ describe('CodexOneClickModal', () => {
       release_url: 'https://github.com/farion1231/cc-switch/releases/tag/v3.19.1'
     })
     startCCSwitchDownloadSpy.mockReset()
+    listCCSwitchVersionsSpy.mockReset()
+    listCCSwitchVersionsSpy.mockResolvedValue({ versions: [] })
+    buildCCSwitchDirectDownloadURLSpy.mockReset()
+    buildCCSwitchDirectDownloadURLSpy.mockReturnValue('/api/v1/downloads/cc-switch/file')
     vi.stubGlobal('open', openSpy)
   })
 
@@ -44,7 +54,16 @@ describe('CodexOneClickModal', () => {
     vi.unstubAllGlobals()
   })
 
-  const mountModal = (errorHandler?: (error: unknown) => void) => {
+  const mountModal = (
+    errorHandler?: (error: unknown) => void,
+    overrides: Partial<{
+      platform: GroupPlatform | null
+      defaultApp: CcSwitchAppType
+      initialMethod: 'guide' | 'ccswitch' | 'script'
+      availableKeys: ApiKey[]
+      initialKeyId: number | null
+    }> = {}
+  ) => {
     const wrapper = mount(CodexOneClickModal, {
       attachTo: document.body,
       props: {
@@ -52,7 +71,8 @@ describe('CodexOneClickModal', () => {
         apiKey: 'sk-complete-secret-value',
         keyName: 'Codex key',
         baseUrl: 'https://api.example.com',
-        providerName: 'Example'
+        providerName: 'Example',
+        ...overrides
       },
       global: {
         ...(errorHandler ? { config: { errorHandler } } : {}),
@@ -76,6 +96,138 @@ describe('CodexOneClickModal', () => {
 
     await wrapper.get('[data-testid="codex-method-script"]').trigger('click')
     expect(wrapper.text()).not.toContain('sk-complete-secret-value')
+  })
+
+  it('exposes every CC Switch app and uses the selected app payload', async () => {
+    const wrapper = mountModal()
+
+    expect(wrapper.findAll('button[data-testid^="ccswitch-app-"]')).toHaveLength(9)
+    expect(wrapper.get('[data-testid="ccswitch-app-pi"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="ccswitch-app-selector"] [role="radiogroup"]').classes()).toEqual(
+      expect.arrayContaining(['grid-cols-2', 'sm:grid-cols-3', 'md:grid-cols-5'])
+    )
+    expect(wrapper.get('[data-testid="ccswitch-app-opencode"] img').attributes('src')).toBe('/ccswitch-icons/opencode.svg')
+    expect(wrapper.get('[data-testid="ccswitch-app-openclaw"] img').attributes('src')).toBe('/ccswitch-icons/openclaw.svg')
+    expect(wrapper.get('[data-testid="ccswitch-app-hermes"] img').attributes('src')).toBe('/ccswitch-icons/hermes.png')
+
+    await wrapper.get('[data-testid="ccswitch-app-opencode"]').trigger('click')
+    expect(wrapper.find('[data-testid="codex-method-script"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="codex-method-ccswitch"]').trigger('click')
+    await wrapper.get('[data-testid="ccswitch-model-input"]').setValue('custom-model')
+    await wrapper.get('[data-testid="open-ccswitch"]').trigger('click')
+
+    const params = new URLSearchParams((openSpy.mock.calls[0][0] as string).split('?')[1])
+    expect(params.get('app')).toBe('opencode')
+    expect(params.get('model')).toBe('custom-model')
+    expect(params.get('endpoint')).toBe('https://api.example.com/v1')
+  })
+
+  it('hides the Codex-only script flow for other CC Switch clients', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.get('[data-testid="codex-method-script"]').trigger('click')
+    expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('codex-method-panel-script')
+
+    await wrapper.get('[data-testid="ccswitch-app-gemini"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="codex-method-script"]').exists()).toBe(false)
+    expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('codex-method-panel-guide')
+    expect(wrapper.find('[data-testid="codex-script-preview"]').exists()).toBe(false)
+  })
+
+  it('normalizes an invalid initial script method for non-Codex clients', () => {
+    const wrapper = mountModal(undefined, {
+      defaultApp: 'gemini',
+      initialMethod: 'script'
+    })
+
+    expect(wrapper.find('[data-testid="codex-method-script"]').exists()).toBe(false)
+    expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('codex-method-panel-guide')
+    expect(wrapper.find('[data-testid="codex-script-preview"]').exists()).toBe(false)
+  })
+
+  it('lets the user switch among active API keys without exposing full key values', async () => {
+    const secondKey = {
+      id: 2,
+      user_id: 1,
+      key: 'sk-second-secret-value',
+      name: 'Second key',
+      group_id: null,
+      status: 'active',
+      ip_whitelist: [],
+      ip_blacklist: [],
+      last_used_at: null,
+      last_used_ip: null,
+      quota: 0,
+      quota_used: 0,
+      expires_at: null,
+      created_at: '',
+      updated_at: '',
+      current_concurrency: 0,
+      rate_limit_5h: 0,
+      rate_limit_1d: 0,
+      rate_limit_7d: 0,
+      usage_5h: 0,
+      usage_1d: 0,
+      usage_7d: 0,
+      window_5h_start: null,
+      window_1d_start: null,
+      window_7d_start: null,
+      reset_5h_at: null,
+      reset_1d_at: null,
+      reset_7d_at: null
+    } satisfies ApiKey
+    const firstKey = {
+      ...secondKey,
+      id: 1,
+      key: 'sk-first-secret-value',
+      name: 'First key'
+    } satisfies ApiKey
+    const wrapper = mountModal(undefined, {
+      availableKeys: [firstKey, secondKey],
+      initialKeyId: 1
+    })
+
+    expect(wrapper.get('[data-testid="ccswitch-key-select"]').element.value).toBe('1')
+    await wrapper.get('[data-testid="ccswitch-key-select"]').setValue('2')
+    expect(wrapper.text()).toContain('Second key')
+    expect(wrapper.text()).toContain('sk-sec...alue')
+    expect(wrapper.text()).not.toContain('sk-second-secret-value')
+
+    await wrapper.get('[data-testid="ccswitch-app-opencode"]').trigger('click')
+    // Simulate the parent replacing its list after an async page-1 fetch. The
+    // user's key and client choices must survive that list refresh.
+    await wrapper.setProps({ availableKeys: [firstKey, secondKey] })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="ccswitch-key-select"]').element.value).toBe('2')
+    expect(wrapper.get('[data-testid="ccswitch-app-opencode"]').attributes('aria-checked')).toBe('true')
+
+    await wrapper.get('[data-testid="codex-method-ccswitch"]').trigger('click')
+    await wrapper.get('[data-testid="open-ccswitch"]').trigger('click')
+    const params = new URLSearchParams((openSpy.mock.calls[0][0] as string).split('?')[1])
+    expect(params.get('apiKey')).toBe('sk-second-secret-value')
+  })
+
+  it('keeps Claude Desktop visible but disables unsupported provider deeplinks', async () => {
+    const wrapper = mountModal()
+    const desktopButton = wrapper.get('[data-testid="ccswitch-app-claude-desktop"]')
+    expect(desktopButton.attributes('disabled')).toBeDefined()
+    expect(desktopButton.attributes('aria-disabled')).toBe('true')
+    await desktopButton.trigger('click')
+    expect(wrapper.get('[data-testid="ccswitch-app-codex"]').attributes('aria-checked')).toBe('true')
+    expect(openSpy).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['grokbuild', 'https://x.ai/cli'],
+    ['opencode', 'https://opencode.ai/download'],
+    ['openclaw', 'https://docs.openclaw.ai/install'],
+    ['hermes', 'https://hermes-agent.nousresearch.com/docs/getting-started/installation/']
+  ] as const)('points %s to its official installation page', async (app, url) => {
+    const wrapper = mountModal()
+    await wrapper.get(`[data-testid="ccswitch-app-${app}"]`).trigger('click')
+
+    expect(wrapper.get('[data-testid="download-codex-app"]').attributes('href')).toBe(url)
   })
 
   it('renders verified Codex and CC Switch downloads for each operating system', async () => {
@@ -116,8 +268,43 @@ describe('CodexOneClickModal', () => {
 
     expect(resolveCCSwitchDownloadSpy).toHaveBeenCalledWith('linux', 'arm64', expect.any(AbortSignal))
     expect(startCCSwitchDownloadSpy).toHaveBeenCalledWith(
-      'https://github.com/farion1231/cc-switch/releases/download/v3.19.1/CC-Switch-v3.19.1-Windows.msi'
+      '/api/v1/downloads/cc-switch/file'
     )
+    expect(buildCCSwitchDirectDownloadURLSpy).toHaveBeenCalledWith('linux', 'arm64', undefined)
+  })
+
+  it('downloads a user-selected release through the same-origin file endpoint', async () => {
+    listCCSwitchVersionsSpy.mockResolvedValueOnce({
+      latest_version: '3.20.1',
+      versions: [{
+        version: '3.19.1',
+        tag_name: 'v3.19.1',
+        name: 'CC Switch 3.19.1',
+        release_url: 'https://github.com/farion1231/cc-switch/releases/tag/v3.19.1'
+      }]
+    })
+    resolveCCSwitchDownloadSpy.mockResolvedValueOnce({
+      download_url: 'https://github.com/legacy-asset',
+      direct_url: '/api/v1/downloads/cc-switch/file?os=windows&arch=amd64&version=v3.19.1',
+      file_name: 'CC-Switch-v3.19.1-Windows.msi',
+      release_url: 'https://github.com/farion1231/cc-switch/releases/tag/v3.19.1',
+      version: 'v3.19.1'
+    })
+    const wrapper = mountModal()
+    await flushPromises()
+    await wrapper.get('[data-testid="ccswitch-version-input"]').setValue('v3.19.1')
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+
+    expect(resolveCCSwitchDownloadSpy).toHaveBeenCalledWith(
+      'windows',
+      'amd64',
+      'v3.19.1',
+      expect.any(AbortSignal)
+    )
+    expect(startCCSwitchDownloadSpy).toHaveBeenCalledWith(
+      '/api/v1/downloads/cc-switch/file'
+    )
+    expect(buildCCSwitchDirectDownloadURLSpy).toHaveBeenCalledWith('windows', 'amd64', 'v3.19.1')
   })
 
   it('shows a visible failure while keeping the official Releases fallback', async () => {
@@ -167,6 +354,20 @@ describe('CodexOneClickModal', () => {
     await wrapper.vm.$nextTick()
 
     expect(startCCSwitchDownloadSpy).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending resolution when the requested version changes', async () => {
+    resolveCCSwitchDownloadSpy.mockReturnValueOnce(new Promise(() => {}))
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="download-cc-switch"]').trigger('click')
+    const signal = resolveCCSwitchDownloadSpy.mock.calls[0][2] as AbortSignal
+    expect(signal.aborted).toBe(false)
+
+    await wrapper.get('[data-testid="ccswitch-version-input"]').setValue('v3.20.0')
+
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.get('[data-testid="download-cc-switch"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="download-cc-switch"]').text()).not.toContain('keys.oneClick.resolvingCcSwitch')
   })
 
   it('cancels a pending download when the modal closes', async () => {
