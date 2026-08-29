@@ -298,6 +298,40 @@ func TestPanelRateLimiterPublicIP(t *testing.T) {
 	}
 }
 
+func TestPanelRateLimiterPublicTrustedIPIgnoresForwardedHeaders(t *testing.T) {
+	allower := &fakePanelAllower{}
+	p := &PanelRateLimiter{
+		limiter:        allower,
+		settingService: newPanelRateLimitTestService(t, `{"enabled":true,"user_rpm":0,"heavy_rpm":0,"exempt_admin":true,"public_ip_rpm":1}`),
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	// No trusted proxy is configured: the direct peer is authoritative.
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.Use(p.PublicTrustedIP())
+	router.GET("/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.RemoteAddr = "203.0.113.9:1000"
+		req.Header.Set("X-Forwarded-For", "198.51.100.7")
+		req.Header.Set("CF-Connecting-IP", "192.0.2.10")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	require.Equal(t, http.StatusOK, request().Code)
+	require.Equal(t, http.StatusTooManyRequests, request().Code)
+
+	allower.mu.Lock()
+	defer allower.mu.Unlock()
+	require.Contains(t, allower.counts, "panel:public:ip:203.0.113.9")
+	require.NotContains(t, allower.counts, "panel:public:ip:198.51.100.7")
+	require.NotContains(t, allower.counts, "panel:public:ip:192.0.2.10")
+}
+
 func TestIsPubliclyRoutableClientIP(t *testing.T) {
 	require.True(t, isPubliclyRoutableClientIP("203.0.113.9"))
 	require.True(t, isPubliclyRoutableClientIP("2001:db8::1"))
