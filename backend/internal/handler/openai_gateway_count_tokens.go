@@ -96,7 +96,7 @@ func (h *OpenAIGatewayHandler) ResponsesInputTokens(c *gin.Context) {
 	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	requestStart := time.Now()
-	account, err := h.gatewayService.SelectAccountForTokenCount(
+	selectedAccount, err := h.gatewayService.SelectAccountForTokenCount(
 		c.Request.Context(),
 		apiKey.GroupID,
 		sessionHash,
@@ -114,6 +114,8 @@ func (h *OpenAIGatewayHandler) ResponsesInputTokens(c *gin.Context) {
 		h.errorResponse(c, cls.Status, cls.ErrType, cls.Message)
 		return
 	}
+	selection := struct{ Account *service.Account }{Account: selectedAccount}
+	account := selection.Account
 	if account == nil {
 		cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, routingModel, reqModel)
 		if !cls.ModelNotFound {
@@ -273,7 +275,7 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	if preferredMappedModel != "" {
 		currentRoutingModel = preferredMappedModel
 	}
-	account, err := h.gatewayService.SelectAccountForTokenCount(
+	selectedAccount, err := h.gatewayService.SelectAccountForTokenCount(
 		c.Request.Context(),
 		apiKey.GroupID,
 		sessionHash,
@@ -292,6 +294,8 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 		h.anthropicErrorResponse(c, cls.Status, cls.ErrType, cls.Message)
 		return
 	}
+	selection := struct{ Account *service.Account }{Account: selectedAccount}
+	account := selection.Account
 	if account == nil {
 		cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
 		if !cls.ModelNotFound {
