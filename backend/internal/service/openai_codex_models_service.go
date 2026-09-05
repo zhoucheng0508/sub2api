@@ -526,10 +526,6 @@ func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
 	return isOpenAIGPT6AstraModel(modelID)
 }
 
-func configuredCodexSupportsUltrafastServiceTier(modelID string) bool {
-	return normalizeKnownOpenAICodexModel(modelID) == "gpt-5.6-sol"
-}
-
 func configuredCodexGrokReasoningLevels(modelID string) []configuredCodexReasoningLevel {
 	levels := []configuredCodexReasoningLevel{
 		{Effort: "low", Description: "Fast responses with lighter reasoning"},
