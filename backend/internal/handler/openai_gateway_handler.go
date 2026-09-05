@@ -1678,11 +1678,13 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 	if err := decoder.Decode(&request); err != nil {
 		return body, false
 	}
+	historicalContext := false
 	if previousResponseID, exists := request["previous_response_id"]; exists {
 		value, ok := previousResponseID.(string)
 		if !ok {
 			return body, false
 		}
+		historicalContext = allowPreviousResponseID
 		if !allowPreviousResponseID && strings.TrimSpace(value) != "" {
 			return body, false
 		}
@@ -1701,16 +1703,16 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 			continue
 		}
 		typ := stringField(item, "type")
-		if (!allowPreviousResponseID && typ == "item_reference") || (!allowPreviousResponseID && strings.HasSuffix(typ, "_call")) {
+		if (!historicalContext && typ == "item_reference") || (!historicalContext && strings.HasSuffix(typ, "_call")) {
 			return body, false
 		}
 		if isResponsesCallOutputType(typ) {
 			callIDValue, exists := item["call_id"]
 			callID, isString := callIDValue.(string)
-			if exists && (!isString || strings.TrimSpace(callID) != "") && !allowPreviousResponseID {
+			if exists && (!isString || strings.TrimSpace(callID) != "") && !historicalContext {
 				return body, false
 			}
-			if !isCandidate(item) && !allowPreviousResponseID {
+			if !isCandidate(item) && !historicalContext {
 				return body, false
 			}
 		}
