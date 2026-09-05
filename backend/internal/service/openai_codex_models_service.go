@@ -1747,7 +1747,14 @@ func (s *OpenAIGatewayService) fetchCachedCodexModelsManifest(ctx context.Contex
 	if state == codexModelsManifestCacheFresh {
 		return codexModelsManifestForClient(manifest, ifNoneMatch), nil
 	}
-	resultCh := s.refreshCachedCodexModelsManifest(cacheKey, request, fetch, ifNoneMatch)
+	// A caller's ETag is meaningful for the OAuth passthrough endpoint. API-key
+	// manifests use an account-local cache and must always perform a cold fetch
+	// when no local entry exists.
+	requestedETag := ifNoneMatch
+	if request.useAPIKeyUpstream {
+		requestedETag = ""
+	}
+	resultCh := s.refreshCachedCodexModelsManifest(cacheKey, request, fetch, requestedETag)
 	if state == codexModelsManifestCacheStale {
 		return codexModelsManifestForClient(manifest, ifNoneMatch), nil
 	}
