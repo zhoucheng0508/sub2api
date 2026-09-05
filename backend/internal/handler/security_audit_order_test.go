@@ -97,7 +97,7 @@ func TestCountTokensAccountAuditFollowsSelectionAndPrecedesUpstream(t *testing.T
 		forwardToken   string
 	}{
 		{file: "gateway_handler.go", selectionToken: "account, err := h.gatewayService.SelectAccountForModel", forwardToken: "ForwardCountTokens("},
-		{file: "openai_gateway_count_tokens.go", selectionToken: "account := selection.Account", forwardToken: "ForwardCountTokensAsAnthropic("},
+		{file: "openai_gateway_count_tokens.go", selectionToken: "account, err := h.gatewayService.SelectAccountForTokenCount", forwardToken: "ForwardCountTokensAsAnthropic("},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
@@ -114,7 +114,7 @@ func TestCountTokensAccountAuditFollowsSelectionAndPrecedesUpstream(t *testing.T
 	}
 }
 
-func TestOpenAICountTokensBlockedAuditReleasesSelectionBeforeError(t *testing.T) {
+func TestOpenAICountTokensBlockedAuditDoesNotReleaseSelection(t *testing.T) {
 	source := stripGoComments(goFunctionSource(t, "openai_gateway_count_tokens.go", "CountTokens"))
 	auditIndex := strings.Index(source, "if decision := h.checkSecurityAuditForAccount")
 	require.NotEqual(t, -1, auditIndex)
@@ -122,10 +122,9 @@ func TestOpenAICountTokensBlockedAuditReleasesSelectionBeforeError(t *testing.T)
 	releaseIndex := strings.Index(afterAudit, "releaseSecurityAuditSelection(selection)")
 	errorIndex := strings.Index(afterAudit, "h.anthropicSecurityAuditError(c, decision)")
 	forwardIndex := strings.Index(afterAudit, "ForwardCountTokensAsAnthropic(")
-	require.NotEqual(t, -1, releaseIndex)
+	require.Equal(t, -1, releaseIndex, "count_tokens does not acquire an account slot")
 	require.NotEqual(t, -1, errorIndex)
 	require.NotEqual(t, -1, forwardIndex)
-	require.Less(t, releaseIndex, errorIndex)
 	require.Less(t, errorIndex, forwardIndex)
 }
 

@@ -117,7 +117,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	resp, err := s.doOpenAIUpstream(c, upstreamReq, account, proxyURL)
+	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account, c)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 	}
@@ -132,7 +132,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 
-	reasoningEffort := extractCCReasoningEffortFromBody(body)
+	reasoningEffort := extractCCReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
 
 	if clientStream {
