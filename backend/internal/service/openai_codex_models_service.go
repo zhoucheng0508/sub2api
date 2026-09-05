@@ -512,13 +512,6 @@ func configuredCodexServiceTiersForModel(modelID string) []configuredCodexServic
 			Description: "Priority processing for lower latency.",
 		})
 	}
-	if configuredCodexSupportsUltrafastServiceTier(modelID) {
-		tiers = append(tiers, configuredCodexServiceTier{
-			ID:          OpenAIFastTierUltrafast,
-			Name:        "Ultrafast",
-			Description: "Ultra-low latency processing.",
-		})
-	}
 	return tiers
 }
 

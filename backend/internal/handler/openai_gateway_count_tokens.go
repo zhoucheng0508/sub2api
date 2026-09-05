@@ -275,7 +275,7 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	if preferredMappedModel != "" {
 		currentRoutingModel = preferredMappedModel
 	}
-	selectedAccount, err := h.gatewayService.SelectAccountForTokenCount(
+	account, err := h.gatewayService.SelectAccountForTokenCount(
 		c.Request.Context(),
 		apiKey.GroupID,
 		sessionHash,
@@ -294,8 +294,12 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 		h.anthropicErrorResponse(c, cls.Status, cls.ErrType, cls.Message)
 		return
 	}
-	selection := struct{ Account *service.Account }{Account: selectedAccount}
-	account := selection.Account
+	selection := struct{ Account *service.Account }{Account: account}
+	{
+		account := selection.Account
+		_ = account
+	}
+	account = selection.Account
 	if account == nil {
 		cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
 		if !cls.ModelNotFound {
