@@ -181,6 +181,16 @@ func openAIWSTurnBillingModel(result *service.OpenAIForwardResult, mapping servi
 	return billingModel
 }
 
+// openAIChannelForwardModel returns the model used for upstream capability routing.
+func openAIChannelForwardModel(mapping service.ChannelMappingResult, requestedModel string) string {
+	if mapping.Mapped {
+		if mappedModel := strings.TrimSpace(mapping.MappedModel); mappedModel != "" {
+			return mappedModel
+		}
+	}
+	return requestedModel
+}
+
 type grokMediaEligibilityProber interface {
 	ProbeMediaEligibility(ctx context.Context, accountID int64) (bool, string, error)
 }
@@ -2118,7 +2128,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	)
 	if err != nil {
 		reqLog.Warn("openai.account_slot_quick_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		status, errType, message := concurrencyErrorResponse(err, "account")
+		status, errType, message, _ := concurrencyErrorResponse(err, "account")
 		writeError(status, errType, message)
 		return nil, openAISlotAcquireFailed
 	}
@@ -2172,7 +2182,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	)
 	if err != nil {
 		reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		status, errType, message := concurrencyErrorResponse(err, "account")
+		status, errType, message, _ := concurrencyErrorResponse(err, "account")
 		writeError(status, errType, message)
 		return nil, openAISlotAcquireFailed
 	}
@@ -3435,7 +3445,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		// 通用 `event: error` 帧不被识别为终止事件，会导致
 		// "stream closed before response.completed"。
 		if inboundIsResponses(c) {
-			if writeResponsesFailedSSE(c, errType, message) {
+			if writeResponsesFailedSSE(c, errType, "", message) {
 				return
 			}
 		}
@@ -3602,7 +3612,7 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 	// 提交的 SSE 流交错，必须降级为 response.failed 终止事件（#3887）。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		service.MarkOpsStreamError(c, errType, message, status)
-		if writeResponsesFailedSSE(c, errType, message) {
+		if writeResponsesFailedSSE(c, errType, "", message) {
 			return
 		}
 	}
@@ -3920,7 +3930,7 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 	// 写 JSON（#3887）。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		service.MarkOpsStreamError(c, "permission_error", cyberSessionBlockedClientMsg, http.StatusForbidden)
-		if writeResponsesFailedSSE(c, "permission_error", cyberSessionBlockedClientMsg) {
+		if writeResponsesFailedSSE(c, "permission_error", "", cyberSessionBlockedClientMsg) {
 			h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, key)
 			return true
 		}
@@ -4199,3 +4209,4 @@ func summarizeWSCloseErrorForLog(err error) (string, string) {
 	}
 	return closeStatus, closeReason
 }
+
