@@ -1661,14 +1661,14 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 }
 
 func normalizeCodexDelegationBootstrap(body []byte) ([]byte, bool) {
-	return normalizeCodexCallOutputBootstrap(body, isCodexDelegationCandidate)
+	return normalizeCodexCallOutputBootstrap(body, isCodexDelegationCandidate, true)
 }
 
 func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
-	return normalizeCodexCallOutputBootstrap(body, isCodexAutomationCandidate)
+	return normalizeCodexCallOutputBootstrap(body, isCodexAutomationCandidate, false)
 }
 
-func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool) ([]byte, bool) {
+func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool, allowPreviousResponseID bool) ([]byte, bool) {
 	if !hasUniqueJSONMembers(body) {
 		return body, false
 	}
@@ -1680,7 +1680,10 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 	}
 	if previousResponseID, exists := request["previous_response_id"]; exists {
 		value, ok := previousResponseID.(string)
-		if !ok || strings.TrimSpace(value) != "" {
+		if !ok {
+			return body, false
+		}
+		if !allowPreviousResponseID && strings.TrimSpace(value) != "" {
 			return body, false
 		}
 	}
@@ -1698,16 +1701,16 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 			continue
 		}
 		typ := stringField(item, "type")
-		if typ == "item_reference" || strings.HasSuffix(typ, "_call") {
+		if (!allowPreviousResponseID && typ == "item_reference") || (!allowPreviousResponseID && strings.HasSuffix(typ, "_call")) {
 			return body, false
 		}
 		if isResponsesCallOutputType(typ) {
 			callIDValue, exists := item["call_id"]
 			callID, isString := callIDValue.(string)
-			if exists && (!isString || strings.TrimSpace(callID) != "") {
+			if exists && (!isString || strings.TrimSpace(callID) != "") && !allowPreviousResponseID {
 				return body, false
 			}
-			if !isCandidate(item) {
+			if !isCandidate(item) && !allowPreviousResponseID {
 				return body, false
 			}
 		}
@@ -1817,7 +1820,21 @@ func isCodexAutomationCandidate(item map[string]any) bool {
 		return false
 	}
 	output, ok := item["output"].(string)
-	return ok && validCodexAutomationBootstrap(output)
+	return ok && (validCodexAutomationBootstrap(output) || validCodexAutomationHeartbeat(output))
+}
+
+func validCodexAutomationHeartbeat(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "<heartbeat>") || !strings.HasSuffix(value, "</heartbeat>") {
+		return false
+	}
+	start := strings.Index(value, "<automation_id>")
+	end := strings.Index(value, "</automation_id>")
+	if start < 0 || end <= start {
+		return false
+	}
+	id := value[start+len("<automation_id>") : end]
+	return validCodexAutomationID(id) && value == "<heartbeat><automation_id>"+id+"</automation_id></heartbeat>"
 }
 
 func stringField(item map[string]any, key string) string {
