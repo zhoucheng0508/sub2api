@@ -703,7 +703,7 @@ type ChatMessage struct {
 type ChatContentPart struct {
 	Type                  string          `json:"type"` // "text" | "image_url" | "file"
 	Text                  string          `json:"text,omitempty"`
-	ImageURL              *ChatImageURL  `json:"image_url,omitempty"`
+	ImageURL              *ChatImageURL   `json:"image_url,omitempty"`
 	File                  *ChatFile       `json:"file,omitempty"`
 	PromptCacheBreakpoint json.RawMessage `json:"prompt_cache_breakpoint,omitempty"`
 }

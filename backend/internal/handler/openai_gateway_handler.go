@@ -4209,5 +4209,3 @@ func summarizeWSCloseErrorForLog(err error) (string, string) {
 	}
 	return closeStatus, closeReason
 }
-
-

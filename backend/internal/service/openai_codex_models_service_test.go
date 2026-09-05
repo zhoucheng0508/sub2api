@@ -3266,4 +3266,3 @@ func TestFetchCodexModelsManifestAPIKeyUsesOfficialOpenAIModelsEndpoint(t *testi
 		})
 	}
 }
-
