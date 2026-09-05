@@ -175,7 +175,16 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
 	cacheDiagnostics := openAIPromptCacheDiagnostics{Mode: openai_compat.PromptCacheModeOff, KeySource: "none"}
-	if promptCacheKey == "" && !isResponsesShape && (account.UsesOpenAICodexProtocol() || account.IsOpenAIApiKey()) && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
+	apiKeyPromptCacheEnabled := true
+	if account.IsOpenAIApiKey() {
+		// Preserve the legacy automatic key when no account mode is configured;
+		// an explicit `off` value is the opt-out introduced by the compatibility
+		// setting.
+		if rawMode, configured := account.Extra[openai_compat.ExtraKeyPromptCacheMode]; configured {
+			apiKeyPromptCacheEnabled = openai_compat.ResolvePromptCacheMode(map[string]any{openai_compat.ExtraKeyPromptCacheMode: rawMode}) != openai_compat.PromptCacheModeOff
+		}
+	}
+	if promptCacheKey == "" && !isResponsesShape && (account.UsesOpenAICodexProtocol() || account.IsOpenAIApiKey()) && apiKeyPromptCacheEnabled && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
 		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, upstreamModel)
 		compatPromptCacheInjected = promptCacheKey != ""
 		if compatPromptCacheInjected && account.IsOpenAIApiKey() {

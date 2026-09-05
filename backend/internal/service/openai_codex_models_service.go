@@ -30,11 +30,9 @@ var chatgptCodexModelsURL = "https://chatgpt.com/backend-api/codex/models"
 
 const (
 	codexModelsManifestCacheBodyLimit = 1 << 20
-	// codexModelsManifestCacheMaxEntries 上限按「账号数 × 客户端版本数 × 代理形态」
-	// 估算：缓存同时覆盖 OAuth 与 API Key 账号，且缓存键含 Authorization 与
-	// Version 头，不同客户端版本各自占一条；64 条在大规模部署下会被淘汰导致
-	// 额外上游请求。单条清单通常几十 KB，512 条最坏内存占用在几十 MB 量级。
-	codexModelsManifestCacheMaxEntries = 512
+	// Bound the per-process manifest cache to keep account/version/proxy keys from
+	// growing without limit. Entries are small and evicted in insertion order.
+	codexModelsManifestCacheMaxEntries = 64
 	// 三段时效：≤TTL 为新鲜（直接返回缓存，零上游请求）；TTL 到 StaleTTL 之间
 	// 乐观返回旧值并后台单飞刷新（携带上游 ETag，304 续期）；超过 StaleTTL 丢弃
 	// 缓存同步等待刷新。TTL 取 1 分钟：manifest 变化低频，1 分钟内同账号重复
@@ -1749,7 +1747,7 @@ func (s *OpenAIGatewayService) fetchCachedCodexModelsManifest(ctx context.Contex
 	if state == codexModelsManifestCacheFresh {
 		return codexModelsManifestForClient(manifest, ifNoneMatch), nil
 	}
-	resultCh := s.refreshCachedCodexModelsManifest(cacheKey, request, fetch)
+	resultCh := s.refreshCachedCodexModelsManifest(cacheKey, request, fetch, ifNoneMatch)
 	if state == codexModelsManifestCacheStale {
 		return codexModelsManifestForClient(manifest, ifNoneMatch), nil
 	}
@@ -1768,12 +1766,12 @@ func (s *OpenAIGatewayService) fetchCachedCodexModelsManifest(ctx context.Contex
 	}
 }
 
-func (s *OpenAIGatewayService) refreshCachedCodexModelsManifest(cacheKey string, request codexModelsManifestRequest, fetch func(ctx context.Context, ifNoneMatch string) (*CodexModelsManifest, error)) <-chan singleflight.Result {
+func (s *OpenAIGatewayService) refreshCachedCodexModelsManifest(cacheKey string, request codexModelsManifestRequest, fetch func(ctx context.Context, ifNoneMatch string) (*CodexModelsManifest, error), requestedETag string) <-chan singleflight.Result {
 	return s.codexModelsManifestCache.refresh.DoChan(cacheKey, func() (any, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), codexModelsManifestRequestTimeout)
 		defer cancel()
 		cached, _ := s.codexModelsManifestCache.get(cacheKey, time.Now())
-		ifNoneMatch := ""
+		ifNoneMatch := strings.TrimSpace(requestedETag)
 		if cached != nil {
 			ifNoneMatch = cached.upstreamETag
 		}
