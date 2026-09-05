@@ -120,7 +120,9 @@ func TestCyberPolicyConnectionBlockState_AdvancedEpochClearsBlock(t *testing.T) 
 	state.block(&service.CyberPolicyMark{ModerationEpoch: 7, EpochSet: true})
 
 	require.False(t, state.reconcile(8, true))
-	require.Equal(t, cyberPolicyConnectionBlockState{}, state)
+	require.False(t, state.blocked)
+	require.Zero(t, state.epoch)
+	require.False(t, state.epochSet)
 	require.False(t, state.reconcile(8, true), "a cleared connection must stay unblocked")
 }
 

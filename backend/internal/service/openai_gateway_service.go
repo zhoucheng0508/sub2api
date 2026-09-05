@@ -649,10 +649,14 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(req *http.Request, proxyURL stri
 		return s.httpUpstream.Do(req, proxyURL, 0, 0)
 	}
 	var c *gin.Context
-	if len(contexts) > 0 { c = contexts[0] }
+	if len(contexts) > 0 {
+		c = contexts[0]
+	}
 	if s.pluginManager != nil {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(req.Context(), req, proxyURL, account)
-		if handled { return response, err }
+		if handled {
+			return response, err
+		}
 	}
 	match := s.matchOpenAITLSFingerprintRouter(c, account)
 	profile, match := s.resolveOpenAITLSConfiguration(account, match)

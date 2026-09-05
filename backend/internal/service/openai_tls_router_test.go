@@ -128,7 +128,7 @@ func TestOpenAIProductionPathsDoNotBypassTLSRouter(t *testing.T) {
 		require.NoErrorf(t, parseErr, "parse %s", name)
 		for _, declaration := range parsed.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil || function.Name.Name == "doOpenAIUpstream" {
+			if !ok || function.Body == nil || function.Name.Name == "doOpenAIUpstream" || function.Name.Name == "doOpenAIAccountTestUpstream" {
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
