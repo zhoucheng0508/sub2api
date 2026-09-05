@@ -205,7 +205,7 @@ func TestExtractContentModerationInput_BoundsTurnsAndKeepsLatestUser(t *testing.
 		if idx > 0 {
 			_ = body.WriteByte(',')
 		}
-		_, _ = body.WriteString(fmt.Sprintf(`{"type":"message","role":"user","content":"turn-%04d"}`, idx))
+		_, _ = fmt.Fprintf(&body, `{"type":"message","role":"user","content":"turn-%04d"}`, idx)
 	}
 	_, _ = body.WriteString(`]}`)
 
@@ -234,7 +234,7 @@ func TestExtractContentModerationInput_VisitorExhaustionKeepsLatestInTextAndHash
 			if turn == maxContentModerationExtractionTurns-1 && item == 129 {
 				text = "LATEST VISITOR EXHAUSTION REQUEST"
 			}
-			_, _ = body.WriteString(fmt.Sprintf("%q", text))
+			_, _ = fmt.Fprintf(&body, "%q", text)
 		}
 		_, _ = body.WriteString(`]}`)
 	}

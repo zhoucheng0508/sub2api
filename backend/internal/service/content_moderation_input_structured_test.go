@@ -154,7 +154,7 @@ func TestExtractContentModerationInput_StructuredTurnsKeepLatestUserAfterTurnTru
 		if idx > 0 {
 			_ = body.WriteByte(',')
 		}
-		_, _ = body.WriteString(fmt.Sprintf(`{"role":"user","content":"turn-%04d"}`, idx))
+		_, _ = fmt.Fprintf(&body, `{"role":"user","content":"turn-%04d"}`, idx)
 	}
 	_, _ = body.WriteString(`]}`)
 
