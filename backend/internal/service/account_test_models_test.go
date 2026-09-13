@@ -10,7 +10,7 @@ import (
 
 func TestFetchOpenAIAccountModelsOAuthPopulatesPickerFields(t *testing.T) {
 	_, calls := newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"new-oauth-model"},{"slug":"gpt-6-astra"}]}`)
-	gateway := &OpenAIGatewayService{}
+	gateway := newCodexModelsOAuthTestService()
 	svc := &AccountTestService{openaiGatewayService: gateway}
 	account := newCodexModelsTestAccount()
 	ctx := context.Background()
@@ -72,7 +72,7 @@ func TestFetchOpenAIAccountModelsPreservesEmptyCatalog(t *testing.T) {
 
 func TestFetchOpenAIAccountModelsOAuthRespectsImageAllowlist(t *testing.T) {
 	newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"gpt-6-astra"}]}`)
-	svc := &AccountTestService{openaiGatewayService: &OpenAIGatewayService{}}
+	svc := &AccountTestService{openaiGatewayService: newCodexModelsOAuthTestService()}
 	account := newCodexModelsTestAccount()
 	account.Credentials["model_mapping"] = map[string]any{"gpt-image-2.5-flare": "gpt-image-2.5-flare"}
 	models, err := svc.FetchOpenAIAccountModels(context.Background(), account)
