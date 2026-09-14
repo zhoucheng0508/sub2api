@@ -141,6 +141,7 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewTLSFingerprintRouterCache, // CUSTOM(VOTE-AI-OPENAI-TLS)
+	NewChannelCache,
 	NewContentModerationHashCache,
 
 	// Encryptors

@@ -10,17 +10,16 @@
 
 默认、local、standalone Compose 均要求 `SUB2API_IMAGE`；独立验收 Compose 使用同一镜像。禁止用上游 `latest` 代替本次构建，也不要覆盖已发布的版本标签。
 
-在仓库根目录执行（将示例仓库替换为自己的仓库，先提交交付文件）：
+正式发布遵循 [CUSTOM_UPGRADE.md](../CUSTOM_UPGRADE.md) 和 `.github/workflows/custom-image.yml`：
 
-```powershell
-$releaseCommit = git rev-parse --short=12 HEAD
-$releaseVersion = "video-20260911-$releaseCommit"
-$env:SUB2API_IMAGE = "registry.example.com/team/sub2api:$releaseVersion"
-docker build --build-arg "VERSION=$releaseVersion" --build-arg "COMMIT=$releaseCommit" -t $env:SUB2API_IMAGE .
-if ($LASTEXITCODE -ne 0) { throw '镜像构建失败' }
-```
+1. 在备份及独立分支中合并当前 `origin/custom`，完成交叉文件审查、生成代码与定向验证；如有冲突，先取得负责人对具体解决结果的审核。
+2. 将已验证提交合并进入 `custom` 并推送，等待该提交的远端 CI 全部通过。
+3. 核对 `backend/cmd/server/VERSION`，创建尚未使用的 annotated tag `custom-v版本-序号` 并推送。标签须指向 `origin/custom` 可达提交，不覆盖既有标签。
+4. 由 GitHub Actions 自动构建并推送 `ghcr.io/zhoucheng0508/sub2api:标签` 的 Linux amd64 镜像。记录构建链接、Git 提交及镜像摘要，验证最终镜像后才能上线。
 
-验证成功后按实际发布流程推送镜像，记录仓库摘要、Git 提交、构建日志和验证记录。生产 `deploy/.env` 的 `SUB2API_IMAGE` 推荐填 `自己的仓库/sub2api@sha256:实际摘要`。上线前读取当前容器镜像 ID/摘要，将可重新拉取的旧摘要写入 `SUB2API_PREVIOUS_IMAGE` 并保留仓库镜像和当前本地镜像；该变量仅记录版本，不会自动回退。
+本次同步基线为 `0.2.4`，已发布标签为 `custom-v0.2.4-2`，候选新标签为 `custom-v0.2.4-3`；创建时重新检查远端占用情况。正式镜像不使用旧 video-retest 镜像或手工 video-日期标签替代。生产 `deploy/.env` 的 `SUB2API_IMAGE` 推荐填写 `ghcr.io/zhoucheng0508/sub2api@sha256:实际摘要`。
+
+上线前读取当前容器镜像 ID/摘要，将可重新拉取的旧摘要写入 `SUB2API_PREVIOUS_IMAGE` 并保留仓库镜像和当前本地镜像；该变量仅记录版本，不会自动回退。
 
 ```powershell
 docker inspect sub2api --format '{{.Config.Image}} {{.Image}}'
@@ -142,3 +141,15 @@ location /v1/media/ {
 下载已输出内容后若发生限流保护错误或上游读取错误，处理器中止响应，恢复中间件将标准中止信号交给 net/http；HTTP/1 连接关闭、HTTP/2 仅重置该响应流，不再把截断内容正常结束。首字节前的 JSON 错误、响应体关闭和名额释放逻辑保留。普通异常仍返回原有 JSON 500 并记录堆栈，预期的流中止不打印请求凭据。
 
 独立验证覆盖三种事务隔离级别、用户和账号、软/硬删除的 12 种组合；删除先发生的竞争及保护冲突时 Key/账号分组回滚通过。HTTP/1 和 HTTP/2 下的中途字节预算失败、上游读取失败、首字节前失败和正常完整下载共 8 个场景通过，确认 HTTP/2 连接可继续复用。现有 Recovery 回归通过。临时测试源码与 overlay 已删除，保留本地日志。以上不代替生产代理验证或跨实例动态调参、Redis 故障组合验证。
+
+## 2026-09-14 合并准备说明
+
+视频迁移保留完整文件名与既有内容。远端新增 `235_group_model_allowlist.sql`、`236_group_model_allowlist_repair.sql`、`237_add_minimax_platform.sql`；迁移器按完整文件名排序、保存校验和并跳过已执行文件，不以数字前缀作为唯一键。它们分别修改模型白名单和平台约束，与同号视频迁移涉及的字段/表不同。仍需分别验证空库及 0.2.4 已迁移库补入视频迁移的路径，不删除已执行的迁移记录。
+
+供应商探测工具关闭自动重定向；创建结果不确定且未取得任务 ID 时停止，交人工对账，不再重发 POST。旧状态即使缺少幂等键，只要保留创建尝试记录也禁止重发；仅残留幂等键同样禁止重发。首次 POST 前独占创建并落盘 `create_attempt.json`，阻止同一输出目录下并发提交，异常后不自动删除。不得通过删除状态或改用新输出目录重试不确定的创建；向供应商核对后，将确认的 `upstream_task_id` 写入 `state.json`，再次运行 `--create` 只查询已有任务。
+
+模型接口失败时返回非零退出码并停止创建。创建必须同时满足 HTTP 2xx、无业务错误、具有任务 ID；轮询只接受 HTTP 200 且无业务错误的成功状态，临时失败仅重试 GET。只读模型接口失败及不符合 Range/MP4/非空要求的下载探测返回非零退出码。2026-09-14 本地 11 项安全回归通过，覆盖不确定创建后重启、旧状态缺字段、独占记录竞争、提交前中断、失败退出码及真实本地 HTTP 301/302/303/307/308 不跟随验证；未调用供应商付费接口，临时验证代码不随交付。此工具的检查不代替本站钱包验收。
+
+前端 SettingsView 测试保留下载设置卡片的独立组件替身：该卡片直接导入 `@/stores/app`，不会命中父页面测试的 `@/stores` 模拟，因此真实挂载会要求 Pinia 并启动独立下载设置请求。父页面表单测试通过替身隔离该生命周期，不跳过原有用例。2026-09-14 本地重跑 SettingsView 37 项全部通过；按 Makefile 的 CI 必跑列表重跑 14 个文件、176 项全部通过，完整 ESLint 和类型检查通过。这些结果验证父页面测试适配，不代表下载设置卡片自身的集成验收或远端 CI 已运行。
+
+供应商探测工具二次复查补齐成功响应验证：模型接口要求 JSON Content-Type、可解析的模型对象及带有效 ID 的非空 `models` 数组，HTML、损坏 JSON 或无模型结构的响应均返回 1，`--create` 同样在 POST 前停止。下载探测完整解析 `Content-Range`，要求从 0 开始且不超出请求的 4096 字节范围、已知总长度大于末尾偏移、实际字节数等于区间长度；存在 `Content-Length` 时也须一致。读取上限增加 1 个检测字节以识别超长响应，截断读取异常记入报告并返回 7；失败原因写入 `validation_error`。合法短文件、未知总长度及无 Content-Length 的分块响应仍可通过。2026-09-14 本地 HTTP 模拟 58 个场景全部通过，覆盖复查列出的 18 个场景及格式、长度边界；结果保存在本地 `outputs/video-probe-followup-20260914.json`，未调用真实供应商。

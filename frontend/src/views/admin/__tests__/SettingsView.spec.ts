@@ -135,6 +135,14 @@ vi.mock("@/stores/adminSettings", () => ({
   }),
 }));
 
+// This independently saved card has its own API/store lifecycle; these tests
+// exercise the parent settings form and its existing save actions.
+// Its direct @/stores/app import bypasses the @/stores mock above. Stub the
+// card so mounting the parent does not require Pinia or send download API calls.
+vi.mock("@/components/admin/MediaVideoDownloadSettings.vue", () => ({
+  default: defineComponent({ name: "MediaVideoDownloadSettings", render: () => null }),
+}));
+
 vi.mock("@/composables/useClipboard", () => ({
   useClipboard: () => ({
     copyToClipboard: vi.fn(),

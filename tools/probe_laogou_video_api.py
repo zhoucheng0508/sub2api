@@ -8,6 +8,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import sys
 import time
 import uuid
@@ -16,11 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 from urllib.parse import urlsplit, urlunsplit
 
 
 DEFAULT_BASE_URL = "https://api.laogou.org"
 DEFAULT_OUTPUT_DIR = Path("outputs/laogou_video_probe")
+CONTENT_PROBE_BYTES = 4096
 TRANSIENT_STATUSES = {429, 502, 503, 504}
 TERMINAL_SUCCESS = {"succeeded", "success", "completed", "done", "finished"}
 TERMINAL_FAILURE = {"failed", "error", "failure", "expired", "cancelled", "canceled"}
@@ -28,6 +31,7 @@ SAFE_RESPONSE_HEADERS = {
     "content-type",
     "content-length",
     "content-range",
+    "content-encoding",
     "accept-ranges",
     "content-disposition",
     "retry-after",
@@ -146,9 +150,11 @@ def perform_request(
         headers["Idempotency-Key"] = idempotency_key
     if range_probe:
         headers["Accept"] = "*/*"
-        headers["Range"] = "bytes=0-4095"
+        headers["Accept-Encoding"] = "identity"
+        headers["Range"] = f"bytes=0-{max_body_bytes - 1}"
 
     started = time.monotonic()
+    response = None
     try:
         # Use requests' standard transport and client signature. This is
         # important because urllib and requests expose different client/TLS
@@ -160,15 +166,17 @@ def perform_request(
             json=payload if payload is not None else None,
             timeout=timeout,
             stream=range_probe,
+            allow_redirects=False,
         )
         status = response.status_code
         response_headers = safe_headers(response.headers)
         if range_probe:
-            response_body = response.raw.read(max_body_bytes)
+            # Read one extra byte so an oversized response cannot pass merely
+            # because the probe truncated it to the requested range length.
+            response_body = response.raw.read(max_body_bytes + 1)
         else:
             response_body = response.content[:max_body_bytes]
-        response.close()
-    except requests.exceptions.RequestException as exc:
+    except (requests.exceptions.RequestException, Urllib3HTTPError) as exc:
         return {
             "requested_at": utc_now(),
             "method": method,
@@ -176,6 +184,9 @@ def perform_request(
             "network_error": f"{type(exc).__name__}: {exc}",
             "elapsed_ms": round((time.monotonic() - started) * 1000),
         }
+    finally:
+        if response is not None:
+            response.close()
 
     content_type = response_headers.get("Content-Type", response_headers.get("content-type", ""))
     result: dict[str, Any] = {
@@ -214,6 +225,66 @@ def write_json(path: Path, value: Any) -> None:
 def parsed_body(result: dict[str, Any]) -> dict[str, Any]:
     body = result.get("body")
     return body if isinstance(body, dict) else {}
+
+
+def has_api_error(result: dict[str, Any]) -> bool:
+    body = parsed_body(result)
+    envelopes = [body]
+    if isinstance(body.get("data"), dict):
+        envelopes.append(body["data"])
+    return any(
+        envelope.get("error") not in (None, False, "", {}, [])
+        or envelope.get("success") is False
+        or str(envelope.get("status", "")).strip().lower() in TERMINAL_FAILURE
+        for envelope in envelopes
+    )
+
+
+def normalized_headers(result: dict[str, Any]) -> dict[str, str]:
+    return {str(k).lower(): str(v).strip() for k, v in result.get("headers", {}).items()}
+
+
+def models_probe_error(result: dict[str, Any]) -> str:
+    if result.get("status_code") != 200 or has_api_error(result):
+        return "Models request failed"
+    media_type = normalized_headers(result).get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not (media_type.startswith("application/") and media_type.endswith("+json")):
+        return "Models response must have a JSON Content-Type"
+    # Match the supplier's documented models envelope, without hardcoding
+    # model names or capabilities that can change upstream.
+    models = parsed_body(result).get("models")
+    if not isinstance(models, list) or not models or not all(
+        isinstance(model, dict) and isinstance(model.get("id"), str) and model["id"].strip()
+        for model in models
+    ):
+        return "Models response must contain a non-empty models array with model IDs"
+    return ""
+
+
+def content_probe_error(result: dict[str, Any]) -> str:
+    headers = normalized_headers(result)
+    if result.get("status_code") != 206:
+        return "Content request must return HTTP 206"
+    if headers.get("content-type", "").split(";", 1)[0].strip().lower() != "video/mp4":
+        return "Content response must be video/mp4"
+    if headers.get("content-encoding", "identity").lower() != "identity":
+        return "Content response must use identity encoding for byte comparison"
+    match = re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+|\*)", headers.get("content-range", ""), re.IGNORECASE)
+    if match is None:
+        return "Invalid Content-Range"
+    start, end = int(match[1]), int(match[2])
+    if start != 0 or end < start or end >= CONTENT_PROBE_BYTES:
+        return "Content-Range lies outside the requested probe range"
+    if match[3] != "*" and int(match[3]) <= end:
+        return "Content-Range total must exceed its end offset"
+    expected_bytes = end - start + 1
+    if parsed_body(result).get("bytes_read") != expected_bytes:
+        return "Downloaded byte count does not match Content-Range"
+    if "content-length" in headers:
+        length = headers["content-length"]
+        if re.fullmatch(r"[0-9]+", length) is None or int(length) != expected_bytes:
+            return "Content-Length does not match Content-Range"
+    return ""
 
 
 def task_id_from(result: dict[str, Any]) -> str:
@@ -290,6 +361,9 @@ def main() -> int:
         parser.error("Set LAOGOU_API_KEY or pass --key-file with a single API key")
 
     models_result = perform_request("GET", args.base_url, "/v1/media/models", api_key, timeout=30)
+    models_error = models_probe_error(models_result)
+    if models_error:
+        models_result["validation_error"] = models_error
     report["calls"].append({"name": "models", **models_result})
     write_json(report_path, report)
     print(f"models: {models_result.get('status_code', models_result.get('network_error'))}")
@@ -303,10 +377,26 @@ def main() -> int:
 
     if not args.create:
         print(f"Read-only probe complete. Report: {report_path}")
-        return 0 if models_result.get("status_code") else 1
+        return 0 if not models_error else 1
 
-    task_id = str(state.get("upstream_task_id", "")).strip()
+    if models_error:
+        report["stopped_reason"] = "models_probe_failed"
+        report["finished_at"] = utc_now()
+        write_json(report_path, report)
+        print("Models probe failed; stopping before any paid create request.", file=sys.stderr)
+        return 1
+
+    task_id = task_id_from({"body": {"task_id": state.get("upstream_task_id")}})
     if not task_id:
+        # A supplier idempotency header is not a guarantee that replay is safe.
+        # Treat partial/legacy state as evidence of a possible paid submission.
+        create_marker = output_dir / "create_attempt.json"
+        if create_marker.exists() or any(state.get(key) for key in (
+            "create_attempted", "create_attempted_at", "idempotency_key",
+            "create_phase", "last_create_result", "last_create_attempted_at",
+        )):
+            print("The previous create result is uncertain. Do not resend POST; reconcile with the supplier and save the confirmed upstream_task_id in state.json before resuming. Keep the state and create_attempt.json files.", file=sys.stderr)
+            return 3
         payload = state.get("request")
         if not isinstance(payload, dict):
             payload = {
@@ -325,20 +415,26 @@ def main() -> int:
                 payload["images"] = [
                     f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
                 ]
-        idempotency_key = str(state.get("idempotency_key", "")).strip()
-        recovering = bool(state.get("create_attempted"))
-        if not idempotency_key:
-            idempotency_key = str(uuid.uuid4())
-            state.update({
-                "create_attempted": True,
-                "create_attempted_at": utc_now(),
-                "idempotency_key": idempotency_key,
-                "request": payload,
-                "create_phase": "request_locked",
-            })
-            write_json(state_path, state)
-        elif recovering:
-            print("No task ID was saved; retrying the same create request with the same Idempotency-Key for recovery.")
+        idempotency_key = str(uuid.uuid4())
+        state.update({
+            "create_attempted": True,
+            "create_attempted_at": utc_now(),
+            "idempotency_key": idempotency_key,
+            "request": payload,
+            "create_phase": "request_locked",
+        })
+        # Exclusive creation also protects against two processes that read the
+        # empty state simultaneously. Never remove this marker automatically,
+        # including after crashes or network/HTTP errors.
+        try:
+            with create_marker.open("x", encoding="utf-8") as marker:
+                json.dump({"idempotency_key": idempotency_key, "created_at": utc_now()}, marker)
+                marker.flush()
+                os.fsync(marker.fileno())
+        except FileExistsError:
+            print("A create attempt is already recorded; refusing another POST.", file=sys.stderr)
+            return 3
+        write_json(state_path, state)
 
         create_result = perform_request(
             "POST",
@@ -349,10 +445,11 @@ def main() -> int:
             idempotency_key=idempotency_key,
             timeout=60,
         )
-        report["calls"].append({"name": "create_recovery" if recovering else "create", **create_result})
+        report["calls"].append({"name": "create", **create_result})
         write_json(report_path, report)
         print(f"create: {create_result.get('status_code', create_result.get('network_error'))}")
-        task_id = task_id_from(create_result)
+        create_http_ok = 200 <= create_result.get("status_code", 0) < 300
+        task_id = task_id_from(create_result) if create_http_ok and not has_api_error(create_result) else ""
         if not task_id:
             if is_nonretryable_access_block(create_result):
                 state["create_phase"] = "blocked_nonretryable_access"
@@ -365,7 +462,7 @@ def main() -> int:
             state["last_create_result"] = sanitize(create_result)
             state["last_create_attempted_at"] = utc_now()
             write_json(state_path, state)
-            print("No task ID was returned. The same idempotency key remains in state.json for a later recovery run; no new key will be generated.", file=sys.stderr)
+            print("Create was not confirmed by a successful response with a task ID. Do not resend POST or delete the state/create_attempt.json files; reconcile with the supplier and save the confirmed upstream_task_id before resuming.", file=sys.stderr)
             return 3
         # Save the upstream ID immediately after the response. All later work is
         # resumable from this file even if polling times out or is interrupted.
@@ -390,7 +487,8 @@ def main() -> int:
                 api_key,
                 timeout=30,
             )
-            status = task_status_from(status_result)
+            http_status = status_result.get("status_code")
+            status = task_status_from(status_result) if http_status == 200 else ""
             report["calls"].append({"name": "status", "poll_number": poll_count, **status_result})
             report["last_status"] = status
             state["last_status"] = status
@@ -400,19 +498,21 @@ def main() -> int:
             write_json(state_path, state)
             print(f"poll {poll_count}: http={status_result.get('status_code')} status={status or 'unknown'}")
 
-            if status in TERMINAL_SUCCESS:
-                break
-            if status in TERMINAL_FAILURE:
+            if http_status == 200 and has_api_error(status_result):
                 report["finished_at"] = utc_now()
                 write_json(report_path, report)
                 return 4
+            if status in TERMINAL_SUCCESS:
+                break
 
-            http_status = status_result.get("status_code")
             delay = retry_delay(status_result, args.poll_interval)
-            if http_status in TRANSIENT_STATUSES or http_status == 200:
+            if http_status in TRANSIENT_STATUSES or http_status == 200 or "network_error" in status_result:
                 time.sleep(delay)
                 continue
-            time.sleep(args.poll_interval)
+            report["stopped_reason"] = "status_probe_failed"
+            report["finished_at"] = utc_now()
+            write_json(report_path, report)
+            return 6 if is_nonretryable_access_block(status_result) else 1
     except KeyboardInterrupt:
         state["interrupted_at"] = utc_now()
         state["last_status"] = status
@@ -438,19 +538,23 @@ def main() -> int:
         f"/v1/media/videos/{task_id}/content",
         api_key,
         timeout=120,
-        max_body_bytes=4096,
+        max_body_bytes=CONTENT_PROBE_BYTES,
         range_probe=True,
     )
+    content_error = content_probe_error(content_result)
+    if content_error:
+        content_result["validation_error"] = content_error
     report["calls"].append({"name": "content", **content_result})
     report["finished_at"] = utc_now()
     state["content_checked_at"] = utc_now()
     state["content_status_code"] = content_result.get("status_code")
-    state["phase"] = "completed"
+    content_ok = not content_error
+    state["phase"] = "completed" if content_ok else "content_probe_failed"
     write_json(state_path, state)
     write_json(report_path, report)
     print(f"content: {content_result.get('status_code', content_result.get('network_error'))}")
     print(f"Probe complete. Report: {report_path}")
-    return 0
+    return 0 if content_ok else 7
 
 
 if __name__ == "__main__":
