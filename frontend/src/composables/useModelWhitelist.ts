@@ -426,6 +426,7 @@ export const commonErrorCodes = [
 // 按平台获取模型
 export function getModelsByPlatform(platform: string): string[] {
   switch (platform) {
+    case 'laogou': return [] // Discovered from the video capabilities endpoint.
     case 'openai': return openaiModels
     case 'anthropic':
     case 'claude': return claudeModels

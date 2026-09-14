@@ -165,5 +165,20 @@ output/
 
 # Vitest / Vite cache at repo root
 .vite/
+
+# Local video acceptance assets and dependency cache
+.pnpm-store/
+/accepted-video*.mp4
+/tools/1.png
+/outputs/
+# Local review history; maintained release documentation is under docs/.
+/MEDIA_VIDEO_REVIEW_FIXES.md
+/MEDIA_VIDEO_REVIEW2_FIXES.md
+/MEDIA_VIDEO_REVIEW3_FIXES.md
+/MEDIA_VIDEO_REVIEW4_FIXES.md
+/PROJECT_CHANGE_SUMMARY.md
+!docs/LAOGOU_SEEDANCE_VIDEO_API.md
+!docs/MEDIA_VIDEO_ACCEPTANCE.md
+!docs/MEDIA_VIDEO_RELEASE.md
 # 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
 /plugins/

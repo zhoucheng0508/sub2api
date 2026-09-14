@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -50,6 +51,18 @@ func clientFromContext(ctx context.Context, defaultClient *dbent.Client) *dbent.
 func translatePersistenceError(err error, notFound, conflict *infraerrors.ApplicationError) error {
 	if err == nil {
 		return nil
+	}
+	var videoError *pq.Error
+	if errors.As(err, &videoError) && videoError.Code == "P0001" {
+		count, _ := strconv.ParseInt(videoError.Detail, 10, 64)
+		switch videoError.Message {
+		case "MEDIA_VIDEO_ACCOUNT_IN_USE":
+			return infraerrors.Newf(409, videoError.Message, "该账号仍有关联视频 %d 个未处理完或尚在下载有效期内，请先停用调度，待存量处理完成后删除", count).WithMetadata(map[string]string{"video_count": strconv.FormatInt(count, 10)})
+		case "MEDIA_VIDEO_USER_IN_USE":
+			return infraerrors.Newf(409, videoError.Message, "该用户仍有 %d 个视频未完成或账务未结清，请先停用访问，待存量处理完成后删除", count).WithMetadata(map[string]string{"video_count": strconv.FormatInt(count, 10)})
+		case "MEDIA_VIDEO_PARENT_UNAVAILABLE":
+			return infraerrors.New(409, videoError.Message, "视频所属用户、Key 或上游账号已不可用")
+		}
 	}
 
 	// 兼容 Ent ORM 和标准 database/sql 的 NotFound 行为。
