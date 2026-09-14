@@ -16,7 +16,11 @@ type mediaVideoProxyClient struct {
 }
 
 func newMediaVideoTransport() *http.Transport {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
+	transport := base.Clone()
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.MaxIdleConns = 32
 	transport.MaxIdleConnsPerHost = 8

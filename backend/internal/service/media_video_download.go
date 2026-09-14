@@ -25,7 +25,7 @@ type MediaVideoDownloadPermit interface {
 
 func (s *MediaVideoService) streamContent(ctx context.Context, task *MediaVideoTask, w http.ResponseWriter, r *http.Request) (statusCode int, resultErr error) {
 	if task == nil || !task.Downloadable || task.UpstreamTaskID == "" || task.ExpiresAt == nil || !task.ExpiresAt.After(time.Now()) {
-		return http.StatusNotFound, sqlErrNotFound
+		return http.StatusNotFound, errMediaVideoTaskNotFound
 	}
 	started := time.Now()
 	var transferred int64

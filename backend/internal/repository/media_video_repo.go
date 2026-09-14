@@ -214,7 +214,7 @@ func (r *mediaVideoRepository) list(ctx context.Context, q string, args ...any) 
 	if e != nil {
 		return nil, e
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []*service.MediaVideoTask{}
 	for rows.Next() {
 		t := &service.MediaVideoTask{}

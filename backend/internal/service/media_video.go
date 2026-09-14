@@ -422,6 +422,7 @@ func (s *MediaVideoService) Create(ctx context.Context, userID, apiKeyID int64, 
 	persistCtx, cancelPersist := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelPersist()
 	var mappingErr error
+mappingRetry:
 	for attempt := 0; attempt < 3; attempt++ {
 		mappingErr = s.repo.UpdateUpstream(persistCtx, task.TaskID, upID, persistStatus, a.ID)
 		if mappingErr == nil {
@@ -429,7 +430,7 @@ func (s *MediaVideoService) Create(ctx context.Context, userID, apiKeyID int64, 
 		}
 		select {
 		case <-persistCtx.Done():
-			break
+			break mappingRetry
 		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
 		}
 	}
@@ -499,7 +500,7 @@ func (s *MediaVideoService) Replay(ctx context.Context, userID, apiKeyID int64, 
 		return nil, 500, err
 	}
 	if task == nil || task.ExpiresAt == nil || !task.ExpiresAt.After(time.Now()) {
-		return nil, 404, sqlErrNotFound
+		return nil, 404, errMediaVideoTaskNotFound
 	}
 	body, _ := json.Marshal(req)
 	if task.RequestHash != hashBytes(body) {
@@ -521,7 +522,7 @@ func (s *MediaVideoService) completeSucceeded(ctx context.Context, task *MediaVi
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return &mediaVideoProbeError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
@@ -601,7 +602,7 @@ func (s *MediaVideoService) callCreateOnce(ctx context.Context, account Account,
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, readErr := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
 	if readErr != nil || len(b) > 2<<20 {
 		return nil, http.StatusBadGateway, errors.New("incomplete upstream create response; reconciliation required")
@@ -662,12 +663,12 @@ func (s *MediaVideoService) Get(ctx context.Context, taskID string, userID, apiK
 	if t == nil || t.ExpiresAt == nil || !t.ExpiresAt.After(time.Now()) {
 		// Cleanup must first settle or release outstanding funds. Reads never
 		// delete the durable record needed by billing recovery.
-		return nil, sqlErrNotFound
+		return nil, errMediaVideoTaskNotFound
 	}
 	return t, nil
 }
 
-var sqlErrNotFound = errors.New("video task not found")
+var errMediaVideoTaskNotFound = errors.New("video task not found")
 var ErrMediaVideoKeyLimit = errors.New("video request exceeds API key quota or spending limit")
 var ErrMediaVideoStateConflict = errors.New("video task ownership or state changed")
 var ErrLaogouInvalidCursor = errors.New("invalid video cursor")
@@ -682,7 +683,7 @@ func (s *MediaVideoService) Content(ctx context.Context, t *MediaVideoTask, w ht
 func (s *MediaVideoService) callResponse(ctx context.Context, a Account, method, path string, body []byte, idem string, rangeHeader ...string) (*http.Response, int, error) {
 	apiKey := strings.TrimSpace(a.GetCredential("api_key"))
 	if apiKey == "" {
-		return nil, http.StatusServiceUnavailable, errors.New("Laogou account is missing api_key")
+		return nil, http.StatusServiceUnavailable, errors.New("laogou account is missing api_key")
 	}
 	var rd io.Reader
 	if body != nil {
@@ -831,19 +832,20 @@ func (s *MediaVideoService) pollOnce(ctx context.Context) {
 				progress = &value
 			}
 			t.Progress = progress
-			if st == "succeeded" {
+			switch st {
+			case "succeeded":
 				if completeErr := s.completeSucceeded(ctx, t, a); completeErr != nil {
 					slog.Warn("media_video.completion_pending", "task_id", t.TaskID, "error", completeErr)
 					s.deferCompletion(ctx, t, completeErr)
 				}
-			} else if st == "failed" {
+			case "failed":
 				if releaseErr := s.releaseBalance(ctx, t); releaseErr != nil {
 					slog.Error("media_video.failure_release_failed", "task_id", t.TaskID, "error", releaseErr)
 				}
 				if updateErr := s.repo.UpdateStatus(ctx, t.TaskID, st, progress, false, er, now, now); updateErr != nil {
 					slog.Error("media_video.status_update_failed", "task_id", t.TaskID, "error", updateErr)
 				}
-			} else {
+			default:
 				if updateErr := s.repo.UpdateStatus(ctx, t.TaskID, st, progress, false, er, now, time.Now().Add(5*time.Second)); updateErr != nil {
 					slog.Error("media_video.status_update_failed", "task_id", t.TaskID, "error", updateErr)
 				}
