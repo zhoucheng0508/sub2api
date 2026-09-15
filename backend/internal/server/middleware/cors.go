@@ -54,7 +54,7 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 		"Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization",
 		"accept", "origin", "Cache-Control", "X-Requested-With", "X-API-Key", "X-Admin-UI-Request", "X-User-UI-Request",
 		"X-Sub2api-Image-Output-Size", "X-Sub2api-Image-Resize-Filter",
-		"Idempotency-Key", "X-Media-Video-Replay-Only", "Range", "If-Range",
+		"Idempotency-Key", "X-Media-Video-Replay-Only", "X-Media-Video-Continue-Only", "Range", "If-Range",
 	}
 	// OpenAI Node SDK 会发送 x-stainless-* 请求头，需在 CORS 中显式放行。
 	openAIProperties := []string{

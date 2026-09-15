@@ -31,6 +31,14 @@ Authorization: Bearer <Sub2API API Key>
 
 ## 创建任务
 
+### 未提交订单继续
+
+任务查询响应包含 `submission_state` 和 `can_continue`。仅未过期、`status=creating`、`submission_state=prepared` 且尚无供应商任务 ID 的订单返回 `can_continue=true`。它可能是在并发准入 429 时已经保存、但尚未提交供应商的订单。
+
+用户明确继续时，向创建接口发送原请求和原 `Idempotency-Key`，另加 `X-Media-Video-Continue-Only: true`。这个模式拒绝不存在或过期订单，永不插入新订单；已接单、submitting 或 uncertain 订单只返回原状态。继续 prepared 订单仍执行准入和审核，数据库原子 ClaimSubmission 保证并发继续只提交供应商一次。普通刷新和不确定提交恢复继续使用 replay-only，不能自动调用 continue-only。
+
+成片下载透传 `ETag`、`Last-Modified` 与请求 `If-Range`。客户端仅在强 ETag 一致时拼接多次 Range 响应；没有强 ETag 时可回退为一次完整下载，不假设供应商内容永久不可变。
+
 ```http
 POST /v1/media/videos
 Content-Type: application/json
@@ -255,7 +263,7 @@ billing_status
 }
 ```
 
-建议状态码：`400` 参数错误，`401` Key 无效，`403` 无权限，`404` 不存在/无权/已过期，`409` 幂等冲突，`429` 限流，`502` 上游错误，`503` 无可用账号，`504` 上游超时。
+建议状态码：`400` 参数错误，`401` Key 无效，`403` 无权限，`404` 不存在/无权/已过期，`429` 限流，`502` 上游错误，`503` 无可用账号，`504` 上游超时。`409` 不能单独用于判定失败：`VIDEO_IDEMPOTENCY_CONFLICT` 才表示本服务已确认同一幂等键对应不同请求；供应商 409 可能留下正在提交或待对账订单。客户端必须保留原请求及幂等键并以 replay-only 核对，不能直接新建。明确失败以任务状态为准，退款以账单为准。
 
 ## 安全边界
 

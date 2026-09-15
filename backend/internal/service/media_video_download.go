@@ -80,12 +80,12 @@ func (s *MediaVideoService) streamContent(ctx context.Context, task *MediaVideoT
 	if err != nil || account == nil {
 		return 503, errors.New("upstream account unavailable")
 	}
-	resp, status, err := s.callResponse(ctx, *account, http.MethodGet, "/v1/media/videos/"+task.UpstreamTaskID+"/content", nil, "", r.Header.Get("Range"))
+	resp, status, err := s.callResponse(ctx, *account, http.MethodGet, "/v1/media/videos/"+task.UpstreamTaskID+"/content", nil, "", r.Header.Get("Range"), r.Header.Get("If-Range"))
 	if err != nil {
 		return status, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Content-Disposition", "Accept-Ranges", "Retry-After"} {
+	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Content-Disposition", "Accept-Ranges", "Retry-After", "ETag", "Last-Modified"} {
 		if value := resp.Header.Get(name); value != "" {
 			w.Header().Set(name, value)
 		}
