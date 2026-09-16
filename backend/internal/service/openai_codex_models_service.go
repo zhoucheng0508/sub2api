@@ -213,6 +213,14 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 		manifest.Body = body
 		manifest.ETag = codexModelsManifestBodyETag(body)
 	}
+	if isCNOAIGroup(group) {
+		body, err = applyCNOAICodexCatalog(manifest.Body, group)
+		if err != nil {
+			return err
+		}
+		manifest.Body = body
+		manifest.ETag = codexModelsManifestBodyETag(body)
+	}
 	if codexModelsManifestETagMatches(ifNoneMatch, manifest.ETag) {
 		manifest.Body = nil
 		manifest.NotModified = true
@@ -377,6 +385,7 @@ type configuredCodexModelDescriptor struct {
 	Slug                              string                          `json:"slug"`
 	DisplayName                       string                          `json:"display_name"`
 	Description                       string                          `json:"description"`
+	BaseInstructions                  string                          `json:"base_instructions"`
 	DefaultReasoningLevel             *string                         `json:"default_reasoning_level,omitempty"`
 	SupportedReasoningLevels          []configuredCodexReasoningLevel `json:"supported_reasoning_levels"`
 	MultiAgentReasoningEffort         *string                         `json:"multi_agent_reasoning_effort,omitempty"`
@@ -432,6 +441,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		Slug:                  modelID,
 		DisplayName:           modelID,
 		Description:           configuredCodexCustomDescription,
+		BaseInstructions:      openai.CodexBaseInstructionsForModel(modelID),
 		DefaultReasoningLevel: &noReasoningLevel,
 		SupportedReasoningLevels: []configuredCodexReasoningLevel{
 			{Effort: "none", Description: configuredCodexReasoningLevelDescription("none")},
@@ -874,7 +884,11 @@ func buildCodexModelsManifestForAccounts(
 			modelMetadata[modelID] = metadata
 		}
 	}
-	return buildCodexModelsManifest(modelIDs, imageInputModels, searchToolModels, metadataModels, modelMetadata)
+	body, err := buildCodexModelsManifest(modelIDs, imageInputModels, searchToolModels, metadataModels, modelMetadata)
+	if err != nil {
+		return nil, err
+	}
+	return applyCNOAICodexCatalog(body, group)
 }
 
 func buildCodexModelsManifest(

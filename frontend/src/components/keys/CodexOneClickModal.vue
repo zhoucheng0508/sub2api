@@ -40,7 +40,7 @@
       <div
         :class="[
           'grid gap-1 rounded-lg bg-gray-100 p-1 dark:bg-dark-800',
-          methods.length === 3 ? 'grid-cols-3' : 'grid-cols-2'
+          methods.length === 1 ? 'grid-cols-1' : 'grid-cols-2'
         ]"
         role="tablist"
         :aria-label="t('keys.oneClick.title')"
@@ -70,63 +70,71 @@
         </button>
       </div>
 
-      <section aria-labelledby="ccswitch-app-selector-title" data-testid="ccswitch-app-selector">
-        <div class="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h3 id="ccswitch-app-selector-title" class="text-sm font-semibold text-gray-900 dark:text-white">
-              {{ t('keys.oneClick.selectClient') }}
-            </h3>
-            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('keys.oneClick.selectClientDescription') }}
-            </p>
-          </div>
-          <span class="text-xs font-medium text-primary-700 dark:text-primary-300">
-            {{ selectedAppMeta?.label || selectedApp }}
-          </span>
-        </div>
-        <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5" role="radiogroup" aria-labelledby="ccswitch-app-selector-title">
-          <button
-            v-for="app in ccSwitchApps"
-            :key="app.id"
-            type="button"
-            role="radio"
-            :aria-checked="selectedApp === app.id"
-            :aria-disabled="!app.importable"
-            :disabled="!app.importable"
-            :title="app.importable
-              ? (app.aliasOf ? t('keys.oneClick.sharedProvider') : app.label)
-              : (app.id === 'pi' ? t('keys.oneClick.piManualReason') : t('keys.oneClick.appUnavailable'))"
-            :data-testid="`ccswitch-app-${app.id}`"
-            :data-quick-connect-client="app.id"
-            :class="[
-              'flex min-h-12 min-w-0 items-center justify-center gap-2 rounded-lg border px-2 py-2 text-left transition-colors',
-              selectedApp === app.id
-                ? 'border-primary-500 bg-primary-50 text-primary-800 shadow-sm ring-1 ring-primary-500 dark:border-primary-400 dark:bg-primary-950/40 dark:text-primary-200'
-                : app.importable
-                  ? 'border-gray-200 bg-white text-gray-700 hover:border-primary-300 hover:bg-primary-50/40 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300 dark:hover:border-primary-700'
-                  : 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400 opacity-60 dark:border-dark-700 dark:bg-dark-900 dark:text-dark-500'
-            ]"
-            @click="selectApp(app.id)"
-          >
-            <span :class="['flex h-8 w-8 shrink-0 items-center justify-center rounded-md', appIconBackground(app.id)]">
-              <CcSwitchAppIcon :app="app.id" :label="app.label" size="md" />
-            </span>
-            <span class="min-w-0">
-              <span class="block truncate text-xs font-semibold">{{ app.label }}</span>
-              <span v-if="app.aliasOf" class="mt-0.5 block truncate text-[10px] opacity-70">{{ t('keys.oneClick.sharedProvider') }}</span>
-              <span v-else-if="!app.importable" class="mt-0.5 block truncate text-[10px] opacity-70">{{ t('keys.oneClick.manualOnly') }}</span>
-            </span>
-          </button>
-        </div>
-      </section>
-
       <section
         :id="`codex-method-panel-${activeMethod}`"
         class="rounded-lg border border-gray-200 p-3 dark:border-dark-700"
         role="tabpanel"
         :aria-labelledby="`codex-method-tab-${activeMethod}`"
       >
-        <template v-if="activeMethod === 'guide'">
+        <template v-if="isCnOaiSetup && activeMethod === 'cn-oai'">
+          <div data-testid="cn-oai-setup">
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.cnOaiTitle') }}</h3>
+            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{{ t('keys.oneClick.cnOaiDescription') }}</p>
+            <ol class="mt-3 divide-y divide-gray-200 overflow-hidden rounded-lg border border-gray-200 dark:divide-dark-700 dark:border-dark-700" data-testid="cn-oai-setup-steps">
+              <li class="grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-3 p-3 lg:grid-cols-[1.75rem_minmax(0,1fr)_auto]">
+                <span class="flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 text-sm dark:border-dark-600" aria-hidden="true">1</span>
+                <div class="min-w-0">
+                  <p class="mb-0.5 text-xs font-semibold text-primary-700 dark:text-primary-300">{{ t('keys.oneClick.stepOne') }}</p>
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.installCodexAppTitle') }}</h4>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('keys.oneClick.installCodexAppDescription', { os: 'Windows' }) }}</p>
+                </div>
+                <a :href="CODEX_DOWNLOAD_URLS.windows" target="_blank" rel="noopener noreferrer" class="btn btn-secondary col-start-2 max-w-full whitespace-normal text-center lg:col-start-3" data-testid="cn-oai-download-codex">
+                  <Icon name="download" size="sm" />{{ t('keys.oneClick.downloadCodexWindows') }}
+                </a>
+              </li>
+              <li class="grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-3 p-3 lg:grid-cols-[1.75rem_minmax(0,1fr)_auto]">
+                <span class="flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 text-sm dark:border-dark-600" aria-hidden="true">2</span>
+                <div class="min-w-0">
+                  <p class="mb-0.5 text-xs font-semibold text-primary-700 dark:text-primary-300">{{ t('keys.oneClick.stepTwo') }}</p>
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.installCcSwitchTitle') }}</h4>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('keys.oneClick.cnOaiPrerequisite') }}</p>
+                </div>
+                <div class="col-start-2 flex min-w-0 flex-wrap items-end gap-2 lg:col-start-3 lg:max-w-80">
+                  <label class="min-w-0 flex-1 text-xs text-gray-600 dark:text-gray-300">
+                    <span class="mb-1 block">{{ t('keys.oneClick.ccSwitchVersion') }}</span>
+                    <input v-model="ccSwitchVersion" type="text" class="input h-9 w-full min-w-0 text-sm" :placeholder="t('keys.oneClick.latestVersion')" data-testid="cn-oai-ccswitch-version" />
+                  </label>
+                  <button class="btn btn-secondary max-w-full whitespace-normal text-center" :disabled="ccSwitchDownloadStatus === 'loading'" @click="activeOs = 'windows'; downloadCcSwitch()">
+                    <Icon name="download" size="sm" />{{ ccSwitchDownloadStatus === 'loading' ? t('keys.oneClick.resolvingCcSwitch') : t('keys.oneClick.downloadCcSwitch') }}
+                  </button>
+                  <div class="flex w-full flex-wrap items-center justify-end gap-2">
+                    <span class="text-xs text-gray-500">{{ t('keys.oneClick.architecture') }}</span>
+                    <button v-for="arch in ccSwitchArchitectures" :key="arch.id" type="button" :aria-pressed="activeArch === arch.id" :class="['btn min-h-7 px-2 py-0.5 text-xs', activeArch === arch.id ? 'btn-primary' : 'btn-secondary']" @click="activeArch = arch.id">{{ arch.label }}</button>
+                    <a :href="CC_SWITCH_RELEASE_URL" target="_blank" rel="noopener noreferrer" class="text-xs text-gray-500 underline">{{ t('keys.oneClick.openCcSwitchReleases') }}</a>
+                  </div>
+                </div>
+              </li>
+              <li class="grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-3 p-3 lg:grid-cols-[1.75rem_minmax(0,1fr)_auto]">
+                <span class="flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 text-sm dark:border-dark-600" aria-hidden="true">3</span>
+                <div class="min-w-0">
+                  <p class="mb-0.5 text-xs font-semibold text-primary-700 dark:text-primary-300">{{ t('keys.oneClick.stepThree') }}</p>
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.cnOaiConfigureTitle') }}</h4>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('keys.oneClick.cnOaiRun') }}</p>
+                  <label class="mt-2 block max-w-md text-xs text-gray-600 dark:text-gray-300">
+                    <span class="mb-1 block">{{ t('keys.oneClick.model') }}</span>
+                    <input v-model="selectedModel" class="input w-full" :placeholder="t('keys.oneClick.cnOaiAutomaticModel')" data-testid="cn-oai-model" />
+                  </label>
+                </div>
+                <button class="btn btn-primary col-start-2 max-w-full whitespace-normal text-center lg:col-start-3" data-testid="download-cn-oai-script" @click="downloadScript">
+                  <Icon name="download" size="sm" />{{ t('keys.oneClick.cnOaiDownload') }}
+                </button>
+              </li>
+            </ol>
+            <p v-if="ccSwitchDownloadStatus === 'error'" class="mt-2 text-sm text-red-600" role="alert"><a :href="CC_SWITCH_RELEASE_URL" target="_blank" rel="noopener noreferrer">{{ t('keys.oneClick.openCcSwitchReleases') }}</a></p>
+            <p v-if="setupError" class="mt-2 text-sm text-red-600" role="alert">{{ setupError }}</p>
+          </div>
+        </template>
+        <template v-else-if="activeMethod === 'guide'">
           <h3 id="codex-guide-title" class="text-base font-semibold text-gray-900 dark:text-white">
             {{ selectedApp === 'codex' ? t('keys.oneClick.guideTitle') : t('keys.oneClick.guideClientTitle', { app: selectedAppMeta?.label || selectedApp }) }}
           </h3>
@@ -152,6 +160,7 @@
             <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:gap-3">
               <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 text-sm font-medium text-gray-600 dark:border-dark-600 dark:text-gray-300">1</span>
               <div class="min-w-0 flex-1">
+                <p class="mb-0.5 text-xs font-semibold text-primary-700 dark:text-primary-300">{{ t('keys.oneClick.stepOne') }}</p>
                 <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ installStep.title }}</h4>
                 <p class="text-sm text-gray-500 dark:text-gray-400">{{ installStep.description }}</p>
                 <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ t('keys.oneClick.officialAddressHint') }}</p>
@@ -170,6 +179,7 @@
             <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:gap-3">
               <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 text-sm font-medium text-gray-600 dark:border-dark-600 dark:text-gray-300">2</span>
               <div class="min-w-0 flex-1">
+                <p class="mb-0.5 text-xs font-semibold text-primary-700 dark:text-primary-300">{{ t('keys.oneClick.stepTwo') }}</p>
                 <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.installCcSwitchTitle') }}</h4>
                 <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('keys.oneClick.installCcSwitchDescriptionFor', { app: selectedAppMeta?.label || selectedApp }) }}</p>
                 <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ t('keys.oneClick.ccSwitchDirectDownloadHint') }}</p>
@@ -241,6 +251,7 @@
             <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:gap-3">
               <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-200 text-sm font-medium text-gray-600 dark:border-dark-600 dark:text-gray-300">3</span>
               <div class="min-w-0 flex-1">
+                <p class="mb-0.5 text-xs font-semibold text-primary-700 dark:text-primary-300">{{ t('keys.oneClick.stepThree') }}</p>
                 <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ importStep.title }}</h4>
                 <p class="text-sm text-gray-500 dark:text-gray-400">{{ importStep.description }}</p>
               </div>
@@ -380,8 +391,8 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
-import CcSwitchAppIcon from '@/components/keys/CcSwitchAppIcon.vue'
 import { maskApiKey } from '@/utils/maskApiKey'
+import { buildCnOaiSetupScript, CN_OAI_SETUP_FILENAME, isCnOaiGroup } from '@/utils/cnOaiSetup'
 import {
   CC_SWITCH_APP_CATALOG,
   buildCcSwitchImportDeeplink,
@@ -407,7 +418,7 @@ import {
   type CodexOperatingSystem
 } from '@/utils/codexOneClick'
 
-type AccessMethod = 'guide' | 'ccswitch' | 'script'
+type AccessMethod = 'guide' | 'ccswitch' | 'script' | 'cn-oai'
 type QuickConnectKey = Pick<ApiKey, 'id' | 'name' | 'key' | 'status' | 'group'>
 
 const CODEX_DOWNLOAD_URLS: Record<CodexOperatingSystem, string> = {
@@ -450,11 +461,11 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const activeMethod = ref<AccessMethod>(props.initialMethod || 'guide')
+const activeMethod = ref<AccessMethod>('guide')
 const activeOs = ref<CodexOperatingSystem>('windows')
 const activeArch = ref<CCSwitchArchitecture>('amd64')
 const selectedKeyId = ref<number | null>(props.initialKeyId ?? null)
-const selectedApp = ref<CcSwitchAppType>(props.defaultApp || defaultAppForPlatform(props.platform))
+const selectedApp = ref<CcSwitchAppType>('codex')
 const selectedModel = ref('')
 if (selectedApp.value !== 'codex' && activeMethod.value === 'script') {
   activeMethod.value = 'guide'
@@ -465,6 +476,7 @@ const ccSwitchVersions = ref<CCSwitchReleaseVersion[]>([])
 const ccSwitchVersionsStatus = ref<'idle' | 'loading' | 'error'>('idle')
 const lastResolvedDownload = ref<CCSwitchDownload | null>(null)
 const copyStatus = ref<'idle' | 'success' | 'error'>('idle')
+const setupError = ref('')
 const { copyToClipboard: clipboardCopy } = useClipboard()
 const PROTOCOL_FAILURE_DELAY_MS = 1800
 let protocolCheckTimer: ReturnType<typeof setTimeout> | null = null
@@ -476,13 +488,10 @@ let ccSwitchVersionRequestId = 0
 
 const methods = computed(() => {
   const availableMethods: Array<{ id: AccessMethod; label: string }> = [
-    { id: 'guide', label: t('keys.oneClick.guide') },
-    { id: 'ccswitch', label: t('keys.oneClick.ccswitch') }
+    { id: 'guide', label: t('keys.oneClick.guide') }
   ]
-  // The generated setup script configures Codex specifically. Keeping it out
-  // of other client flows avoids presenting a runnable script for the wrong app.
-  if (selectedApp.value === 'codex') {
-    availableMethods.push({ id: 'script', label: t('keys.oneClick.script') })
+  if (isCnOaiSetup.value) {
+    availableMethods.push({ id: 'cn-oai', label: t('keys.oneClick.cnOaiTitle') })
   }
   return availableMethods
 })
@@ -496,21 +505,6 @@ const ccSwitchArchitectures: Array<{ id: CCSwitchArchitecture; label: string }> 
   { id: 'arm64', label: 'ARM64' }
 ]
 const ccSwitchApps = CC_SWITCH_APP_CATALOG
-const appIconBackgrounds: Record<CcSwitchAppType, string> = {
-  claude: 'bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:text-orange-300',
-  'claude-desktop': 'bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:text-orange-300',
-  codex: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
-  gemini: 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300',
-  grokbuild: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200',
-  opencode: 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-200',
-  openclaw: 'bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300',
-  hermes: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
-  pi: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
-}
-
-function appIconBackground(app: CcSwitchAppType): string {
-  return appIconBackgrounds[app]
-}
 const selectableKeys = computed<QuickConnectKey[]>(() =>
   (props.availableKeys || []).filter((key) => key.status === 'active' && key.key.trim().length > 0)
 )
@@ -530,6 +524,7 @@ const currentKey = computed<QuickConnectKey | null>(() =>
 const effectivePlatform = computed<GroupPlatform>(() =>
   currentKey.value?.group?.platform || props.platform || 'openai'
 )
+const isCnOaiSetup = computed(() => selectedApp.value === 'codex' && isCnOaiGroup(currentKey.value?.group))
 
 const codexDownload = computed(() => ({
   url: CODEX_DOWNLOAD_URLS[activeOs.value],
@@ -545,22 +540,6 @@ const codexDownload = computed(() => ({
       ? t('keys.oneClick.downloadCodexMacos')
       : t('keys.oneClick.openCodexLinuxGuide')
 }))
-
-function defaultAppForPlatform(platform: GroupPlatform | null | undefined): CcSwitchAppType {
-  switch (platform) {
-    case 'anthropic':
-      return 'claude'
-    case 'gemini':
-      return 'gemini'
-    case 'grok':
-      return 'grokbuild'
-    case 'antigravity':
-      return 'claude'
-    case 'openai':
-    default:
-      return 'codex'
-  }
-}
 
 const selectedAppMeta = computed(() => ccSwitchApps.find((app) => app.id === selectedApp.value))
 const selectedImportConfig = computed(() => resolveCcSwitchImportConfig(
@@ -604,13 +583,9 @@ const importStep = computed(() => ({
 }))
 
 function syncSelectedApp(): void {
-  const requested = props.defaultApp || defaultAppForPlatform(effectivePlatform.value)
-  const candidate = ccSwitchApps.find((app) => app.id === requested)
-  selectedApp.value = candidate?.importable ? candidate.id : defaultAppForPlatform(effectivePlatform.value)
+  selectedApp.value = 'codex'
   selectedModel.value = ''
-  if (selectedApp.value !== 'codex' && activeMethod.value === 'script') {
-    activeMethod.value = 'guide'
-  }
+  if (!methods.value.some((method) => method.id === activeMethod.value)) activeMethod.value = 'guide'
 }
 
 function syncSelectedKey(preferInitial = true): void {
@@ -624,16 +599,6 @@ function syncSelectedKey(preferInitial = true): void {
   selectedKeyId.value = matchingPropKey?.id ?? selectableKeys.value[0]?.id ?? null
 }
 
-function selectApp(app: CcSwitchAppType): void {
-  const candidate = ccSwitchApps.find((item) => item.id === app)
-  if (!candidate?.importable) return
-  selectedApp.value = app
-  selectedModel.value = ''
-  copyStatus.value = 'idle'
-  if (app !== 'codex' && activeMethod.value === 'script') {
-    activeMethod.value = 'guide'
-  }
-}
 const maskedKey = computed(() => maskApiKey(currentKey.value?.key || props.apiKey))
 const scriptPreview = computed(() => buildCodexSetupScriptPreview(activeOs.value, props.baseUrl))
 const runCommand = computed(() => activeOs.value === 'windows'
@@ -643,7 +608,7 @@ const runCommand = computed(() => activeOs.value === 'windows'
 
 watch(() => props.show, (show) => {
   if (show) {
-    activeMethod.value = props.initialMethod || 'guide'
+    activeMethod.value = 'guide'
     activeOs.value = 'windows'
     activeArch.value = 'amd64'
     syncSelectedKey()
@@ -677,6 +642,11 @@ watch(() => props.availableKeys, () => {
 watch(selectedKeyId, () => {
   if (props.show) syncSelectedApp()
 })
+
+watch([isCnOaiSetup, () => props.show], ([dedicated]) => {
+  setupError.value = ''
+  if (!dedicated && activeMethod.value === 'cn-oai') activeMethod.value = 'guide'
+}, { immediate: true })
 
 watch(activeOs, () => {
   copyStatus.value = 'idle'
@@ -862,12 +832,25 @@ function openCcSwitch(): void {
 }
 
 function downloadScript(): void {
-  const content = buildCodexSetupScript(activeOs.value, props.baseUrl, currentKey.value?.key || props.apiKey)
+  setupError.value = ''
+  let content: string
+  try {
+    content = isCnOaiSetup.value && activeMethod.value === 'cn-oai'
+      ? buildCnOaiSetupScript({
+        baseUrl: props.baseUrl, apiKey: currentKey.value?.key || props.apiKey,
+        providerName: props.providerName, groupId: currentKey.value!.group!.id,
+        model: selectedModel.value
+      })
+      : buildCodexSetupScript(activeOs.value, props.baseUrl, currentKey.value?.key || props.apiKey)
+  } catch {
+    setupError.value = t('keys.oneClick.cnOaiGenerateFailed')
+    return
+  }
   const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
   try {
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = getCodexSetupFilename(activeOs.value)
+    anchor.download = isCnOaiSetup.value && activeMethod.value === 'cn-oai' ? CN_OAI_SETUP_FILENAME : getCodexSetupFilename(activeOs.value)
     anchor.click()
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 1000)
