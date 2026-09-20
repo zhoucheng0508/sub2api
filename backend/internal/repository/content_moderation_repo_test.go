@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -15,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestContentModerationRepositoryCreateLog_PersistsAll32ArgumentsIncludingAuditDetails(t *testing.T) {
+func TestContentModerationRepositoryCreateLog_PersistsAll33ArgumentsIncludingAuditDetails(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
@@ -85,7 +86,7 @@ func TestContentModerationRepositoryCreateLog_PersistsAll32ArgumentsIncludingAud
 			string(categoryScoresJSON), string(thresholdSnapshotJSON), log.InputExcerpt, latencyMS, log.Error,
 			log.ViolationCount, log.AutoBanned, log.EmailSent, queueDelayMS, log.MatchedKeyword,
 			log.AuditStatus, log.AuditCode, log.AuditRetryable, log.SideEffectStatus, log.NotificationStatus,
-			log.SideEffectError, string(auditDetailsJSON),
+			log.SideEffectError, string(auditDetailsJSON), nil,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(77), createdAt))
 
@@ -154,14 +155,14 @@ func TestContentModerationRepositoryListLogs_ScansAuditDetailsInSelectOrder(t *t
 			"category_scores", "threshold_snapshot", "input_excerpt", "upstream_latency_ms", "error",
 			"audit_status", "audit_code", "audit_retryable", "side_effect_status", "notification_status", "side_effect_error",
 			"violation_count", "auto_banned", "email_sent", "user_status", "moderation_owned_disabled",
-			"queue_delay_ms", "matched_keyword", "audit_details", "created_at",
+			"queue_delay_ms", "matched_keyword", "audit_details", "created_at", "engine_meta",
 		}).AddRow(
 			int64(88), "req-audit-details-list", int64(1001), "audit@example.com", int64(2002), "audit-key", int64(3003), "protected-pro",
 			"/v1/responses", service.ContentModerationProviderAIChat, "deepseek-v4-flash", service.ContentModerationModeObserve, "allow", false, "illicit", 0.12,
 			[]byte(`{"illicit":0.12}`), []byte(`{"illicit":0.7}`), "safe excerpt", int64(250), "",
 			"success", "allow", false, "completed", "not_required", "",
 			0, false, false, service.StatusActive, false,
-			int64(9), "", auditDetailsJSON, createdAt,
+			int64(9), "", auditDetailsJSON, createdAt, nil,
 		))
 
 	repo := NewContentModerationRepository(db)
@@ -185,6 +186,51 @@ func TestContentModerationRepositoryListLogs_ScansAuditDetailsInSelectOrder(t *t
 	require.Equal(t, auditDetails, item.AuditDetails)
 	require.Equal(t, createdAt, item.CreatedAt)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestContentModerationRepositoryEngineMetaInsert(t *testing.T) {
+	for _, meta := range []*service.ContentModerationEngineMeta{nil, {Engine: "typesafe", Model: "jev-fixed", RulesVersion: "rules-v1", SkippedImages: 1}} {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		args := make([]driver.Value, 33)
+		for i := range args {
+			args[i] = sqlmock.AnyArg()
+		}
+		if meta == nil {
+			args[32] = nil
+		} else {
+			args[32] = `{"engine":"typesafe","model":"jev-fixed","rules_version":"rules-v1","skipped_images":1}`
+		}
+		mock.ExpectQuery("INSERT INTO content_moderation_logs").WithArgs(args...).WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+		err = NewContentModerationRepository(db).CreateLog(context.Background(), &service.ContentModerationLog{EngineMeta: meta})
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+	}
+}
+
+func TestContentModerationRepositoryEngineMetaRead(t *testing.T) {
+	for _, meta := range []any{nil, `{"engine":"typesafe","model":"jev-fixed","rules_version":"rules-v1","skipped_images":1}`} {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+		columns := []string{"id", "request_id", "user_id", "user_email", "api_key_id", "api_key_name", "group_id", "group_name", "endpoint", "provider", "model", "mode", "action", "flagged", "highest_category", "highest_score", "category_scores", "threshold_snapshot", "input_excerpt", "upstream_latency_ms", "error", "audit_status", "audit_code", "audit_retryable", "side_effect_status", "notification_status", "side_effect_error", "violation_count", "auto_banned", "email_sent", "status", "moderation_owned_disabled", "queue_delay_ms", "matched_keyword", "audit_details", "created_at", "engine_meta"}
+		mock.ExpectQuery("SELECT[\\s\\S]*l.engine_meta").WillReturnRows(sqlmock.NewRows(columns).AddRow(1, "req", nil, "", nil, "", nil, "", "/v1/responses", "business", "gpt-model", "observe", "allow", false, "sexual", 0.1, `{"sexual":0.1}`, `{"sexual":0.8}`, "sample", 10, "", "", "", false, "", "", "", 0, false, false, "active", false, nil, "", `{}`, time.Now(), meta))
+		logs, _, err := NewContentModerationRepository(db).ListLogs(context.Background(), service.ContentModerationLogFilter{})
+		require.NoError(t, err)
+		require.Len(t, logs, 1)
+		require.Equal(t, "gpt-model", logs[0].Model)
+		if meta == nil {
+			require.Nil(t, logs[0].EngineMeta)
+		} else {
+			require.Equal(t, "jev-fixed", logs[0].EngineMeta.Model)
+			require.Equal(t, 1, logs[0].EngineMeta.SkippedImages)
+		}
+		require.NoError(t, mock.ExpectationsWereMet())
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+	}
 }
 
 func TestBuildContentModerationLogWhere_BlockedIncludesAllBlockActions(t *testing.T) {

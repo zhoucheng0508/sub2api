@@ -9,6 +9,7 @@ const {
   enablePlugin,
   savePluginConfig,
   createUISession,
+  runPluginAction,
   stepUpRun,
 } = vi.hoisted(() => ({
   listPlugins: vi.fn(),
@@ -16,6 +17,7 @@ const {
   enablePlugin: vi.fn(),
   savePluginConfig: vi.fn(),
   createUISession: vi.fn(),
+  runPluginAction: vi.fn(),
   stepUpRun: vi.fn((action: () => Promise<unknown>) => action()),
 }))
 
@@ -31,6 +33,7 @@ vi.mock('@/api/admin', () => ({
       saveConfig: savePluginConfig,
       test: vi.fn().mockResolvedValue({ success: true, message: 'ok', latency_ms: 1 }),
       createUISession,
+      action: runPluginAction,
     },
   },
 }))
@@ -130,6 +133,7 @@ describe('管理员插件页二次验证', () => {
     uploadPlugin.mockResolvedValue(plugin)
     enablePlugin.mockResolvedValue(plugin)
     savePluginConfig.mockResolvedValue({ enabled: true })
+    runPluginAction.mockResolvedValue({ accepted: true, message: "ok" })
     createUISession.mockResolvedValue({
       url: '/api/v1/plugin-ui/token/index.html#bridge_token=bridge',
       bridge_token: 'bridge',
@@ -166,4 +170,22 @@ describe('管理员插件页二次验证', () => {
     expect(stepUpRun).toHaveBeenCalledTimes(1)
     expect(uploadPlugin).toHaveBeenCalledTimes(1)
   })
+  it('checks the bridge token and runs plugin actions through step-up', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const button = wrapper.findAll('button').find(item => item.text().includes('admin.plugins.configure'))
+    await button!.trigger('click')
+    await flushPromises()
+    const frame = wrapper.get('iframe').element as HTMLIFrameElement
+    const message = { source: 'sub2api-plugin-ui', bridge_token: 'wrong', type: 'plugin.action', request_id: 'action-1', action: { action: 'test' } }
+    window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, origin: 'null', data: message }))
+    await flushPromises()
+    expect(runPluginAction).not.toHaveBeenCalled()
+    window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, origin: 'null', data: { ...message, bridge_token: 'bridge' } }))
+    await flushPromises()
+    expect(stepUpRun).toHaveBeenCalledTimes(1)
+    expect(runPluginAction).toHaveBeenCalledWith(7, { action: 'test', request_id: 'action-1' })
+    wrapper.unmount()
+  })
+
 })

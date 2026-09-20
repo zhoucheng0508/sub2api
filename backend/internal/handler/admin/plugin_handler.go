@@ -183,6 +183,22 @@ func (h *PluginHandler) Test(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// Status returns the plugin's passive runtime status for the config UI. It is
+// read-only (no config apply, no upstream call) and therefore not step-up gated,
+// so a status UI can poll it without a 2FA prompt or a "test" side effect.
+func (h *PluginHandler) Status(c *gin.Context) {
+	id, ok := pluginIDParam(c)
+	if !ok {
+		return
+	}
+	result, err := h.manager.Status(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *PluginHandler) CreateUISession(c *gin.Context) {
 	id, ok := pluginIDParam(c)
 	if !ok {
@@ -235,7 +251,7 @@ func (h *PluginHandler) ServeUIAsset(c *gin.Context) {
 	// sandbox iframe 没有 allow-same-origin，会以不透明来源加载自己的 CSS/JS。
 	// 资源 URL 由短时随机能力 Token 保护，Bridge Token 只存在于 fragment 中。
 	c.Header("Cross-Origin-Resource-Policy", "cross-origin")
-	c.Header("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; navigate-to 'none'")
+	c.Header("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'self' about:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; navigate-to 'none'")
 	c.Data(http.StatusOK, contentType, data)
 }
 
@@ -254,4 +270,27 @@ func randomPluginToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buffer), nil
+}
+
+func (h *PluginHandler) RunAction(c *gin.Context) {
+	id, ok := pluginIDParam(c)
+	if !ok {
+		return
+	}
+	var raw json.RawMessage
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 32768))
+	if err := decoder.Decode(&raw); err != nil {
+		response.BadRequest(c, "动作参数无效或过大")
+		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		response.BadRequest(c, "动作只能包含一个 JSON 值")
+		return
+	}
+	result, err := h.manager.RunAction(c.Request.Context(), id, raw)
+	if err != nil {
+		response.BadRequest(c, "插件动作不可用，请检查插件运行状态与宿主适配")
+		return
+	}
+	response.Success(c, result)
 }
