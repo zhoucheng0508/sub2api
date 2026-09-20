@@ -1,0 +1,11 @@
+__pycache__/
+build/
+dist/
+*.s2plugin
+*.exe
+*.pem
+!plugin/release/
+!plugin/release/publisher-public-key.txt
+!plugin/integration/host_contract_test.go.txt
+!scripts/
+!scripts/*.py

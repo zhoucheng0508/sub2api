@@ -12,7 +12,7 @@
 - 备份分支：`backup/custom-before-v0.2.7-20260920`，指向定制版基线。
 - 同步分支：`sync/upstream-v0.2.7-20260920`。
 - 工作区：`C:/Users/Administrator/Documents/AI_project/.worktrees/sync-upstream-v0.2.7-20260920`。
-- 使用 `merge --no-ff --no-commit`。文本冲突已解决，修改已暂存；依据 CUSTOM_UPGRADE.md，合并提交保留待负责人审核。
+- 使用 `merge --no-ff --no-commit`。文本冲突已解决，并于 2026-09-21 经用户明确确认后提交：`430e43e6e0f8fd8719793aab8d8f2e9ebadc8ee8`。
 - 未推送分支、创建发布标签或部署服务器。
 
 原 `shared-subscription-20260914` 工作区及其暂存的共享订阅设计文档未改动。文档 SHA-256：`03592e27858fa31c4f011b4acdf4f8983a2a6a89f1afd55c73ab58223c0e0774a`。
@@ -97,4 +97,4 @@ frontend/src/views/user/KeysView.vue
 frontend/src/views/user/__tests__/KeysView.spec.ts
 ```
 
-审核重点是风控输入边界及配置隔离、平台并集、视频审核顺序。审核通过后才能创建本地合并提交；远程发布和部署另行执行。
+审核重点是风控输入边界及配置隔离、平台并集、视频审核顺序。用户已确认并完成本地合并提交；远程发布和部署另行执行。

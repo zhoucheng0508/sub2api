@@ -180,9 +180,9 @@ func ProvideOpenAITokenProvider(
 }
 
 // ProvidePluginManager preserves account-directory wiring when regenerating Wire.
-func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService) *PluginManager {
+func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService, proxyRepo ProxyRepository) *PluginManager {
 	manager := NewPluginManager(repo, encryptor, cfg, hostInfo, kvStore)
-	manager.SetAccountDirectory(gateway)
+	manager.SetAccountDirectory(NewPluginResourceDirectory(gateway, proxyRepo))
 	return manager
 }
 
