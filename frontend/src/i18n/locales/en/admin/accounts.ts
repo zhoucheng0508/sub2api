@@ -118,6 +118,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
+        opencode_go: 'OpenCode',
       },
       cnProviders: {
         accountMode: {
@@ -159,11 +160,29 @@ export default {
         balance: 'Balance --',
         window5h: '5h',
         windowWeekly: '7d',
+        windowMonthly: '30d',
         probe: 'Query',
         probeTooltip: 'Query the provider quota endpoint for 5-hour / weekly rolling window usage',
         balanceProbeTooltip: 'Query the provider balance endpoint for the account balance',
         balanceLow: 'Insufficient balance',
         noBalanceEndpoint: 'This platform has no balance query endpoint',
+      },
+      opencodeGo: {
+        accountMode: {
+          zen: 'Zen',
+          zenDesc: 'Pay-as-you-go gateway. Consumes account credits, billed per token.',
+          go: 'GO',
+          goDesc: 'Subscription gateway, rate-limited by 5-hour / weekly / monthly usage windows.',
+        },
+        protocolRules: {
+          title: 'Model protocol routing',
+          hint: 'In adaptive mode, each model is sent to a native upstream protocol. Use an exact ID or a trailing * glob (e.g. grok-*, qwen*). The first matching rule wins; unmatched models use Chat Completions.',
+          patternPlaceholder: 'grok-* or deepseek-v4-flash',
+          add: 'Add rule',
+          remove: 'Remove rule',
+          restoreDefaults: 'Restore defaults',
+          fallback: 'Unmatched models → Chat Completions (/v1/chat/completions)',
+        },
       },
       types: {
         oauth: 'OAuth',
@@ -572,6 +591,10 @@ export default {
       apiKeyHint: 'Your Claude Console API Key',
       // OpenAI specific hints
       openai: {
+        imagesUrlToB64Json: 'Image result URL to base64',
+        imagesUrlToB64JsonDesc:
+          'Only applies to non-streaming Images responses of OpenAI API Key accounts. When an upstream image item has a url but no b64_json, the gateway downloads the url and fills b64_json with its base64 content (url is kept) for clients built on the official API; the response is returned unchanged if the download fails.',
+
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
         oauthPassthrough: 'Auto passthrough (auth only)',
@@ -588,16 +611,19 @@ export default {
           'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',
         wsMode: 'WS mode',
         wsModeDesc:
-          'Only applies to the current OpenAI account type; account WS modes, including http_bridge, take effect only when the global gateway.openai_ws.mode_router_v2_enabled=true.',
+          'Applies only to the current OpenAI account type. Select Off to disable WS. Other modes use the selected connection method only when gateway.openai_ws.mode_router_v2_enabled=true; otherwise, they use the context pool.',
         wsModeOff: 'Off (off)',
         wsModeCtxPool: 'Context Pool (ctx_pool)',
         wsModePassthrough: 'Passthrough (passthrough)',
         wsModeHttpBridge: 'HTTP Bridge (http_bridge)',
         wsModeShared: 'Shared (shared)',
         wsModeDedicated: 'Dedicated (dedicated)',
-        wsModeConcurrencyHint:
-          'When WS mode is enabled, account concurrency becomes the WS connection pool limit for this account.',
-        wsModePassthroughHint: 'Passthrough mode does not use the WS connection pool.',
+        wsModeCtxPoolHint:
+          'The gateway gets and reuses upstream WS connections from a pool, with the pool limit determined by gateway configuration.',
+        wsModePassthroughHint:
+          'The gateway opens a separate upstream WS connection for each client session, without using a connection pool.',
+        wsModeHttpBridgeHint:
+          'The gateway converts client WS requests to upstream HTTP requests, then converts SSE streaming responses back into WS messages.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',
@@ -1568,13 +1594,44 @@ export default {
         estimatedTotalCost: 'Est. total ${cost}',
         estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
       },
+      openaiReferral: {
+        available: 'Invites left',
+        invite: 'Invite user',
+        fromAccount: 'Inviting account:',
+        personal: 'Invite a friend',
+        workspace: 'Invite a coworker',
+        email: 'Recipient email',
+        consent: 'I have this person’s consent to send them an invitation.',
+        send: 'Send invitation',
+        sending: 'Sending…',
+        sent: 'Invitation sent to {email}',
+        queryHint: 'Click to query remaining invitations',
+        checkedAt: 'Checked: {time}. Click to refresh.',
+        unavailable: 'Invitations are unavailable. Eligibility requirements may not be met, or the limit has been reached.',
+        invalidEmail: 'Enter one valid email address.',
+        rejected: 'The invitation was rejected. Check the email and offer eligibility.',
+        alreadyInvited: 'An invitation already exists for this email. Check its status in Codex.',
+        rateLimited: 'The invitation rate or capacity limit has been reached. Try again later.',
+        sendUnknown: 'The invitation outcome is unknown. Check its status in Codex before deciding whether to retry.',
+        programChanged: 'The account’s referral program changed. Refresh eligibility before sending.',
+        consentRequired: 'Confirm that you have the recipient’s consent first.',
+        shadowHint: 'Send invitations from the parent account.',
+        cacheFailed: 'Live capacity was fetched, but the cache could not be saved. Query again.',
+        refreshFailed: 'The invitation was sent, but remaining capacity could not be refreshed. Query again.'
+      },
       openaiQuotaReset: {
-        count: 'Credits',
+        count: 'Resets',
+        points: 'Points',
+        pointsUnlimited: 'Unlimited',
+        pointsAvailable: 'Available',
+        pointsTooltip: 'Click to query Codex points and reset credits',
+        pointsUpdatedAt: 'Balance checked: {time}',
+        pointsCachePersistFailed: 'Showing live points, but the cache could not be saved. Query again.',
         reset: 'Reset',
-        countTooltipLoad: 'Click to load the available reset-credit count',
-        countTooltipRefresh: 'Click to refresh the available reset-credit count',
+        countTooltipLoad: 'Click to load the available reset-credit count and points balance',
+        countTooltipRefresh: 'Click to refresh the available reset-credit count and points balance',
         resetTooltipReady: 'Consume 1 reset credit to immediately restore the window',
-        resetTooltipNeedQuery: 'Click Credits first to load the available count',
+        resetTooltipNeedQuery: 'Click Resets first to load the available count',
         resetTooltipNoCredits: 'No reset credits available',
         resetTooltipShadow: 'Spark shadow accounts cannot reset credits; reset on the parent account',
         expiresAt: 'Expires {time}',

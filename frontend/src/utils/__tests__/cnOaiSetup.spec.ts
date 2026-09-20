@@ -182,10 +182,10 @@ function Invoke-WebRequest {
     expect(readFileSync(configPath, 'utf8').match(/\[model_providers\.["']?sub2api_cn_oai_/g)).toHaveLength(1)
   }, 60000)
 
-  it('uses the real Codex parser to reject an incomplete model catalog', () => {
+  it('uses the real Codex parser to reject a malformed model catalog', () => {
     const f = fixture()
     const catalog = JSON.parse(readFileSync(join(f.dir, 'catalog.json'), 'utf8'))
-    delete catalog.models[0].base_instructions
+    catalog.models[0].context_window = 'invalid-context-window'
     writeFileSync(join(f.dir, 'catalog.json'), JSON.stringify(catalog))
     const result = f.run(s => s.replace('function Read-CodexToml { param($content) return [pscustomobject]@{} }', ''))
     expect(result.status).toBe(1)

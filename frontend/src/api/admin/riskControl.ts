@@ -5,6 +5,13 @@ export type ContentModerationAuditProvider = 'openai_moderations' | 'ai_chat'
 export type AIAuditFailurePolicy = 'allow' | 'block'
 export type AIAuditThinkingMode = 'disabled' | 'enabled'
 export type AIAuditReasoningEffort = 'adaptive' | 'low' | 'high' | 'max'
+export type ModerationEngine = 'openai' | 'typesafe'
+export interface ModerationEngineMeta {
+  engine: ModerationEngine
+  model: string
+  rules_version: string
+  skipped_images: number
+}
 export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
 export type ContentModerationScopeFilterType = 'all' | 'include' | 'exclude'
@@ -84,6 +91,8 @@ export interface ContentModerationAIChatProfile extends ContentModerationProvide
 }
 
 export interface ContentModerationConfig {
+  engine?: ModerationEngine
+  engine_configs?: Record<ModerationEngine, ContentModerationConfig>
   enabled: boolean
   mode: ModerationMode
   audit_provider?: ContentModerationAuditProvider
@@ -142,6 +151,8 @@ export interface ContentModerationAPIKeyStatus {
 }
 
 export interface TestContentModerationAPIKeysPayload {
+  engine?: ModerationEngine
+  thresholds?: Record<string, number>
   api_keys?: string[]
   audit_provider?: ContentModerationAuditProvider
   base_url?: string
@@ -183,6 +194,7 @@ export interface ContentModerationTestAuditError {
 }
 
 export interface ContentModerationTestAuditResult {
+  engine_meta?: ModerationEngineMeta
   flagged: boolean
   risk_score: number
   risk_tier: string
@@ -200,6 +212,8 @@ export interface ContentModerationTestAuditResult {
 }
 
 export interface UpdateContentModerationConfig {
+  engine?: ModerationEngine
+  engine_configs?: Partial<Record<ModerationEngine, UpdateModerationEngineConfig>>
   enabled?: boolean
   mode?: ModerationMode
   audit_provider?: ContentModerationAuditProvider
@@ -276,6 +290,7 @@ export interface UpdateContentModerationConfig {
 }
 
 export interface ContentModerationRuntimeStatus {
+  engine?: ModerationEngine
   enabled: boolean
   risk_control_enabled: boolean
   mode: ModerationMode
@@ -352,6 +367,7 @@ export interface ContentModerationAPIKeyLoad {
 }
 
 export interface ContentModerationLog {
+  engine_meta?: ModerationEngineMeta | null
   id: number
   request_id: string
   user_id: number | null
@@ -475,6 +491,9 @@ export interface ContentModerationAuditDetails {
   local_rule_match?: ContentModerationLocalRuleMatch
   stages?: ContentModerationAuditStageDetails[]
 }
+export type UpdateModerationEngineConfig = Pick<UpdateContentModerationConfig,
+  'base_url' | 'model' | 'proxy_id' | 'api_keys' | 'api_keys_mode' | 'delete_api_key_hashes' |
+  'clear_api_key' | 'timeout_ms' | 'retry_count' | 'thresholds'>
 
 export interface ListContentModerationLogsParams {
   page?: number
