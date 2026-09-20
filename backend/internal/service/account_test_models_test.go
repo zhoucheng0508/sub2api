@@ -84,7 +84,7 @@ func TestFetchOpenAIAccountModelsPreservesEmptyCatalog(t *testing.T) {
 
 func TestFetchOpenAIAccountModelsOAuthLabelsLocalImageModelsLikeUpstream(t *testing.T) {
 	newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"gpt-5.6-sol"}]}`)
-	svc := &AccountTestService{openaiGatewayService: &OpenAIGatewayService{}}
+	svc := &AccountTestService{openaiGatewayService: newCodexModelsOAuthTestService()}
 	account := newCodexModelsTestAccount()
 	account.Credentials["model_mapping"] = map[string]any{"gpt-image-2.5-flare": "gpt-image-2.5-flare"}
 	models, err := svc.FetchOpenAIAccountModels(context.Background(), account)

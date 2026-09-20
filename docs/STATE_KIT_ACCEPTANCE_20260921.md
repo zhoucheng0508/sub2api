@@ -67,3 +67,7 @@ STATE Kit 接入阶段：插件 Go 93 项、插件 UI 44 项、宿主定向 88 �
 本次验证接入、安装、运行、配置、RPC、页面和网关计费，不宣称改善真实上游模型路由或恢复并发。没有为验收使用真实 OpenAI OAuth 账号或动态代理获取 STATE，也没有操作生产流量。真实票据效果需在专用账号与代理上另行验收。
 
 管理员凭据、数据库凭据、会话令牌、测试 Key、数据库备份及完整运行数据均未进入 Git。
+
+## PR 完整检查反馈
+
+首轮 GitHub 完整单元测试发现两个新增用例未注入二开版 Codex 模型服务所需的 HTTP 客户端，报 `OPENAI_CODEX_MODELS_UPSTREAM_NOT_CONFIGURED`。已在 `TestFetchOpenAIAccountModelsOAuthLabelsLocalImageModelsLikeUpstream` 与 `TestCodexDirectImagesAccountTestAndWhitelist` 复用现有本地测试客户端；保留模型标签、白名单与图像模型断言。相关 42 项定向测试通过。这两处修改只涉及测试，不改变已部署应用逻辑。
