@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -332,26 +333,80 @@ func contentModerationAuditTargetSource(content ContentModerationInput) string {
 }
 
 func contentModerationSupportingContextExcerpt(content ContentModerationInput) string {
-	parts := make([]string, 0, 4)
-	for _, turn := range content.Turns {
+	const (
+		maxSupportingTurns = 12
+		maxTurnRunes       = 1200
+		maxToolRunes       = 1600
+		maxExcerptRunes    = 8000
+	)
+	type candidate struct {
+		turn  ContentModerationTurn
+		index int
+		score int
+	}
+	candidates := make([]candidate, 0, len(content.Turns))
+	for index, turn := range content.Turns {
 		if turn.Purpose != "supporting_context" {
 			continue
 		}
+		// Recent user/assistant turns are the most useful evidence when
+		// explaining a block. Client/developer metadata remains available, but
+		// is deliberately lower priority so it cannot crowd out the conversation.
+		score := 2
+		if turn.Role == "tool" {
+			score = 1
+		}
+		if turn.Source == "client_instruction" || turn.Source == "trusted_metadata" || turn.Role == "system" || turn.Role == "developer" {
+			score = 0
+		}
+		candidates = append(candidates, candidate{turn: turn, index: index, score: score})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].index > candidates[j].index
+	})
+	if len(candidates) > maxSupportingTurns {
+		candidates = candidates[:maxSupportingTurns]
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].index < candidates[j].index })
+	partsNewestFirst := make([]string, 0, len(candidates))
+	remainingRunes := maxExcerptRunes
+	const omittedMarker = "[CONTEXT OMITTED]\n"
+	for index := len(candidates) - 1; index >= 0 && remainingRunes > 0; index-- {
+		candidate := candidates[index]
+		turn := candidate.turn
 		text := strings.TrimSpace(turn.Text)
 		if turn.Role == "tool" {
-			text = sanitizeContentModerationToolOutput(text, 500)
+			text = sanitizeContentModerationToolOutput(text, maxToolRunes)
 		} else {
-			text = trimRunes(redactContentModerationSecrets(text), 500)
+			text = trimRunes(redactContentModerationSecrets(text), maxTurnRunes)
 		}
 		if text == "" {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("[%s/%s] %s", turn.Source, turn.Role, text))
-		if len(parts) >= 4 {
-			break
+		part := fmt.Sprintf("[%s/%s] %s", turn.Source, turn.Role, text)
+		partRunes := []rune(part)
+		separatorRunes := 0
+		if len(partsNewestFirst) > 0 {
+			separatorRunes = 1
 		}
+		if len(partRunes)+separatorRunes > remainingRunes {
+			available := remainingRunes - separatorRunes - len([]rune(omittedMarker))
+			if available <= 0 {
+				break
+			}
+			partRunes = append([]rune(omittedMarker), partRunes[len(partRunes)-available:]...)
+		}
+		partsNewestFirst = append(partsNewestFirst, string(partRunes))
+		remainingRunes -= len(partRunes) + separatorRunes
 	}
-	return trimRunes(strings.Join(parts, "\n"), 1600)
+	parts := make([]string, len(partsNewestFirst))
+	for index := range partsNewestFirst {
+		parts[len(partsNewestFirst)-1-index] = partsNewestFirst[index]
+	}
+	return strings.Join(parts, "\n")
 }
 
 func cloneIntPtr(value *int) *int {
