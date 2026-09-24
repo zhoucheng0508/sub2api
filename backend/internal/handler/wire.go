@@ -195,6 +195,7 @@ func ProvideHandlers(
 	availableChannelHandler *AvailableChannelHandler,
 	modelPlazaHandler *ModelPlazaHandler,
 	asyncImageHandler *AsyncImageHandler,
+	mediaTaskHandler MediaTaskRoutes,
 	batchImageHandler *BatchImageHandler,
 	ccSwitchDownloadHandler *CCSwitchDownloadHandler,
 	_ *service.IdempotencyCoordinator,
@@ -222,6 +223,7 @@ func ProvideHandlers(
 		AvailableChannel: availableChannelHandler,
 		ModelPlaza:       modelPlazaHandler,
 		AsyncImage:       asyncImageHandler,
+		MediaTask:        mediaTaskHandler,
 		BatchImage:       batchImageHandler,
 		CCSwitchDownload: ccSwitchDownloadHandler,
 	}

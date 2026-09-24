@@ -114,6 +114,7 @@ export default {
         gemini: 'Gemini',
         antigravity: 'Antigravity',
         grok: 'Grok',
+        seedance: 'Seedance',
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
@@ -737,6 +738,10 @@ export default {
         uploadPreviewAlt: 'Upload preview',
         fileReadFailed: 'Failed to read the selected file',
         noResponseBody: 'No response body from server'
+      },
+      seedance: {
+        baseUrlHint: 'Defaults to the Seedance upstream gateway supplied by the provider.',
+        apiKeyHint: 'API key issued by the Seedance upstream provider.'
       },
       anthropic: {
         apiKeyPassthrough: 'Auto passthrough (auth only)',

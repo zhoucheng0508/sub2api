@@ -170,6 +170,14 @@ const xaiModels = [
   'grok-imagine-video-1.5'
 ]
 
+// Seedance upstream catalog. These IDs are validated by the media gateway.
+const seedanceModels = [
+  'seedance2.5',
+  'seedance2.0',
+  'seedance2.0fast',
+  'seedance2.0mini'
+]
+
 // Cohere
 const cohereModels = [
   'command-a-03-2025',
@@ -449,6 +457,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'meta': return metaModels
     case 'xai':
     case 'grok': return xaiModels
+    case 'seedance': return seedanceModels
     case 'cohere': return cohereModels
     case 'yi': return yiModels
     case 'moonshot':

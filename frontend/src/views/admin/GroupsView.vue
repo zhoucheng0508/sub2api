@@ -1480,7 +1480,7 @@
               <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.title") }}</h4>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.modelPricing.description") }}</p>
             </div>
-            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(createForm.model_pricing)">
+            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(createForm.model_pricing, createForm.platform)">
               <Icon name="plus" size="sm" class="mr-1" />{{ t("admin.groups.modelPricing.add") }}
             </button>
           </div>
@@ -3130,7 +3130,7 @@
               <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.title") }}</h4>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.modelPricing.description") }}</p>
             </div>
-            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(editForm.model_pricing)">
+            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(editForm.model_pricing, editForm.platform)">
               <Icon name="plus" size="sm" class="mr-1" />{{ t("admin.groups.modelPricing.add") }}
             </button>
           </div>
@@ -4374,9 +4374,9 @@ import {
 const supportsLivePlatform = (platform: string): boolean =>
   platform === "openai" || platform === "composite";
 
-const emptyGroupPricing = (): PricingFormEntry => ({
-  models: [],
-  billing_mode: "token",
+const emptyGroupPricing = (platform?: GroupPlatform): PricingFormEntry => ({
+  models: platform === "seedance" ? ["seedance"] : [],
+  billing_mode: platform === "seedance" ? "per_request" : "token",
   input_price: null,
   output_price: null,
   cache_write_price: null,
@@ -4389,8 +4389,8 @@ const emptyGroupPricing = (): PricingFormEntry => ({
   time_pricing: createDefaultTimePricingForm(),
 });
 
-const addGroupPricing = (entries: PricingFormEntry[]) =>
-  entries.push(emptyGroupPricing());
+const addGroupPricing = (entries: PricingFormEntry[], platform?: GroupPlatform) =>
+  entries.push(emptyGroupPricing(platform));
 
 const groupPricingFromAPI = (
   pricing: ChannelModelPricing[] | undefined,

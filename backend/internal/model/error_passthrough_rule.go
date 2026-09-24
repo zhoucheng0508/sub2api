@@ -41,6 +41,7 @@ const (
 	PlatformGemini      = domain.PlatformGemini
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformGrok        = domain.PlatformGrok
+	PlatformSeedance    = domain.PlatformSeedance
 	PlatformKimi        = domain.PlatformKimi
 	PlatformZhipu       = domain.PlatformZhipu
 	PlatformDeepseek    = domain.PlatformDeepseek
@@ -55,6 +56,7 @@ func AllPlatforms() []string {
 		PlatformGemini,
 		PlatformAntigravity,
 		PlatformGrok,
+		PlatformSeedance,
 		PlatformKimi,
 		PlatformZhipu,
 		PlatformDeepseek,

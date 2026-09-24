@@ -160,6 +160,19 @@
             <PlatformIcon platform="grok" size="sm" />
             Grok
           </button>
+          <button
+            type="button"
+            @click="selectSeedancePlatform"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'seedance'
+                ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-600 dark:text-cyan-300'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="seedance" size="sm" />
+            Seedance
+          </button>
         </div>
         <!-- CN providers row: Kimi / Zhipu GLM / DeepSeek -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
@@ -3930,6 +3943,7 @@ const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return ''
+  if (form.platform === 'seedance') return t('admin.accounts.seedance.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -3937,6 +3951,7 @@ const apiKeyHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return ''
+  if (form.platform === 'seedance') return t('admin.accounts.seedance.apiKeyHint')
   return t('admin.accounts.apiKeyHint')
 })
 
@@ -3952,6 +3967,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://generativelanguage.googleapis.com'
     case 'grok':
       return 'https://api.x.ai/v1'
+    case 'seedance':
+      return 'https://api.laogou.org/seedance'
     default:
       return 'https://api.anthropic.com'
   }
@@ -3965,6 +3982,8 @@ const apiKeyValuePlaceholder = computed(() => {
       return 'AIza...'
     case 'grok':
       return 'xai-...'
+    case 'seedance':
+      return 'sk-...'
     case 'kimi':
       return 'sk-...'
     case 'zhipu':
@@ -4148,6 +4167,13 @@ function selectCNPlatform(platform: CnProviderPlatform) {
   }
   apiKeyBaseUrl.value = defaultCNBaseUrl(platform, accountMode.value, apiProtocol.value)
   resetAdaptiveBaseUrls(platform, accountMode.value)
+}
+
+function selectSeedancePlatform() {
+  form.platform = 'seedance'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  apiKeyBaseUrl.value = 'https://api.laogou.org/seedance'
 }
 // 账号类型 / 协议变更时同步默认 base url。
 watch(accountMode, (mode, previousMode) => {
@@ -4710,6 +4736,8 @@ watch(
             ? 'https://generativelanguage.googleapis.com'
             : newPlatform === 'grok'
               ? 'https://api.x.ai/v1'
+              : newPlatform === 'seedance'
+                ? 'https://api.laogou.org/seedance'
               : 'https://api.anthropic.com'
     }
     // Clear model-related settings
@@ -4736,6 +4764,13 @@ watch(
       accountCategory.value = 'oauth-based'
       addMethod.value = 'oauth'
       modelRestrictionMode.value = 'mapping'
+      form.concurrency = 1
+      form.load_factor = null
+    }
+    if (newPlatform === 'seedance') {
+      accountCategory.value = 'apikey'
+      modelRestrictionMode.value = 'whitelist'
+      allowedModels.value = [...getModelsByPlatform('seedance')]
       form.concurrency = 1
       form.load_factor = null
     }
@@ -5650,6 +5685,8 @@ const handleSubmit = async () => {
         ? 'https://generativelanguage.googleapis.com'
         : form.platform === 'grok'
           ? 'https://api.x.ai/v1'
+          : form.platform === 'seedance'
+            ? 'https://api.laogou.org/seedance'
           : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping

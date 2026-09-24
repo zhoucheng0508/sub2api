@@ -265,6 +265,11 @@ func RegisterGatewayRoutes(
 		gateway.GET("/images/batches/:id", h.BatchImage.Get)
 		gateway.GET("/images/batches/:id/items", h.BatchImage.Items)
 		gateway.GET("/images/batches/:id/items/:custom_id/content", h.BatchImage.ItemContent)
+		gateway.POST("/media/videos", h.MediaTask.CreateVideo)
+		gateway.GET("/media/videos/:task_id", h.MediaTask.GetVideo)
+		gateway.GET("/media/videos/:task_id/content", h.MediaTask.GetVideoContent)
+		gateway.POST("/media/files", h.MediaTask.UploadFile)
+		gateway.GET("/media/models", h.MediaTask.Models)
 		gateway.GET("/images/batches/:id/download", h.BatchImage.Download)
 		gateway.POST("/images/batches/:id/cancel", h.BatchImage.Cancel)
 		gateway.DELETE("/images/batches/:id", h.BatchImage.DeleteRecord)
@@ -428,6 +433,11 @@ func RegisterGatewayRoutes(
 	rootRoute(http.MethodGet, "/videos/extensions/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id/content", bodyLimit, videoContentHandler)
+	rootRoute(http.MethodPost, "/media/videos", bodyLimit, h.MediaTask.CreateVideo)
+	rootRoute(http.MethodGet, "/media/videos/:task_id", bodyLimit, h.MediaTask.GetVideo)
+	rootRoute(http.MethodGet, "/media/videos/:task_id/content", bodyLimit, h.MediaTask.GetVideoContent)
+	rootRoute(http.MethodPost, "/media/files", bodyLimit, h.MediaTask.UploadFile)
+	rootRoute(http.MethodGet, "/media/models", bodyLimit, h.MediaTask.Models)
 
 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
 		return func(c *gin.Context) {
