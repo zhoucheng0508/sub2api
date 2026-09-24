@@ -63,18 +63,13 @@ func (h *MediaVideoHandler) Create(c *gin.Context) {
 		return
 	}
 	readOnly := c.GetHeader("X-Media-Video-Replay-Only") == "true"
-	continueOnly := c.GetHeader("X-Media-Video-Continue-Only") == "true"
 	old, replayStatus, replayErr := h.videos.Replay(c.Request.Context(), sub.UserID, api.ID, c.GetHeader("Idempotency-Key"), req)
 	if replayErr != nil {
-		if readOnly || continueOnly || replayStatus != 404 {
-			h.createError(c, replayStatus, replayErr)
+		if readOnly || replayStatus != 404 {
+			h.err(c, replayStatus, replayErr.Error())
 			return
 		}
 	} else if readOnly || old.Status != "creating" || old.UpstreamTaskID != "" || old.SubmissionState == "submitting" || old.SubmissionState == "uncertain" {
-		c.JSON(200, taskJSON(old))
-		return
-	}
-	if continueOnly && !mediaVideoCanContinue(old) {
 		c.JSON(200, taskJSON(old))
 		return
 	}
@@ -118,11 +113,7 @@ func (h *MediaVideoHandler) Create(c *gin.Context) {
 		}
 		return func() { accountRelease(); userRelease() }, nil
 	}
-	createContext := c.Request.Context()
-	if continueOnly {
-		createContext = service.WithMediaVideoContinueOnly(createContext)
-	}
-	t, status, e := h.videos.Create(createContext, sub.UserID, api.ID, api.Group, c.GetHeader("Idempotency-Key"), req, beforeSubmit)
+	t, status, e := h.videos.Create(c.Request.Context(), sub.UserID, api.ID, api.Group, c.GetHeader("Idempotency-Key"), req, beforeSubmit)
 	if e != nil {
 		if c.Writer.Written() {
 			return
@@ -131,19 +122,11 @@ func (h *MediaVideoHandler) Create(c *gin.Context) {
 			h.err(c, 400, e.Error())
 			return
 		}
-		h.createError(c, status, e)
+		h.err(c, status, e.Error())
 		return
 	}
 	c.JSON(status, taskJSON(t))
 }
-func (h *MediaVideoHandler) createError(c *gin.Context, status int, err error) {
-	if errors.Is(err, service.ErrMediaVideoIdempotencyConflict) {
-		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"type": "invalid_request_error", "code": "VIDEO_IDEMPOTENCY_CONFLICT", "message": err.Error()}})
-		return
-	}
-	h.err(c, status, err.Error())
-}
-
 func (h *MediaVideoHandler) List(c *gin.Context) {
 	api, sub, ok := h.auth(c)
 	if !ok {
@@ -257,8 +240,6 @@ func taskJSON(t *service.MediaVideoTask) gin.H {
 	// is unknown; this flag makes the required operator action visible.
 	v := gin.H{"task_id": t.TaskID, "object": "media.video_task", "status": t.Status, "model": t.Model, "duration_seconds": t.Duration, "ratio": t.Ratio, "resolution": t.Resolution, "has_images": t.HasImages, "downloadable": t.Downloadable, "price": t.PriceSnapshot, "currency": t.Currency, "billing_status": t.BillingStatus, "created_at": unix(t.CreatedAt), "updated_at": unix(t.UpdatedAt), "expires_at": unix(t.ExpiresAt)}
 	v["reconciliation_required"] = t.SubmissionState == "uncertain"
-	v["submission_state"] = t.SubmissionState
-	v["can_continue"] = mediaVideoCanContinue(t)
 	if t.Progress != nil {
 		v["progress"] = *t.Progress
 	} else {
@@ -276,10 +257,6 @@ func taskJSON(t *service.MediaVideoTask) gin.H {
 		}
 	}
 	return v
-}
-
-func mediaVideoCanContinue(t *service.MediaVideoTask) bool {
-	return t != nil && t.Status == "creating" && t.SubmissionState == "prepared" && t.UpstreamTaskID == "" && t.ExpiresAt != nil && t.ExpiresAt.After(time.Now())
 }
 func unix(t *time.Time) any {
 	if t == nil {

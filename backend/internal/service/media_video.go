@@ -263,14 +263,6 @@ type MediaVideoCreateRequest struct {
 // claiming a submission. The HTTP handler supplies account audit and capacity checks.
 type MediaVideoBeforeSubmit func(*Account) (func(), error)
 
-type mediaVideoContinueOnlyKey struct{}
-
-var ErrMediaVideoIdempotencyConflict = errors.New("Idempotency-Key was reused with a different request")
-
-func WithMediaVideoContinueOnly(ctx context.Context) context.Context {
-	return context.WithValue(ctx, mediaVideoContinueOnlyKey{}, true)
-}
-
 func (s *MediaVideoService) Create(ctx context.Context, userID, apiKeyID int64, group *Group, idem string, req MediaVideoCreateRequest, beforeSubmit ...MediaVideoBeforeSubmit) (*MediaVideoTask, int, error) {
 	var groupID *int64
 	if group != nil {
@@ -291,15 +283,12 @@ func (s *MediaVideoService) Create(ctx context.Context, userID, apiKeyID int64, 
 		return nil, 500, err
 	} else if old != nil && old.ExpiresAt != nil && old.ExpiresAt.After(time.Now()) {
 		if old.RequestHash != requestHash {
-			return nil, http.StatusConflict, ErrMediaVideoIdempotencyConflict
+			return nil, http.StatusConflict, errors.New("Idempotency-Key was reused with a different request")
 		}
 		if old.Status != "creating" || old.UpstreamTaskID != "" || old.SubmissionState == "submitting" || old.SubmissionState == "uncertain" {
 			return old, http.StatusOK, nil
 		}
 		existingTask = old
-	}
-	if continueOnly, _ := ctx.Value(mediaVideoContinueOnlyKey{}).(bool); continueOnly && existingTask == nil {
-		return nil, http.StatusNotFound, errMediaVideoTaskNotFound
 	}
 	var accounts []Account
 	var err error
@@ -349,7 +338,7 @@ func (s *MediaVideoService) Create(ctx context.Context, userID, apiKeyID int64, 
 		}
 		if old != nil {
 			if old.RequestHash != requestHash {
-				return nil, http.StatusConflict, ErrMediaVideoIdempotencyConflict
+				return nil, http.StatusConflict, errors.New("Idempotency-Key was reused with a different request")
 			}
 			if old.Status != "creating" || old.UpstreamTaskID != "" || old.SubmissionState == "submitting" || old.SubmissionState == "uncertain" {
 				return old, http.StatusOK, nil
@@ -389,13 +378,7 @@ func (s *MediaVideoService) Create(ctx context.Context, userID, apiKeyID int64, 
 		return task, http.StatusServiceUnavailable, claimErr
 	}
 	if !claimed {
-		// Another continuation may have claimed or completed this order. Return
-		// its persisted state rather than advertising our stale prepared snapshot.
-		current, getErr := s.repo.GetByIdempotency(ctx, userID, apiKeyID, idemHash)
-		if getErr != nil || current == nil {
-			return task, http.StatusServiceUnavailable, errors.New("video submission state is temporarily unavailable")
-		}
-		return current, http.StatusAccepted, nil
+		return task, http.StatusAccepted, nil
 	}
 	task.SubmissionState = "submitting"
 	body, _ := json.Marshal(req)
@@ -456,7 +439,6 @@ mappingRetry:
 		return task, http.StatusInternalServerError, errors.New("video task persistence failed")
 	}
 	task.UpstreamTaskID = upID
-	task.SubmissionState = "accepted"
 	task.Status = persistStatus
 	task.UpdatedAt = &now
 	if st == "succeeded" || st == "failed" {
@@ -522,7 +504,7 @@ func (s *MediaVideoService) Replay(ctx context.Context, userID, apiKeyID int64, 
 	}
 	body, _ := json.Marshal(req)
 	if task.RequestHash != hashBytes(body) {
-		return nil, 409, ErrMediaVideoIdempotencyConflict
+		return nil, 409, errors.New("Idempotency-Key was reused with a different request")
 	}
 	return task, 200, nil
 }
@@ -725,9 +707,6 @@ func (s *MediaVideoService) callResponse(ctx context.Context, a Account, method,
 	}
 	if len(rangeHeader) > 0 && strings.TrimSpace(rangeHeader[0]) != "" {
 		req.Header.Set("Range", rangeHeader[0])
-	}
-	if len(rangeHeader) > 1 && strings.TrimSpace(rangeHeader[1]) != "" {
-		req.Header.Set("If-Range", rangeHeader[1])
 	}
 	client := s.http
 	if a.Proxy != nil {
