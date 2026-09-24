@@ -11,7 +11,10 @@ exited, preview the cleanup from the backend directory:
 go run ./cmd/finalize-legacy-media-video
 ```
 
-Review the task, user, and refund totals. Then execute the finalizer:
+Preview uses the application's normal database bootstrap, which may apply pending
+migrations or initialize required secrets. It does not refund legacy media-video
+holds or remove the legacy schema. Review the task, user, and refund totals. Then
+execute the finalizer:
 
 ```shell
 go run ./cmd/finalize-legacy-media-video \

@@ -1495,18 +1495,22 @@ func TestAPIKeyAuthRejectsExpiredMediaTaskReads(t *testing.T) {
 		return &clone, nil
 	}}
 
-	cfg := &config.Config{RunMode: config.RunModeStandard}
-	router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
-	for _, path := range []string{
-		"/v1/media/videos/media_123",
-		"/v1/media/videos/media_123/content",
-	} {
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("x-api-key", apiKey.Key)
-		router.ServeHTTP(w, req)
-		require.Equal(t, http.StatusForbidden, w.Code, path)
-		requireAPIKeyAuthError(t, w, "API_KEY_EXPIRED", "API key 已过期")
+	for _, runMode := range []string{config.RunModeStandard, config.RunModeSimple} {
+		t.Run(runMode, func(t *testing.T) {
+			cfg := &config.Config{RunMode: runMode}
+			router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
+			for _, path := range []string{
+				"/v1/media/videos/media_123",
+				"/v1/media/videos/media_123/content",
+			} {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Header.Set("x-api-key", apiKey.Key)
+				router.ServeHTTP(w, req)
+				require.Equal(t, http.StatusForbidden, w.Code, path)
+				requireAPIKeyAuthError(t, w, "API_KEY_EXPIRED", "API key 已过期")
+			}
+		})
 	}
 }
 

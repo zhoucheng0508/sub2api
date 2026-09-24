@@ -171,6 +171,11 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// to the authenticated key. They must remain available after generation
 		// consumes the key's remaining balance or quota.
 		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isGeneratedTaskRead(c.Request.Method, c.Request.URL.Path)
+		// 媒体任务读取只豁免计费门禁；过期凭证仍不能读取或下载结果。
+		if mediaTaskRead && (apiKey.Status == service.StatusAPIKeyExpired || apiKey.IsExpired()) {
+			AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+			return
+		}
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 
@@ -186,12 +191,6 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 			}
 			c.Next()
-			return
-		}
-
-		// 媒体任务读取只豁免计费门禁；过期凭证仍不能读取或下载结果。
-		if mediaTaskRead && (apiKey.Status == service.StatusAPIKeyExpired || apiKey.IsExpired()) {
-			AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
 			return
 		}
 

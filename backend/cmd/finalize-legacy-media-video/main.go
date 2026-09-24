@@ -50,7 +50,7 @@ func main() {
 		preview.PendingBalanceCacheUsers,
 	)
 	if !*execute {
-		fmt.Println("dry-run only; no balances or schema objects were changed")
+		fmt.Println("preview complete; legacy media-video balances and schema were not changed. Normal bootstrap may have applied pending migrations or initialized required secrets.")
 		return
 	}
 
