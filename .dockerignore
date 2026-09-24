@@ -32,6 +32,7 @@ dist/
 build/
 
 # Node modules (will be installed in container)
+.pnpm-store/
 frontend/node_modules/
 node_modules/
 
@@ -39,6 +40,8 @@ node_modules/
 backend/vendor/
 
 # Test files
+/outputs/
+/tools/
 *_test.go
 **/*.test.js
 coverage/

@@ -780,6 +780,18 @@ func (w *opsCaptureWriter) Flush() {
 	defer finishDelegatedCall(state)
 	rw.Flush()
 }
+
+// Preserve download write deadlines through the pooled gateway logging wrapper.
+// Delegation must remain tracked so cancellation cannot touch a recycled writer.
+func (w *opsCaptureWriter) SetWriteDeadline(deadline time.Time) error {
+	state, rw := w.beginDelegatedCall()
+	if state == nil {
+		return errors.New("response writer released")
+	}
+	state.mu.Unlock()
+	defer finishDelegatedCall(state)
+	return http.NewResponseController(rw).SetWriteDeadline(deadline)
+}
 func (w *opsCaptureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	state, rw := w.beginDelegatedCall()
 	if state == nil {

@@ -895,7 +895,7 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 		return err
 	}
 	if _, err := txClient.Account.Delete().Where(dbaccount.IDEQ(id)).Exec(ctx); err != nil {
-		return err
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
 	}
 
 	if tx != nil {
