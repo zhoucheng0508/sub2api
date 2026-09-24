@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
-	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -21,27 +20,6 @@ func NewUsageBillingRepository(_ *dbent.Client, sqlDB *sql.DB) service.UsageBill
 }
 
 func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBillingCommand) (_ *service.UsageBillingApplyResult, err error) {
-	return retryUsageBillingTransaction(ctx, func() (*service.UsageBillingApplyResult, error) { return r.applyOnce(ctx, cmd) })
-}
-
-func retryUsageBillingTransaction[T any](ctx context.Context, run func() (*T, error)) (*T, error) {
-	for attempt := 0; ; attempt++ {
-		result, err := run()
-		var sqlState interface{ SQLState() string }
-		if err == nil || attempt >= 2 || !errors.As(err, &sqlState) || (sqlState.SQLState() != "40P01" && sqlState.SQLState() != "40001") {
-			return result, err
-		}
-		timer := time.NewTimer(time.Duration(1<<attempt) * 10 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
-
-func (r *usageBillingRepository) applyOnce(ctx context.Context, cmd *service.UsageBillingCommand) (_ *service.UsageBillingApplyResult, err error) {
 	if cmd == nil {
 		return &service.UsageBillingApplyResult{}, nil
 	}
@@ -144,15 +122,6 @@ func (r *usageBillingRepository) ReleaseBatchImageBalance(ctx context.Context, c
 }
 
 func (r *usageBillingRepository) applyBatchImageBalanceHold(
-	ctx context.Context, cmd *service.BatchImageBalanceHoldCommand,
-	apply func(context.Context, *sql.Tx, *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error),
-) (*service.BatchImageBalanceHoldResult, error) {
-	return retryUsageBillingTransaction(ctx, func() (*service.BatchImageBalanceHoldResult, error) {
-		return r.applyBatchImageBalanceHoldOnce(ctx, cmd, apply)
-	})
-}
-
-func (r *usageBillingRepository) applyBatchImageBalanceHoldOnce(
 	ctx context.Context,
 	cmd *service.BatchImageBalanceHoldCommand,
 	apply func(context.Context, *sql.Tx, *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error),
@@ -178,56 +147,6 @@ func (r *usageBillingRepository) applyBatchImageBalanceHoldOnce(
 		}
 	}()
 
-	// Video orders share the balance primitives, but serialize mutually
-	// exclusive capture/release operations on their own durable order row.
-	videoState := ""
-	if strings.HasPrefix(cmd.BatchID, "vid_") {
-		var current string
-		var hold, price float64
-		if err := tx.QueryRowContext(ctx, `SELECT billing_status,hold_amount,price_snapshot FROM media_video_tasks WHERE task_id=$1 AND user_id=$2 AND api_key_id=$3 FOR UPDATE`, cmd.BatchID, cmd.UserID, cmd.APIKeyID).Scan(&current, &hold, &price); err != nil {
-			return nil, err
-		}
-		if hold != cmd.HoldAmount {
-			return nil, service.ErrUsageBillingRequestConflict
-		}
-		if token := service.MediaVideoPollToken(ctx); token != "" {
-			var valid bool
-			if err := tx.QueryRowContext(ctx, `SELECT poll_token=$2 AND poll_lease_until>NOW() FROM media_video_tasks WHERE task_id=$1`, cmd.BatchID, token).Scan(&valid); err != nil {
-				return nil, err
-			}
-			if !valid {
-				return nil, service.ErrMediaVideoStateConflict
-			}
-		}
-		switch cmd.RequestID {
-		case service.BatchImageHoldRequestID(cmd.BatchID):
-			videoState = "held"
-			if current != "hold_pending" && current != "held" {
-				return nil, service.ErrMediaVideoStateConflict
-			}
-		case service.BatchImageCaptureRequestID(cmd.BatchID):
-			videoState = "settled"
-			if cmd.ActualAmount != price || (current != "held" && current != "settlement_pending" && current != "settled") {
-				return nil, service.ErrMediaVideoStateConflict
-			}
-			// A refund decision is durable business state, independent of the
-			// caller's snapshot, lease and any erroneous pending marker.
-			var rejected bool
-			if err := tx.QueryRowContext(ctx, `SELECT submission_state='dispute_refund' OR status='failed' OR EXISTS(SELECT 1 FROM media_video_ledger WHERE task_id=$1 AND operation='dispute_refund_decision') FROM media_video_tasks WHERE task_id=$1`, cmd.BatchID).Scan(&rejected); err != nil {
-				return nil, err
-			}
-			if rejected {
-				return nil, service.ErrMediaVideoStateConflict
-			}
-		case service.BatchImageReleaseRequestID(cmd.BatchID):
-			videoState = "released"
-			if current == "settled" || current == "not_billed" {
-				return nil, service.ErrMediaVideoStateConflict
-			}
-		default:
-			return nil, errors.New("unsupported video balance operation")
-		}
-	}
 	applied, err := r.claimUsageBillingRequest(ctx, tx, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint)
 	if err != nil {
 		return nil, err
@@ -236,41 +155,6 @@ func (r *usageBillingRepository) applyBatchImageBalanceHoldOnce(
 		return &service.BatchImageBalanceHoldResult{Applied: false}, nil
 	}
 
-	if videoState != "" {
-		// Match ordinary balance billing: wallet before Key. The order row is
-		// private to video operations; ordinary billing never acquires it.
-		var walletID int64
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, cmd.UserID).Scan(&walletID); err != nil {
-			return nil, err
-		}
-		// Include outstanding holds so concurrent videos cannot share quota.
-		var quota, used, r5, r1, r7, u5, u1, u7 float64
-		err := tx.QueryRowContext(ctx, `SELECT quota,quota_used,rate_limit_5h,rate_limit_1d,rate_limit_7d,
-		 CASE WHEN window_5h_start+INTERVAL '5 hours'<=NOW() THEN 0 ELSE usage_5h END,
-		 CASE WHEN window_1d_start+INTERVAL '24 hours'<=NOW() THEN 0 ELSE usage_1d END,
-		 CASE WHEN window_7d_start+INTERVAL '7 days'<=NOW() THEN 0 ELSE usage_7d END
-		 FROM api_keys WHERE id=$1 FOR UPDATE`, cmd.APIKeyID).Scan(&quota, &used, &r5, &r1, &r7, &u5, &u1, &u7)
-		if err != nil {
-			return nil, err
-		}
-		if videoState == "held" {
-			var eligible bool
-			if err := tx.QueryRowContext(ctx, `SELECT deleted_at IS NULL AND status='active' AND (expires_at IS NULL OR expires_at>NOW()) FROM api_keys WHERE id=$1`, cmd.APIKeyID).Scan(&eligible); err != nil {
-				return nil, err
-			}
-			if !eligible {
-				return nil, service.ErrMediaVideoKeyLimit
-			}
-			var pending float64
-			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(hold_amount),0) FROM media_video_tasks WHERE api_key_id=$1 AND task_id<>$2 AND billing_status IN ('held','settlement_pending','release_pending')`, cmd.APIKeyID, cmd.BatchID).Scan(&pending); err != nil {
-				return nil, err
-			}
-			cost := pending + cmd.HoldAmount
-			if (quota > 0 && used+cost > quota) || (r5 > 0 && u5+cost > r5) || (r1 > 0 && u1+cost > r1) || (r7 > 0 && u7+cost > r7) {
-				return nil, service.ErrMediaVideoKeyLimit
-			}
-		}
-	}
 	result, err := apply(ctx, tx, cmd)
 	if err != nil {
 		return nil, err
@@ -279,38 +163,6 @@ func (r *usageBillingRepository) applyBatchImageBalanceHoldOnce(
 		result = &service.BatchImageBalanceHoldResult{}
 	}
 	result.Applied = true
-	if videoState == "settled" {
-		if cmd.ActualAmount > 0 {
-			if _, err := incrementUsageBillingAPIKeyQuota(ctx, tx, cmd.APIKeyID, cmd.ActualAmount, true); err != nil {
-				return nil, err
-			}
-			if err := incrementUsageBillingAPIKeyRateLimit(ctx, tx, cmd.APIKeyID, cmd.ActualAmount, true); err != nil {
-				return nil, err
-			}
-		}
-		// Wallet capture above is the only balance mutation. Usage and key
-		// accounting commit under the same order lock and dedup claim.
-		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_logs(user_id,api_key_id,account_id,request_id,model,group_id,total_cost,actual_cost,billing_mode,video_count,video_resolution,video_duration_seconds,created_at)
-		 SELECT user_id,api_key_id,upstream_account_id,task_id,model,group_id,$2,$2,'per_request',1,resolution,duration,NOW() FROM media_video_tasks WHERE task_id=$1`, cmd.BatchID, cmd.ActualAmount); err != nil {
-			return nil, err
-		}
-	}
-	if videoState != "" {
-		_, err := tx.ExecContext(ctx, `UPDATE media_video_tasks SET billing_status=$2, actual_amount=CASE WHEN $2='settled' THEN $3 ELSE actual_amount END, held_at=CASE WHEN $2='held' THEN NOW() ELSE held_at END, settled_at=CASE WHEN $2='settled' THEN NOW() ELSE settled_at END, released_at=CASE WHEN $2='released' THEN NOW() ELSE released_at END, next_settlement_at=NULL,last_billing_error=NULL,updated_at=NOW() WHERE task_id=$1`, cmd.BatchID, videoState, cmd.ActualAmount)
-		if err != nil {
-			return nil, err
-		}
-		amount := cmd.HoldAmount
-		if videoState == "settled" {
-			amount = cmd.ActualAmount
-		}
-		if videoState == "released" && result.NewBalance == nil {
-			amount = 0
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO media_video_ledger(task_id,operation,user_id,api_key_id,amount,order_snapshot) SELECT task_id,$2,user_id,api_key_id,$3,to_jsonb(t) FROM media_video_tasks t WHERE task_id=$1`, cmd.BatchID, videoState, amount); err != nil {
-			return nil, err
-		}
-	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -561,11 +413,7 @@ func userExistsForBilling(ctx context.Context, tx *sql.Tx, userID int64) (bool, 
 	return true, nil
 }
 
-func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID int64, amount float64, includeDeleted ...bool) (bool, error) {
-	filter := " AND deleted_at IS NULL"
-	if len(includeDeleted) > 0 && includeDeleted[0] {
-		filter = ""
-	}
+func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID int64, amount float64) (bool, error) {
 	var exhausted bool
 	err := tx.QueryRowContext(ctx, `
 		UPDATE api_keys
@@ -579,7 +427,7 @@ func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID 
 				ELSE status
 			END,
 			updated_at = NOW()
-		WHERE id = $2`+filter+`
+		WHERE id = $2 AND deleted_at IS NULL
 		RETURNING quota > 0 AND quota_used >= quota AND quota_used - $1 < quota
 	`, amount, apiKeyID, service.StatusAPIKeyActive, service.StatusAPIKeyQuotaExhausted).Scan(&exhausted)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -591,11 +439,7 @@ func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID 
 	return exhausted, nil
 }
 
-func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKeyID int64, cost float64, includeDeleted ...bool) error {
-	filter := " AND deleted_at IS NULL"
-	if len(includeDeleted) > 0 && includeDeleted[0] {
-		filter = ""
-	}
+func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKeyID int64, cost float64) error {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE api_keys SET
 			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
@@ -605,7 +449,8 @@ func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKe
 			window_1d_start = CASE WHEN window_1d_start IS NULL OR window_1d_start + INTERVAL '24 hours' <= NOW() THEN date_trunc('day', NOW()) ELSE window_1d_start END,
 			window_7d_start = CASE WHEN window_7d_start IS NULL OR window_7d_start + INTERVAL '7 days' <= NOW() THEN date_trunc('day', NOW()) ELSE window_7d_start END,
 			updated_at = NOW()
-		WHERE id = $2`+filter, cost, apiKeyID)
+		WHERE id = $2 AND deleted_at IS NULL
+	`, cost, apiKeyID)
 	if err != nil {
 		return err
 	}

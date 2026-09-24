@@ -428,17 +428,6 @@ func RegisterGatewayRoutes(
 	rootRoute(http.MethodGet, "/videos/extensions/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id/content", bodyLimit, videoContentHandler)
-	// Laogou Seedance asynchronous video API. These routes use a dedicated
-	// task store and supplier adapter; the supplier credential never leaves
-	// the account-bound service layer.
-	if h.MediaVideo != nil {
-		gateway.GET("/media/billing", h.MediaVideo.Billing)
-		gateway.POST("/media/videos", h.MediaVideo.Create)
-		gateway.GET("/media/videos/tasks", h.MediaVideo.List)
-		gateway.GET("/media/videos/:task_id/content", h.MediaVideo.Content)
-		gateway.GET("/media/videos/:task_id", h.MediaVideo.Get)
-		gateway.GET("/media/models", h.MediaVideo.Models)
-	}
 
 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
 		return func(c *gin.Context) {

@@ -16,19 +16,6 @@ import (
 )
 
 const maxAPIKeyAuthorizationHeaderBytes = service.MaxAPIKeyCredentialBytes + 128
-const mediaVideoAdmissionContextKey = "media_video.billing_admission"
-
-// The video handler resolves idempotency before Key admission. Video wallet
-// and rolling-limit admission is atomic in its repository, not subscription-based.
-// Missing middleware must fail closed.
-func CheckMediaVideoAdmission(c *gin.Context) bool {
-	check, ok := c.Get(mediaVideoAdmissionContextKey)
-	if fn, valid := check.(func() bool); ok && valid {
-		return fn()
-	}
-	AbortWithError(c, 503, "BILLING_CHECK_UNAVAILABLE", "Video billing admission is unavailable")
-	return false
-}
 
 // NewAPIKeyAuthMiddleware 创建 API Key 认证中间件
 func NewAPIKeyAuthMiddleware(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) APIKeyAuthMiddleware {
@@ -183,15 +170,10 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// authenticated key and must remain available after the completed
 		// generation consumes the key's remaining balance.
 		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
-		// Video replays defer spending checks, never credential expiry.
-		if isMediaVideoCreate(c.Request.Method, c.Request.URL.Path) && (apiKey.Status == service.StatusAPIKeyExpired || apiKey.IsExpired()) {
-			AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
-			return
-		}
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 
-		if cfg.RunMode == config.RunModeSimple && !isMediaVideoCreate(c.Request.Method, c.Request.URL.Path) {
+		if cfg.RunMode == config.RunModeSimple {
 			c.Set(string(ContextKeyAPIKey), apiKey)
 			c.Set(string(ContextKeyUser), AuthSubject{
 				UserID:      apiKey.User.ID,
@@ -208,96 +190,87 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// ── 5. 按端点需要加载订阅 ───────────────────────────────────
 
-		checkBilling := func() bool {
-			var subscription *service.UserSubscription
-			isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
+		var subscription *service.UserSubscription
+		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 
-			// Video is paid from internal balance, independently of subscriptions.
-			// Other endpoints retain their existing subscription behavior.
-			if isSubscriptionType && subscriptionService != nil && !billingInfoRequest && !isMediaVideoCreate(c.Request.Method, c.Request.URL.Path) && !isMediaVideoRead(c.Request.Method, c.Request.URL.Path) {
-				sub, subErr := subscriptionService.GetActiveSubscription(
-					c.Request.Context(),
-					apiKey.User.ID,
-					apiKey.Group.ID,
-				)
-				if subErr != nil {
-					if !skipBilling {
-						AbortWithError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
-						return false
-					}
-					// skipBilling: 订阅不存在也放行，handler 会返回可用的数据
-				} else {
-					subscription = sub
+		// 倍率自省不需要订阅数据；/v1/usage 仍保留原有订阅读取行为。
+		if isSubscriptionType && subscriptionService != nil && !billingInfoRequest {
+			sub, subErr := subscriptionService.GetActiveSubscription(
+				c.Request.Context(),
+				apiKey.User.ID,
+				apiKey.Group.ID,
+			)
+			if subErr != nil {
+				if !skipBilling {
+					AbortWithError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
+					return
 				}
+				// skipBilling: 订阅不存在也放行，handler 会返回可用的数据
+			} else {
+				subscription = sub
 			}
-
-			// ── 6. 计费执行（skipBilling 时整块跳过） ────────────────────
-
-			if !skipBilling {
-				// Key 状态检查
-				switch apiKey.Status {
-				case service.StatusAPIKeyQuotaExhausted:
-					abortWithAPIKeyQuotaError(c)
-					return false
-				case service.StatusAPIKeyExpired:
-					AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
-					return false
-				}
-
-				// 运行时过期/配额检查（即使状态是 active，也要检查时间和用量）
-				if apiKey.IsExpired() {
-					AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
-					return false
-				}
-				if apiKey.IsQuotaExhausted() {
-					abortWithAPIKeyQuotaError(c)
-					return false
-				}
-
-				// 订阅模式：验证订阅限额
-				if subscription != nil {
-					needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-					if needsMaintenance {
-						refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)
-						if maintenanceErr != nil {
-							AbortWithError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
-							return false
-						}
-						subscription = refreshed
-						_, validateErr = subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-					}
-					if validateErr != nil {
-						code := "SUBSCRIPTION_INVALID"
-						status := 403
-						if errors.Is(validateErr, service.ErrDailyLimitExceeded) ||
-							errors.Is(validateErr, service.ErrWeeklyLimitExceeded) ||
-							errors.Is(validateErr, service.ErrMonthlyLimitExceeded) {
-							code = "USAGE_LIMIT_EXCEEDED"
-							status = 429
-						}
-						AbortWithError(c, status, code, validateErr.Error())
-						return false
-					}
-				} else {
-					// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
-					if !isMediaVideoCreate(c.Request.Method, c.Request.URL.Path) && apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
-						AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
-						return false
-					}
-				}
-			}
-
-			// ── 7. 设置上下文 → Next ─────────────────────────────────────
-
-			if subscription != nil {
-				c.Set(string(ContextKeySubscription), subscription)
-			}
-			return true
 		}
-		if isMediaVideoCreate(c.Request.Method, c.Request.URL.Path) {
-			c.Set(mediaVideoAdmissionContextKey, checkBilling)
-		} else if !checkBilling() {
-			return
+
+		// ── 6. 计费执行（skipBilling 时整块跳过） ────────────────────
+
+		if !skipBilling {
+			// Key 状态检查
+			switch apiKey.Status {
+			case service.StatusAPIKeyQuotaExhausted:
+				abortWithAPIKeyQuotaError(c)
+				return
+			case service.StatusAPIKeyExpired:
+				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+				return
+			}
+
+			// 运行时过期/配额检查（即使状态是 active，也要检查时间和用量）
+			if apiKey.IsExpired() {
+				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+				return
+			}
+			if apiKey.IsQuotaExhausted() {
+				abortWithAPIKeyQuotaError(c)
+				return
+			}
+
+			// 订阅模式：验证订阅限额
+			if subscription != nil {
+				needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
+				if needsMaintenance {
+					refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)
+					if maintenanceErr != nil {
+						AbortWithError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
+						return
+					}
+					subscription = refreshed
+					_, validateErr = subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
+				}
+				if validateErr != nil {
+					code := "SUBSCRIPTION_INVALID"
+					status := 403
+					if errors.Is(validateErr, service.ErrDailyLimitExceeded) ||
+						errors.Is(validateErr, service.ErrWeeklyLimitExceeded) ||
+						errors.Is(validateErr, service.ErrMonthlyLimitExceeded) {
+						code = "USAGE_LIMIT_EXCEEDED"
+						status = 429
+					}
+					AbortWithError(c, status, code, validateErr.Error())
+					return
+				}
+			} else {
+				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
+				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
+					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+					return
+				}
+			}
+		}
+
+		// ── 7. 设置上下文 → Next ─────────────────────────────────────
+
+		if subscription != nil {
+			c.Set(string(ContextKeySubscription), subscription)
 		}
 		c.Set(string(ContextKeyAPIKey), apiKey)
 		c.Set(string(ContextKeyUser), AuthSubject{
@@ -364,19 +337,7 @@ func isAsyncImageTaskRead(method, path string) bool {
 	if method != http.MethodGet {
 		return false
 	}
-	path = strings.TrimRight(path, "/")
-	return strings.HasPrefix(path, "/v1/images/tasks/") || strings.HasPrefix(path, "/images/tasks/") ||
-		isMediaVideoRead(method, path)
-}
-
-func isMediaVideoRead(method, path string) bool {
-	if method != http.MethodGet {
-		return false
-	}
-	path = strings.TrimRight(path, "/")
-	return path == "/v1/media/videos/tasks" || path == "/media/videos/tasks" ||
-		strings.HasPrefix(path, "/v1/media/videos/") || strings.HasPrefix(path, "/media/videos/") ||
-		path == "/v1/media/models" || path == "/media/models" || path == "/v1/media/billing"
+	return strings.HasPrefix(path, "/v1/images/tasks/") || strings.HasPrefix(path, "/images/tasks/")
 }
 
 // GetAPIKeyFromContext 从上下文中获取API key
@@ -435,11 +396,6 @@ func setGroupContext(c *gin.Context, group *service.Group) {
 // 否则已配置该值的存量部署升级后，0 < balance < reserve 的用户会在所有端点被静默 403。
 func apiKeyBalanceBelowAuthThreshold(balance float64, _ *config.Config) bool {
 	return balance <= 0
-}
-
-// Video holds validate the authoritative balance after idempotency resolution.
-func isMediaVideoCreate(method, path string) bool {
-	return method == "POST" && (path == "/v1/media/videos" || path == "/media/videos")
 }
 
 func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool {

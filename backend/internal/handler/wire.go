@@ -195,7 +195,6 @@ func ProvideHandlers(
 	availableChannelHandler *AvailableChannelHandler,
 	modelPlazaHandler *ModelPlazaHandler,
 	asyncImageHandler *AsyncImageHandler,
-	mediaVideoHandler *MediaVideoHandler,
 	batchImageHandler *BatchImageHandler,
 	ccSwitchDownloadHandler *CCSwitchDownloadHandler,
 	_ *service.IdempotencyCoordinator,
@@ -223,7 +222,6 @@ func ProvideHandlers(
 		AvailableChannel: availableChannelHandler,
 		ModelPlaza:       modelPlazaHandler,
 		AsyncImage:       asyncImageHandler,
-		MediaVideo:       mediaVideoHandler,
 		BatchImage:       batchImageHandler,
 		CCSwitchDownload: ccSwitchDownloadHandler,
 	}
@@ -251,7 +249,6 @@ var ProviderSet = wire.NewSet(
 	NewAvailableChannelHandler,
 	NewModelPlazaHandler,
 	NewAsyncImageHandler,
-	ProvideMediaVideoHandler,
 	ProvideBatchImageHandler,
 	NewCCSwitchDownloadHandler,
 
