@@ -80,6 +80,12 @@ func TestCompositeRouteTargetPlatform_AllowsCNProviders(t *testing.T) {
 	}
 }
 
+func TestCompositeRouteTargetPlatform_RejectsSeedance(t *testing.T) {
+	var req CompositeRouteRequest
+	err := bindGroupPlatformJSON(t, &req, `{"public_model":"seedance2.0","target_platform":"seedance"}`)
+	require.Error(t, err)
+}
+
 func TestCompositeRouteTargetPlatform_RejectsComposite(t *testing.T) {
 	var req CompositeRouteRequest
 	require.Error(t, bindGroupPlatformJSON(t, &req, `{"public_model":"m","target_platform":"composite"}`))

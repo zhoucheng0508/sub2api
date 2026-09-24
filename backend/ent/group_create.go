@@ -484,20 +484,6 @@ func (_c *GroupCreate) SetNillableVideoPrice1080p(v *float64) *GroupCreate {
 	return _c
 }
 
-// SetVideoPricePerRequest sets the "video_price_per_request" field.
-func (_c *GroupCreate) SetVideoPricePerRequest(v float64) *GroupCreate {
-	_c.mutation.SetVideoPricePerRequest(v)
-	return _c
-}
-
-// SetNillableVideoPricePerRequest sets the "video_price_per_request" field if the given value is not nil.
-func (_c *GroupCreate) SetNillableVideoPricePerRequest(v *float64) *GroupCreate {
-	if v != nil {
-		_c.SetVideoPricePerRequest(*v)
-	}
-	return _c
-}
-
 // SetVideoModelPrices sets the "video_model_prices" field.
 func (_c *GroupCreate) SetVideoModelPrices(v map[string]map[string]float64) *GroupCreate {
 	_c.mutation.SetVideoModelPrices(v)
@@ -1328,11 +1314,6 @@ func (_c *GroupCreate) check() error {
 	if _, ok := _c.mutation.VideoRateMultiplier(); !ok {
 		return &ValidationError{Name: "video_rate_multiplier", err: errors.New(`ent: missing required field "Group.video_rate_multiplier"`)}
 	}
-	if v, ok := _c.mutation.VideoPricePerRequest(); ok {
-		if err := group.VideoPricePerRequestValidator(v); err != nil {
-			return &ValidationError{Name: "video_price_per_request", err: fmt.Errorf(`ent: validator failed for field "Group.video_price_per_request": %w`, err)}
-		}
-	}
 	if v, ok := _c.mutation.SearchPricePer1k(); ok {
 		if err := group.SearchPricePer1kValidator(v); err != nil {
 			return &ValidationError{Name: "search_price_per_1k", err: fmt.Errorf(`ent: validator failed for field "Group.search_price_per_1k": %w`, err)}
@@ -1595,10 +1576,6 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.VideoPrice1080p(); ok {
 		_spec.SetField(group.FieldVideoPrice1080p, field.TypeFloat64, value)
 		_node.VideoPrice1080p = &value
-	}
-	if value, ok := _c.mutation.VideoPricePerRequest(); ok {
-		_spec.SetField(group.FieldVideoPricePerRequest, field.TypeFloat64, value)
-		_node.VideoPricePerRequest = &value
 	}
 	if value, ok := _c.mutation.VideoModelPrices(); ok {
 		_spec.SetField(group.FieldVideoModelPrices, field.TypeJSON, value)
@@ -2419,30 +2396,6 @@ func (u *GroupUpsert) AddVideoPrice1080p(v float64) *GroupUpsert {
 // ClearVideoPrice1080p clears the value of the "video_price_1080p" field.
 func (u *GroupUpsert) ClearVideoPrice1080p() *GroupUpsert {
 	u.SetNull(group.FieldVideoPrice1080p)
-	return u
-}
-
-// SetVideoPricePerRequest sets the "video_price_per_request" field.
-func (u *GroupUpsert) SetVideoPricePerRequest(v float64) *GroupUpsert {
-	u.Set(group.FieldVideoPricePerRequest, v)
-	return u
-}
-
-// UpdateVideoPricePerRequest sets the "video_price_per_request" field to the value that was provided on create.
-func (u *GroupUpsert) UpdateVideoPricePerRequest() *GroupUpsert {
-	u.SetExcluded(group.FieldVideoPricePerRequest)
-	return u
-}
-
-// AddVideoPricePerRequest adds v to the "video_price_per_request" field.
-func (u *GroupUpsert) AddVideoPricePerRequest(v float64) *GroupUpsert {
-	u.Add(group.FieldVideoPricePerRequest, v)
-	return u
-}
-
-// ClearVideoPricePerRequest clears the value of the "video_price_per_request" field.
-func (u *GroupUpsert) ClearVideoPricePerRequest() *GroupUpsert {
-	u.SetNull(group.FieldVideoPricePerRequest)
 	return u
 }
 
@@ -3636,34 +3589,6 @@ func (u *GroupUpsertOne) UpdateVideoPrice1080p() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearVideoPrice1080p() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearVideoPrice1080p()
-	})
-}
-
-// SetVideoPricePerRequest sets the "video_price_per_request" field.
-func (u *GroupUpsertOne) SetVideoPricePerRequest(v float64) *GroupUpsertOne {
-	return u.Update(func(s *GroupUpsert) {
-		s.SetVideoPricePerRequest(v)
-	})
-}
-
-// AddVideoPricePerRequest adds v to the "video_price_per_request" field.
-func (u *GroupUpsertOne) AddVideoPricePerRequest(v float64) *GroupUpsertOne {
-	return u.Update(func(s *GroupUpsert) {
-		s.AddVideoPricePerRequest(v)
-	})
-}
-
-// UpdateVideoPricePerRequest sets the "video_price_per_request" field to the value that was provided on create.
-func (u *GroupUpsertOne) UpdateVideoPricePerRequest() *GroupUpsertOne {
-	return u.Update(func(s *GroupUpsert) {
-		s.UpdateVideoPricePerRequest()
-	})
-}
-
-// ClearVideoPricePerRequest clears the value of the "video_price_per_request" field.
-func (u *GroupUpsertOne) ClearVideoPricePerRequest() *GroupUpsertOne {
-	return u.Update(func(s *GroupUpsert) {
-		s.ClearVideoPricePerRequest()
 	})
 }
 
@@ -5110,34 +5035,6 @@ func (u *GroupUpsertBulk) UpdateVideoPrice1080p() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearVideoPrice1080p() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearVideoPrice1080p()
-	})
-}
-
-// SetVideoPricePerRequest sets the "video_price_per_request" field.
-func (u *GroupUpsertBulk) SetVideoPricePerRequest(v float64) *GroupUpsertBulk {
-	return u.Update(func(s *GroupUpsert) {
-		s.SetVideoPricePerRequest(v)
-	})
-}
-
-// AddVideoPricePerRequest adds v to the "video_price_per_request" field.
-func (u *GroupUpsertBulk) AddVideoPricePerRequest(v float64) *GroupUpsertBulk {
-	return u.Update(func(s *GroupUpsert) {
-		s.AddVideoPricePerRequest(v)
-	})
-}
-
-// UpdateVideoPricePerRequest sets the "video_price_per_request" field to the value that was provided on create.
-func (u *GroupUpsertBulk) UpdateVideoPricePerRequest() *GroupUpsertBulk {
-	return u.Update(func(s *GroupUpsert) {
-		s.UpdateVideoPricePerRequest()
-	})
-}
-
-// ClearVideoPricePerRequest clears the value of the "video_price_per_request" field.
-func (u *GroupUpsertBulk) ClearVideoPricePerRequest() *GroupUpsertBulk {
-	return u.Update(func(s *GroupUpsert) {
-		s.ClearVideoPricePerRequest()
 	})
 }
 

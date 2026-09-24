@@ -317,6 +317,7 @@ export default {
         gemini: 'Gemini',
         antigravity: 'Antigravity',
         grok: 'Grok',
+        seedance: 'Seedance',
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
@@ -837,6 +838,10 @@ export default {
         uploadPreviewAlt: '上传预览',
         fileReadFailed: '读取所选文件失败',
         noResponseBody: '服务器未返回响应体'
+      },
+      seedance: {
+        baseUrlHint: '默认使用对方提供的 Seedance 上游网关。',
+        apiKeyHint: '对方 Seedance 上游签发的 API Key。'
       },
       anthropic: {
         apiKeyPassthrough: '自动透传（仅替换认证）',

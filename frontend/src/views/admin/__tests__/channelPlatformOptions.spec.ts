@@ -11,6 +11,7 @@ describe('Composite channel platform options', () => {
     expect(declaration).toContain("'zhipu'")
     expect(declaration).toContain("'deepseek'")
     expect(declaration).toContain("'minimax'")
+    expect(declaration).not.toContain("'seedance'")
     expect(declaration).toContain("'opencode_go'")
   })
 })

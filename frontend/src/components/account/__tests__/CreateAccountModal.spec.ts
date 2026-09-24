@@ -425,6 +425,21 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
   })
 
+  it('keeps the unsupported upstream billing probe disabled for Seedance accounts', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Seedance')
+
+    expect(wrapper.find('[data-testid="upstream-billing-auto-probe"]').exists()).toBe(false)
+
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Seedance account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-seedance')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+  })
+
   it('submits OpenCode Zen default protocol rules with adaptive endpoints', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenCode')

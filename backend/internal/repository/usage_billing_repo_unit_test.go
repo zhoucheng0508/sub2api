@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -12,6 +13,41 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
+
+type retryableBillingError struct {
+	state string
+}
+
+func (e retryableBillingError) Error() string    { return "retryable billing transaction" }
+func (e retryableBillingError) SQLState() string { return e.state }
+
+func TestRetryUsageBillingTransaction_RetriesPostgresConcurrencyErrors(t *testing.T) {
+	attempts := 0
+	result, err := retryUsageBillingTransaction(context.Background(), func() (*int, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, retryableBillingError{state: "40P01"}
+		}
+		value := 7
+		return &value, nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 3, attempts)
+	require.Equal(t, 7, *result)
+}
+
+func TestRetryUsageBillingTransaction_DoesNotRetryOtherErrors(t *testing.T) {
+	attempts := 0
+	expected := errors.New("permanent failure")
+	_, err := retryUsageBillingTransaction(context.Background(), func() (*int, error) {
+		attempts++
+		return nil, expected
+	})
+
+	require.ErrorIs(t, err, expected)
+	require.Equal(t, 1, attempts)
+}
 
 const (
 	conditionalBalanceDeductSQL = `(?s)UPDATE users\s+SET balance = balance - \$1,\s+updated_at = NOW\(\)\s+WHERE id = \$2 AND deleted_at IS NULL AND balance >= \$1\s+RETURNING balance`

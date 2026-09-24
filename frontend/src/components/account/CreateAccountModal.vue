@@ -160,9 +160,18 @@
             <PlatformIcon platform="grok" size="sm" />
             Grok
           </button>
-          <button type="button" @click="form.platform = 'laogou'"
-            :class="['flex flex-1 items-center justify-center rounded-md px-4 py-2.5 text-sm font-medium', form.platform === 'laogou' ? 'bg-white text-blue-600 shadow-sm dark:bg-dark-600' : 'text-gray-600 dark:text-gray-400']">
-            Laogou / Seedance
+          <button
+            type="button"
+            @click="selectSeedancePlatform"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'seedance'
+                ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-600 dark:text-cyan-300'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="seedance" size="sm" />
+            Seedance
           </button>
         </div>
         <!-- Multi-protocol API-key providers: Kimi / Zhipu GLM / DeepSeek / OpenCode -->
@@ -1423,9 +1432,9 @@
           <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
-        <!-- Laogou has no compatible upstream billing probe API. -->
+        <!-- Seedance upstream does not expose the compatible billing probe API. -->
         <div
-          v-if="form.platform !== 'laogou'"
+          v-if="form.platform !== 'seedance'"
           class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
         >
           <div>
@@ -4058,6 +4067,7 @@ const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return ''
+  if (form.platform === 'seedance') return t('admin.accounts.seedance.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -4065,6 +4075,7 @@ const apiKeyHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return ''
+  if (form.platform === 'seedance') return t('admin.accounts.seedance.apiKeyHint')
   return t('admin.accounts.apiKeyHint')
 })
 
@@ -4081,6 +4092,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://generativelanguage.googleapis.com'
     case 'grok':
       return 'https://api.x.ai/v1'
+    case 'seedance':
+      return 'https://api.laogou.org/seedance'
     default:
       return 'https://api.anthropic.com'
   }
@@ -4094,6 +4107,8 @@ const apiKeyValuePlaceholder = computed(() => {
       return 'AIza...'
     case 'grok':
       return 'xai-...'
+    case 'seedance':
+      return 'sk-...'
     case 'kimi':
       return 'sk-...'
     case 'zhipu':
@@ -4299,6 +4314,13 @@ function selectCNPlatform(platform: CnProviderPlatform) {
   apiKeyBaseUrl.value = defaultCNBaseUrl(platform, accountMode.value, apiProtocol.value)
   resetAdaptiveBaseUrls(platform, accountMode.value)
 }
+function selectSeedancePlatform() {
+  form.platform = 'seedance'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  apiKeyBaseUrl.value = 'https://api.laogou.org/seedance'
+}
+
 function selectOpenCodeGoPlatform() {
   form.platform = 'opencode_go'
   form.type = 'apikey'
@@ -4893,6 +4915,8 @@ watch(
             ? 'https://generativelanguage.googleapis.com'
             : newPlatform === 'grok'
               ? 'https://api.x.ai/v1'
+              : newPlatform === 'seedance'
+                ? 'https://api.laogou.org/seedance'
               : 'https://api.anthropic.com'
     }
     // Clear model-related settings
@@ -4922,18 +4946,18 @@ watch(
       form.concurrency = 1
       form.load_factor = null
     }
+    if (newPlatform === 'seedance') {
+      accountCategory.value = 'apikey'
+      modelRestrictionMode.value = 'whitelist'
+      allowedModels.value = [...getModelsByPlatform('seedance')]
+      form.concurrency = 1
+      form.load_factor = null
+    }
     if (newPlatform !== 'gemini' && newPlatform !== 'anthropic' && accountCategory.value === 'service_account') {
       accountCategory.value = 'oauth-based'
     }
     if (newPlatform !== 'anthropic' && accountCategory.value === 'bedrock') {
       accountCategory.value = 'oauth-based'
-    }
-    if (newPlatform === 'laogou') {
-      accountCategory.value = 'apikey'
-      form.type = 'apikey'
-      apiKeyBaseUrl.value = 'https://api.laogou.org'
-      // Video models and parameters come from /v1/media/models at request time.
-      allowedModels.value = []
     }
     // Reset Bedrock fields when switching platforms
     bedrockAccessKeyId.value = ''
@@ -5851,6 +5875,8 @@ const handleSubmit = async () => {
         ? 'https://generativelanguage.googleapis.com'
         : form.platform === 'grok'
           ? 'https://api.x.ai/v1'
+          : form.platform === 'seedance'
+            ? 'https://api.laogou.org/seedance'
           : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
@@ -5951,7 +5977,7 @@ const handleSubmit = async () => {
     ...form,
     group_ids: form.group_ids,
     extra: withUpstreamRequestIdHeader(extra),
-    upstream_billing_probe_enabled: form.platform === 'laogou' ? false : upstreamBillingAutoProbeEnabled.value,
+    upstream_billing_probe_enabled: form.platform === 'seedance' ? false : upstreamBillingAutoProbeEnabled.value,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }
@@ -6082,7 +6108,8 @@ const createAccountAndFinish = async (
     expires_at: form.expires_at,
     // 上游倍率探测对全部 API-key 平台开放（antigravity upstream 走本 helper）；
     // 非 apikey 类型（bedrock/oauth）不传，后端不动作。
-    upstream_billing_probe_enabled: type === 'apikey' && platform !== 'laogou' ? upstreamBillingAutoProbeEnabled.value : undefined,
+    upstream_billing_probe_enabled:
+      type === 'apikey' && platform !== 'seedance' ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }

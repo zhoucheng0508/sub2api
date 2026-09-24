@@ -1296,6 +1296,29 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+func (a *Account) IsSeedance() bool {
+	return a != nil && a.Platform == PlatformSeedance
+}
+
+func (a *Account) GetSeedanceAPIKey() string {
+	if !a.IsSeedance() {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("api_key"))
+}
+
+func (a *Account) GetSeedanceBaseURL() string {
+	if !a.IsSeedance() {
+		return ""
+	}
+	if a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream {
+		if baseURL := strings.TrimSpace(a.GetCredential("base_url")); baseURL != "" {
+			return strings.TrimRight(baseURL, "/")
+		}
+	}
+	return DefaultSeedanceBaseURL
+}
+
 func (a *Account) IsOpenAILongContextBillingEnabled() bool {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return false

@@ -66,6 +66,15 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('grok-imagine-video-1.5')
   })
 
+  it('Seedance 模型列表与上游能力表一致', () => {
+    expect(getModelsByPlatform('seedance')).toEqual([
+      'seedance2.5',
+      'seedance2.0',
+      'seedance2.0fast',
+      'seedance2.0mini'
+    ])
+  })
+
   it('combined 模式支持 Grok 4.5 官方别名映射', () => {
     const mapping = buildModelMappingObject(
       'combined',

@@ -68,7 +68,7 @@ type Handlers struct {
 	AvailableChannel *AvailableChannelHandler
 	ModelPlaza       *ModelPlazaHandler
 	AsyncImage       *AsyncImageHandler
-	MediaVideo       *MediaVideoHandler
+	MediaTask        MediaTaskRoutes
 	BatchImage       *BatchImageHandler
 	CCSwitchDownload *CCSwitchDownloadHandler
 }

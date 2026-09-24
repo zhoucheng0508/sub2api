@@ -1041,17 +1041,7 @@
           </p>
         </div>
 
-        <div v-if="createForm.platform === 'laogou'" class="border-t pt-4">
-          <label class="mb-3 flex items-center gap-2">
-            <input v-model="createForm.allow_image_generation" type="checkbox" />
-            允许视频生成
-          </label>
-          <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">视频单条价格</label>
-          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">每个成功视频订单冻结并结算的内部余额单位；留空使用默认值 2。</p>
-          <input v-model.number="createForm.video_price_per_request" type="number" step="0.01" min="0" class="input" placeholder="2.00" />
-        </div>
-
-        <!-- 视频生成按秒计费配置（仅 Grok 平台） -->
+        <!-- 视频生成计费配置（仅 Grok 平台） -->
         <div
           v-if="supportsVideoPricingPlatform(createForm.platform)"
           class="border-t pt-4"
@@ -1492,7 +1482,7 @@
               <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.title") }}</h4>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.modelPricing.description") }}</p>
             </div>
-            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(createForm.model_pricing)">
+            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(createForm.model_pricing, createForm.platform)">
               <Icon name="plus" size="sm" class="mr-1" />{{ t("admin.groups.modelPricing.add") }}
             </button>
           </div>
@@ -2691,17 +2681,7 @@
           </p>
         </div>
 
-        <div v-if="editForm.platform === 'laogou'" class="border-t pt-4">
-          <label class="mb-3 flex items-center gap-2">
-            <input v-model="editForm.allow_image_generation" type="checkbox" />
-            允许视频生成
-          </label>
-          <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">视频单条价格</label>
-          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">每个成功视频订单冻结并结算的内部余额单位；留空使用默认值 2。</p>
-          <input v-model.number="editForm.video_price_per_request" type="number" step="0.01" min="0" class="input" placeholder="2.00" />
-        </div>
-
-        <!-- 视频生成按秒计费配置（仅 Grok 平台） -->
+        <!-- 视频生成计费配置（仅 Grok 平台） -->
         <div
           v-if="supportsVideoPricingPlatform(editForm.platform)"
           class="border-t pt-4"
@@ -3152,7 +3132,7 @@
               <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.title") }}</h4>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.modelPricing.description") }}</p>
             </div>
-            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(editForm.model_pricing)">
+            <button type="button" class="btn btn-secondary shrink-0 whitespace-nowrap" @click="addGroupPricing(editForm.model_pricing, editForm.platform)">
               <Icon name="plus" size="sm" class="mr-1" />{{ t("admin.groups.modelPricing.add") }}
             </button>
           </div>
@@ -4398,9 +4378,9 @@ import {
 const supportsLivePlatform = (platform: string): boolean =>
   platform === "openai" || platform === "composite";
 
-const emptyGroupPricing = (): PricingFormEntry => ({
-  models: [],
-  billing_mode: "token",
+const emptyGroupPricing = (platform?: GroupPlatform): PricingFormEntry => ({
+  models: platform === "seedance" ? ["seedance"] : [],
+  billing_mode: platform === "seedance" ? "per_request" : "token",
   input_price: null,
   output_price: null,
   cache_write_price: null,
@@ -4413,8 +4393,8 @@ const emptyGroupPricing = (): PricingFormEntry => ({
   time_pricing: createDefaultTimePricingForm(),
 });
 
-const addGroupPricing = (entries: PricingFormEntry[]) =>
-  entries.push(emptyGroupPricing());
+const addGroupPricing = (entries: PricingFormEntry[], platform?: GroupPlatform) =>
+  entries.push(emptyGroupPricing(platform));
 
 const groupPricingFromAPI = (
   pricing: ChannelModelPricing[] | undefined,
@@ -4634,8 +4614,7 @@ const platformFilterOptions = computed(() => [
 ]);
 
 const compositeRoutePlatformOptions = computed(() => [
-  // Laogou is available for standalone accounts/groups, not Composite routing.
-  ...CONCRETE_PLATFORM_OPTIONS.filter((option) => option.value !== "laogou"),
+  ...CONCRETE_PLATFORM_OPTIONS,
 ]);
 
 const compositeRouteEndpointOptions = computed(() => [
@@ -4979,7 +4958,6 @@ const createForm = reactive({
   video_price_480p: null as number | null,
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
-  video_price_per_request: null as number | null,
   video_model_prices: createVideoModelPricesForm(),
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
@@ -5345,7 +5323,6 @@ const editForm = reactive({
   video_price_480p: null as number | null,
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
-  video_price_per_request: null as number | null,
   video_model_prices: createVideoModelPricesForm(),
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
@@ -5802,7 +5779,6 @@ const closeCreateModal = () => {
   createForm.video_price_480p = null;
   createForm.video_price_720p = null;
   createForm.video_price_1080p = null;
-  createForm.video_price_per_request = null;
   createForm.video_model_prices = createVideoModelPricesForm();
   createForm.long_context_pricing_enabled = true;
   createForm.force_openai_fast = false;
@@ -6000,7 +5976,6 @@ const handleCreateGroup = async () => {
     requestData.video_price_480p = emptyToNull(requestData.video_price_480p);
     requestData.video_price_720p = emptyToNull(requestData.video_price_720p);
     requestData.video_price_1080p = emptyToNull(requestData.video_price_1080p);
-    requestData.video_price_per_request = emptyToNull(requestData.video_price_per_request);
     requestData.search_price_per_1k = emptyToNull(
       requestData.search_price_per_1k,
     );
@@ -6081,7 +6056,6 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.video_price_480p = group.video_price_480p;
   editForm.video_price_720p = group.video_price_720p;
   editForm.video_price_1080p = group.video_price_1080p;
-  editForm.video_price_per_request = group.video_price_per_request ?? null;
   editForm.video_model_prices = createVideoModelPricesForm(
     group.video_model_prices,
   );
@@ -6195,7 +6169,6 @@ const closeEditModal = () => {
   editForm.video_price_480p = null;
   editForm.video_price_720p = null;
   editForm.video_price_1080p = null;
-  editForm.video_price_per_request = null;
   editForm.video_model_prices = createVideoModelPricesForm();
   editForm.long_context_pricing_enabled = true;
   editForm.force_openai_fast = false;
@@ -6353,7 +6326,6 @@ const handleUpdateGroup = async () => {
     payload.video_price_480p = emptyPriceToClear(payload.video_price_480p);
     payload.video_price_720p = emptyPriceToClear(payload.video_price_720p);
     payload.video_price_1080p = emptyPriceToClear(payload.video_price_1080p);
-    payload.video_price_per_request = emptyPriceToClear(payload.video_price_per_request);
     payload.search_price_per_1k = emptyPriceToClear(
       payload.search_price_per_1k,
     );

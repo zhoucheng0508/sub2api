@@ -1427,6 +1427,93 @@ func TestAPIKeyAuthRejectsExhaustedBalance(t *testing.T) {
 	requireAPIKeyAuthError(t, w, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 }
 
+func TestAPIKeyAuthAllowsMediaTaskReadsAfterBillingExhaustion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:          12,
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     0,
+		Concurrency: 3,
+	}
+	apiKey := &service.APIKey{
+		ID:     106,
+		UserID: user.ID,
+		Key:    "media-task-read-exhausted",
+		Status: service.StatusAPIKeyQuotaExhausted,
+		User:   user,
+	}
+	apiKeyRepo := &stubApiKeyRepo{getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+		if key != apiKey.Key {
+			return nil, service.ErrAPIKeyNotFound
+		}
+		clone := *apiKey
+		userClone := *user
+		clone.User = &userClone
+		return &clone, nil
+	}}
+
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
+	for _, path := range []string{
+		"/v1/media/videos/media_123",
+		"/v1/media/videos/media_123/content",
+		"/media/videos/media_123",
+		"/media/videos/media_123/content",
+	} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("x-api-key", apiKey.Key)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, path)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/media/videos", nil)
+	req.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+func TestAPIKeyAuthRejectsExpiredMediaTaskReads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	expiresAt := time.Now().Add(-time.Minute)
+	user := &service.User{ID: 13, Role: service.RoleUser, Status: service.StatusActive, Balance: 10}
+	apiKey := &service.APIKey{
+		ID: 107, UserID: user.ID, Key: "media-task-read-expired", Status: service.StatusActive,
+		ExpiresAt: &expiresAt, User: user,
+	}
+	apiKeyRepo := &stubApiKeyRepo{getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+		if key != apiKey.Key {
+			return nil, service.ErrAPIKeyNotFound
+		}
+		clone := *apiKey
+		userClone := *user
+		clone.User = &userClone
+		return &clone, nil
+	}}
+
+	for _, runMode := range []string{config.RunModeStandard, config.RunModeSimple} {
+		t.Run(runMode, func(t *testing.T) {
+			cfg := &config.Config{RunMode: runMode}
+			router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
+			for _, path := range []string{
+				"/v1/media/videos/media_123",
+				"/v1/media/videos/media_123/content",
+			} {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Header.Set("x-api-key", apiKey.Key)
+				router.ServeHTTP(w, req)
+				require.Equal(t, http.StatusForbidden, w.Code, path)
+				requireAPIKeyAuthError(t, w, "API_KEY_EXPIRED", "API key 已过期")
+			}
+		})
+	}
+}
+
 func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1510,6 +1597,11 @@ func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService
 	router.POST("/v1/messages", ok)
 	router.GET("/v1/usage", ok)
 	router.GET("/v1/sub2api/billing", ok)
+	router.POST("/v1/media/videos", ok)
+	router.GET("/v1/media/videos/:task_id", ok)
+	router.GET("/v1/media/videos/:task_id/content", ok)
+	router.GET("/media/videos/:task_id", ok)
+	router.GET("/media/videos/:task_id/content", ok)
 	return router
 }
 

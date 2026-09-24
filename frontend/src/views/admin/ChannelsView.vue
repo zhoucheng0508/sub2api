@@ -763,8 +763,8 @@ const form = reactive({
 let abortController: AbortController | null = null
 
 // ── Platform config ──
-const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go']
-// Composite pricing/mapping may target every concrete schedulable provider.
+const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'seedance', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go']
+// Seedance uses the dedicated /v1/media API and must be configured as its own group.
 const compositePlatforms: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go']
 
 // ── Helpers ──
@@ -855,9 +855,10 @@ function toggleGroupInSection(sectionIdx: number, groupId: number) {
 
 // ── Pricing helpers ──
 function addPricingEntry(sectionIdx: number) {
+  const platform = form.platforms[sectionIdx].platform
   form.platforms[sectionIdx].model_pricing.push({
-    models: [],
-    billing_mode: 'token',
+    models: platform === 'seedance' ? ['seedance'] : [],
+    billing_mode: platform === 'seedance' ? 'per_request' : 'token',
     input_price: null,
     output_price: null,
     cache_write_price: null,
