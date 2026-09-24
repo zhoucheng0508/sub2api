@@ -243,6 +243,14 @@ func ProvideAccountUsageService(
 	return service
 }
 
+// ProvidePluginManager keeps account-directory wiring in the dependency graph
+// so regenerating Wire preserves the capability-gated plugin host services.
+func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService) *PluginManager {
+	manager := NewPluginManager(repo, encryptor, cfg, hostInfo, kvStore)
+	manager.SetAccountDirectory(gateway)
+	return manager
+}
+
 func ProvideAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
@@ -486,6 +494,7 @@ func ProvideRateLimitService(
 	openAI403CounterCache OpenAI403CounterCache,
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
+	ollamaCloudUsage *OllamaCloudUsageService,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
@@ -495,6 +504,7 @@ func ProvideRateLimitService(
 	svc.SetOpenAI403CounterCache(openAI403CounterCache)
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
+	svc.SetOllamaCloudUsageProbeScheduler(ollamaCloudUsage)
 	return svc
 }
 
@@ -926,7 +936,7 @@ var ProviderSet = wire.NewSet(
 	NewTLSFingerprintProfileService,
 	NewTLSFingerprintRouterService, // CUSTOM(VOTE-AI-OPENAI-TLS)
 	ProvideOpenAIGatewayTLSFingerprintRouterServices,
-	NewPluginManager,
+	ProvidePluginManager,
 	NewDigestSessionStore,
 	ProvideIdempotencyCoordinator,
 	ProvideSystemOperationLockService,

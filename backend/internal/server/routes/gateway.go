@@ -49,7 +49,8 @@ func RegisterGatewayRoutes(
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok,
-			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax:
+			service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek,
+			service.PlatformMiniMax, service.PlatformOpenCodeGo:
 			// 国产 OpenAI 兼容供应商与 openai/grok 一样经 OpenAI 网关转发。
 			return true
 		default:
@@ -58,7 +59,7 @@ func RegisterGatewayRoutes(
 	}
 	countTokensHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
-		case service.PlatformOpenAI, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax:
+		case service.PlatformOpenAI, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo:
 			h.OpenAIGateway.CountTokens(c)
 		case service.PlatformGrok:
 			h.OpenAIGateway.GrokCountTokens(c)
@@ -211,6 +212,8 @@ func RegisterGatewayRoutes(
 		// /models endpoint with a client_version query and expect the ChatGPT
 		// Codex manifest format; other clients keep the OpenAI-style list.
 		gateway.GET("/models", modelsHandler)
+		// Single-model discovery never selects the Codex client_version manifest.
+		gateway.GET("/models/:model", h.Gateway.Models)
 		gateway.GET("/usage", h.Gateway.Usage)
 		gateway.POST("/live", h.OpenAIGateway.Live)
 		gateway.GET("/live/:call_id", h.OpenAIGateway.LiveSideband)
@@ -265,11 +268,13 @@ func RegisterGatewayRoutes(
 		gateway.GET("/images/batches/:id", h.BatchImage.Get)
 		gateway.GET("/images/batches/:id/items", h.BatchImage.Items)
 		gateway.GET("/images/batches/:id/items/:custom_id/content", h.BatchImage.ItemContent)
-		gateway.POST("/media/videos", h.MediaTask.CreateVideo)
-		gateway.GET("/media/videos/:task_id", h.MediaTask.GetVideo)
-		gateway.GET("/media/videos/:task_id/content", h.MediaTask.GetVideoContent)
-		gateway.POST("/media/files", h.MediaTask.UploadFile)
-		gateway.GET("/media/models", h.MediaTask.Models)
+		if h.MediaTask != nil {
+			gateway.POST("/media/videos", h.MediaTask.CreateVideo)
+			gateway.GET("/media/videos/:task_id", h.MediaTask.GetVideo)
+			gateway.GET("/media/videos/:task_id/content", h.MediaTask.GetVideoContent)
+			gateway.POST("/media/files", h.MediaTask.UploadFile)
+			gateway.GET("/media/models", h.MediaTask.Models)
+		}
 		gateway.GET("/images/batches/:id/download", h.BatchImage.Download)
 		gateway.POST("/images/batches/:id/cancel", h.BatchImage.Cancel)
 		gateway.DELETE("/images/batches/:id", h.BatchImage.DeleteRecord)
@@ -374,6 +379,11 @@ func RegisterGatewayRoutes(
 	rootRoute := func(method, path string, limit gin.HandlerFunc, handler gin.HandlerFunc) {
 		r.Handle(method, path, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic, handler)
 	}
+	for _, prefix := range []string{"/api/v3", "/v3", "/v1", ""} {
+		rootRoute(http.MethodPost, prefix+"/contents/generations/tasks", bodyLimit, h.OpenAIGateway.SeedanceTasks)
+		rootRoute(http.MethodGet, prefix+"/contents/generations/tasks/:task_id", bodyLimit, h.OpenAIGateway.SeedanceTasks)
+		rootRoute(http.MethodDelete, prefix+"/contents/generations/tasks/:task_id", bodyLimit, h.OpenAIGateway.SeedanceTasks)
+	}
 	rootRoute(http.MethodPost, "/responses", bodyLimit, responsesHandler)
 	rootRoute(http.MethodPost, "/responses/*subpath", bodyLimit, guardResponsesSubpath(responsesHandler))
 	rootRoute(http.MethodPost, "/alpha/search", textBodyLimit, h.OpenAIGateway.AlphaSearch)
@@ -381,6 +391,7 @@ func RegisterGatewayRoutes(
 		h.OpenAIGateway.ResponsesWebSocket(c)
 	})
 	rootRoute(http.MethodGet, "/models", bodyLimit, modelsHandler)
+	rootRoute(http.MethodGet, "/models/:model", bodyLimit, h.Gateway.Models)
 	rootRoute(http.MethodPost, "/messages/count_tokens", bodyLimit, countTokensHandler)
 	codexDirect := r.Group("/backend-api/codex")
 	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic)
@@ -433,11 +444,13 @@ func RegisterGatewayRoutes(
 	rootRoute(http.MethodGet, "/videos/extensions/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id/content", bodyLimit, videoContentHandler)
-	rootRoute(http.MethodPost, "/media/videos", bodyLimit, h.MediaTask.CreateVideo)
-	rootRoute(http.MethodGet, "/media/videos/:task_id", bodyLimit, h.MediaTask.GetVideo)
-	rootRoute(http.MethodGet, "/media/videos/:task_id/content", bodyLimit, h.MediaTask.GetVideoContent)
-	rootRoute(http.MethodPost, "/media/files", bodyLimit, h.MediaTask.UploadFile)
-	rootRoute(http.MethodGet, "/media/models", bodyLimit, h.MediaTask.Models)
+	if h.MediaTask != nil {
+		rootRoute(http.MethodPost, "/media/videos", bodyLimit, h.MediaTask.CreateVideo)
+		rootRoute(http.MethodGet, "/media/videos/:task_id", bodyLimit, h.MediaTask.GetVideo)
+		rootRoute(http.MethodGet, "/media/videos/:task_id/content", bodyLimit, h.MediaTask.GetVideoContent)
+		rootRoute(http.MethodPost, "/media/files", bodyLimit, h.MediaTask.UploadFile)
+		rootRoute(http.MethodGet, "/media/models", bodyLimit, h.MediaTask.Models)
+	}
 
 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
 		return func(c *gin.Context) {

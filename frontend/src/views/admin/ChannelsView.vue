@@ -763,9 +763,9 @@ const form = reactive({
 let abortController: AbortController | null = null
 
 // ── Platform config ──
-const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'seedance', 'kimi', 'zhipu', 'deepseek', 'minimax']
+const platformOrder: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'seedance', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go']
 // Seedance uses the dedicated /v1/media API and must be configured as its own group.
-const compositePlatforms: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax']
+const compositePlatforms: GroupPlatform[] = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go']
 
 // ── Helpers ──
 function formatDate(value: string): string {
