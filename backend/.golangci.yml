@@ -130,6 +130,14 @@ linters:
       - path: '_test\.go$'
         linters: [ gosec ]
         text: 'G70[34]'
+      # Keep the delivered Seedance media package unchanged; suppress only the
+      # two findings present in the provider drop.
+      - path: '^internal/custom/business/media/handler\.go$'
+        linters: [ unused ]
+        text: 'func mediaTaskIdentity is unused'
+      - path: '^internal/custom/business/media/store\.go$'
+        linters: [ staticcheck ]
+        text: 'SA1019.*ZRangeByScore is deprecated'
 
 formatters:
   enable:
