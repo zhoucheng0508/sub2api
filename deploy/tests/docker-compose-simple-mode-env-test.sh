@@ -30,6 +30,9 @@ for filename in (
             os.environ, POSTGRES_PASSWORD="compose-test-password",
             DATABASE_HOST="postgres", DATABASE_PASSWORD="compose-test-password",
             REDIS_HOST="redis",
+            # Custom deployments require an explicit image. `config` only
+            # renders YAML; this fixture is never pulled or started.
+            SUB2API_IMAGE="sub2api-compose-test:fixture",
         )
         env.pop(key, None)
         if value is not None:
