@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CC_SWITCH_APP_CATALOG,
+  CC_SWITCH_USAGE_SCRIPT,
   CC_SWITCH_IMPORTABLE_APP_TYPES,
   CLAUDE_CC_SWITCH_MODEL,
   GROK_CC_SWITCH_MODEL,
@@ -73,7 +74,7 @@ describe('ccswitchImport utils', () => {
     'https://ai.vote520.com/',
     'https://ai.vote520.com/v1',
     'https://ai.vote520.com/v1/'
-  ])('adds the Codex model and one /v1 endpoint for OpenAI base URL %s', (baseUrl) => {
+  ])('preserves the configured Codex endpoint for OpenAI base URL %s', (baseUrl) => {
     const params = paramsFromDeeplink(
       buildCcSwitchImportDeeplink({
         ...baseInput,
@@ -86,7 +87,7 @@ describe('ccswitchImport utils', () => {
     expect(params.get('resource')).toBe('provider')
     expect(params.get('app')).toBe('codex')
     expect(params.get('homepage')).toBe(baseUrl)
-    expect(params.get('endpoint')).toBe('https://ai.vote520.com/v1')
+    expect(params.get('endpoint')).toBe(baseUrl.trim().replace(/\/+$/, ''))
     expect(params.get('model')).toBe(OPENAI_CC_SWITCH_CODEX_MODEL)
     expect(atob(params.get('usageScript') || '')).toBe(baseInput.usageScript)
   })
@@ -175,7 +176,7 @@ describe('ccswitchImport utils', () => {
       app: 'codex' as const,
       platform: 'openai' as GroupPlatform,
       wireApp: 'codex',
-      endpoint: 'https://api.example.com/v1',
+      endpoint: 'https://api.example.com',
       model: OPENAI_CC_SWITCH_CODEX_MODEL
     },
     {
@@ -279,5 +280,40 @@ describe('ccswitchImport utils', () => {
       clientType: 'claude',
       app: 'claude-desktop'
     })).toThrow(/Claude Desktop/)
+  })
+})
+
+describe('CC Switch usage script', () => {
+  // Mirrors CC Switch: substitute the template vars as text, evaluate, read request.url.
+  function usageUrlFor(baseUrl: string): string {
+    const script = CC_SWITCH_USAGE_SCRIPT.split('{{baseUrl}}').join(baseUrl).split('{{apiKey}}').join('sk-test')
+    // eslint-disable-next-line no-new-func
+    const config = new Function(`return ${script}`)() as { request: { url: string } }
+    return config.request.url
+  }
+
+  it.each([
+    'https://api.example.com',
+    'https://api.example.com/',
+    'https://api.example.com/v1',
+    'https://api.example.com/v1/'
+  ])('queries exactly one /v1/usage for base URL %s', (baseUrl) => {
+    expect(usageUrlFor(baseUrl)).toBe('https://api.example.com/v1/usage')
+  })
+
+  it('works against the endpoint every platform import stores', () => {
+    for (const platform of ['anthropic', 'openai', 'grok', 'gemini'] as GroupPlatform[]) {
+      const endpoint = paramsFromDeeplink(
+        buildCcSwitchImportDeeplink({
+          baseUrl: 'https://api.example.com',
+          platform,
+          clientType: platform === 'gemini' ? 'gemini' : 'claude',
+          providerName: 'Sub2API',
+          apiKey: 'sk-test',
+          usageScript: CC_SWITCH_USAGE_SCRIPT
+        })
+      ).get('endpoint') as string
+      expect(usageUrlFor(endpoint)).toBe('https://api.example.com/v1/usage')
+    }
   })
 })
