@@ -178,7 +178,13 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 }
 
 func groupFromServiceBase(g *service.Group) Group {
+	// Expose a capability summary without disclosing the administrator allowlist.
+	imageOnly := g.Platform == service.PlatformOpenAI && g.ModelAllowlist.Enabled && len(g.ModelAllowlist.Models) > 0
+	for _, model := range g.ModelAllowlist.Models {
+		imageOnly = imageOnly && strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
+	}
 	return Group{
+		ImageOnly:                       imageOnly,
 		ID:                              g.ID,
 		Name:                            g.Name,
 		Description:                     g.Description,

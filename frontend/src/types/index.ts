@@ -580,6 +580,7 @@ export interface Group {
   long_context_pricing_enabled: boolean
   // 图片生成计费配置
   allow_image_generation: boolean
+  image_only?: boolean // Public capability summary; not the administrator model allowlist.
   allow_batch_image_generation: boolean
   image_rate_independent: boolean
   image_rate_multiplier: number
