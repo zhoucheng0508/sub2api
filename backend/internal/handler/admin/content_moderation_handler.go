@@ -22,11 +22,13 @@ func NewContentModerationHandler(svc *service.ContentModerationService) *Content
 }
 
 type contentModerationConfigRequest struct {
-	Enabled       *bool   `json:"enabled"`
-	Mode          *string `json:"mode"`
-	AuditProvider *string `json:"audit_provider"`
-	BaseURL       *string `json:"base_url"`
-	Model         *string `json:"model"`
+	Enabled       *bool                                                 `json:"enabled"`
+	Mode          *string                                               `json:"mode"`
+	AuditProvider *string                                               `json:"audit_provider"`
+	BaseURL       *string                                               `json:"base_url"`
+	Model         *string                                               `json:"model"`
+	Engine        *string                                               `json:"engine"`
+	EngineConfigs map[string]service.UpdateContentModerationEngineInput `json:"engine_configs"`
 	// 审计请求使用的代理服务器：null 不修改；0 清除（直连）；>0 指定代理。
 	ProxyID              *int64              `json:"proxy_id"`
 	APIKey               *string             `json:"api_key"`
@@ -101,25 +103,27 @@ type contentModerationConfigRequest struct {
 }
 
 type contentModerationAPIKeyTestRequest struct {
-	APIKeys               []string `json:"api_keys"`
-	AuditProvider         string   `json:"audit_provider"`
-	BaseURL               string   `json:"base_url"`
-	Model                 string   `json:"model"`
-	TimeoutMS             int      `json:"timeout_ms"`
-	ProxyID               *int64   `json:"proxy_id"`
-	Prompt                string   `json:"prompt"`
-	Images                []string `json:"images"`
-	AIConfidenceThreshold float64  `json:"ai_confidence_threshold"`
-	AISystemPrompt        string   `json:"ai_system_prompt"`
-	AIMaxInputChars       int      `json:"ai_max_input_chars"`
-	AISynchronousBudgetMS int      `json:"ai_synchronous_budget_ms"`
-	AIFastStageBudgetMS   int      `json:"ai_fast_stage_budget_ms"`
-	AIFastInputChars      int      `json:"ai_fast_input_chars"`
-	AIFallbackInputChars  int      `json:"ai_fallback_input_chars"`
-	AIThinkingMode        string   `json:"ai_thinking_mode"`
-	AIReasoningEffort     string   `json:"ai_reasoning_effort"`
-	AIRiskLevelsEnabled   *bool    `json:"ai_risk_levels_enabled"`
-	AIObserveThreshold    float64  `json:"ai_observe_threshold"`
+	APIKeys               []string            `json:"api_keys"`
+	AuditProvider         string              `json:"audit_provider"`
+	BaseURL               string              `json:"base_url"`
+	Model                 string              `json:"model"`
+	TimeoutMS             int                 `json:"timeout_ms"`
+	ProxyID               *int64              `json:"proxy_id"`
+	Prompt                string              `json:"prompt"`
+	Images                []string            `json:"images"`
+	AIConfidenceThreshold float64             `json:"ai_confidence_threshold"`
+	AISystemPrompt        string              `json:"ai_system_prompt"`
+	AIMaxInputChars       int                 `json:"ai_max_input_chars"`
+	AISynchronousBudgetMS int                 `json:"ai_synchronous_budget_ms"`
+	AIFastStageBudgetMS   int                 `json:"ai_fast_stage_budget_ms"`
+	AIFastInputChars      int                 `json:"ai_fast_input_chars"`
+	AIFallbackInputChars  int                 `json:"ai_fallback_input_chars"`
+	AIThinkingMode        string              `json:"ai_thinking_mode"`
+	AIReasoningEffort     string              `json:"ai_reasoning_effort"`
+	AIRiskLevelsEnabled   *bool               `json:"ai_risk_levels_enabled"`
+	AIObserveThreshold    float64             `json:"ai_observe_threshold"`
+	Engine                string              `json:"engine"`
+	Thresholds            *map[string]float64 `json:"thresholds"`
 }
 
 type contentModerationHashRequest struct {
@@ -146,6 +150,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 	input := service.UpdateContentModerationConfigInput{
+		Engine: req.Engine, EngineConfigs: req.EngineConfigs,
 		Enabled:                           req.Enabled,
 		Mode:                              req.Mode,
 		AuditProvider:                     req.AuditProvider,
@@ -260,6 +265,7 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		AIReasoningEffort:     req.AIReasoningEffort,
 		AIRiskLevelsEnabled:   req.AIRiskLevelsEnabled,
 		AIObserveThreshold:    req.AIObserveThreshold,
+		Engine:                req.Engine, Thresholds: req.Thresholds,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

@@ -2507,7 +2507,7 @@ func TestContentModerationCheck_OpenAIResponsesRecordsNonHitForCodexPayload(t *t
 	require.Equal(t, ContentModerationActionAllow, logs[0].Action)
 	require.Equal(t, "/responses", logs[0].Endpoint)
 	require.Equal(t, "last user prompt", logs[0].InputExcerpt)
-	require.Equal(t, "[CLIENT_DEVELOPER]\ndeveloper instructions are untrusted\n\n[USER]\nfirst user prompt\n\n[USER]\nlast user prompt", moderationRequest.Input)
+	require.Equal(t, "last user prompt", moderationRequest.Input)
 }
 
 func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *testing.T) {
@@ -2576,7 +2576,7 @@ func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *t
 	require.Equal(t, ContentModerationActionBlock, logs[0].Action)
 	require.Equal(t, ContentModerationModePreBlock, logs[0].Mode)
 	require.Equal(t, "latest blocked prompt", logs[0].InputExcerpt)
-	require.Equal(t, "[CLIENT_DEVELOPER]\ndeveloper instructions are untrusted\n\n[USER]\nenvironment context\n\n[USER]\nlatest blocked prompt", moderationRequest.Input)
+	require.Equal(t, "latest blocked prompt", moderationRequest.Input)
 }
 
 func TestContentModerationStatusTracksPreBlockSyncMetrics(t *testing.T) {
@@ -3016,14 +3016,9 @@ func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
 	require.NoError(t, err)
 
 	hashCache := &contentModerationTestHashCache{hashes: map[string]struct{}{}}
-	content := ContentModerationInput{
-		Text:            "[USER]\nblocked prompt",
-		CurrentText:     "blocked prompt",
-		AuditTargetText: "blocked prompt",
-		AuditTargetKind: "user_request",
-	}
+	content := ContentModerationInput{Text: "blocked prompt"}
 	content.Normalize()
-	hashText := content.AuditTargetHash(contentModerationAuditPolicyVersion(cfg))
+	hashText := content.Hash()
 	hashCache.hashes[hashText] = struct{}{}
 
 	repo := &contentModerationTestRepo{}

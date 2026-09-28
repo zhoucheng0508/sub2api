@@ -1,0 +1,4 @@
+# Keep vendored text and provenance hashes stable across platforms.
+** text eol=lf
+# Unified-diff context lines intentionally contain a space before Go tabs.
+plugin/host-adapter/*.patch -whitespace

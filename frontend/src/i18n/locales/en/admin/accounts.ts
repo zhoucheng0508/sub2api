@@ -592,6 +592,10 @@ export default {
       apiKeyHint: 'Your Claude Console API Key',
       // OpenAI specific hints
       openai: {
+        imagesUrlToB64Json: 'Image result URL to base64',
+        imagesUrlToB64JsonDesc:
+          'Only applies to non-streaming Images responses of OpenAI API Key accounts. When an upstream image item has a url but no b64_json, the gateway downloads the url and fills b64_json with its base64 content (url is kept) for clients built on the official API; the response is returned unchanged if the download fails.',
+
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
         oauthPassthrough: 'Auto passthrough (auth only)',
@@ -638,9 +642,6 @@ export default {
         responsesModeTextDisabledHint:
           'Not applicable when the Responses / Chat Completions endpoint is not enabled.',
         promptCacheMode: 'GPT-5.6 prompt cache optimization',
-        imagesUrlToB64Json: 'Image result URL to base64',
-        imagesUrlToB64JsonDesc:
-          'Only applies to non-streaming Images responses of OpenAI API Key accounts. When an upstream image item has a url but no b64_json, the gateway downloads the url and fills b64_json with its base64 content (url is kept) for clients built on the official API; the response is returned unchanged if the download fails.',
         promptCacheModeDesc:
           'Only for OpenAI API Key upstreams that support the Responses API. It does not affect OAuth accounts and is not Compact.',
         promptCacheModeOff: 'Off',
@@ -1598,13 +1599,44 @@ export default {
         estimatedTotalCost: 'Est. total ${cost}',
         estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
       },
+      openaiReferral: {
+        available: 'Invites left',
+        invite: 'Invite user',
+        fromAccount: 'Inviting account:',
+        personal: 'Invite a friend',
+        workspace: 'Invite a coworker',
+        email: 'Recipient email',
+        consent: 'I have this person’s consent to send them an invitation.',
+        send: 'Send invitation',
+        sending: 'Sending…',
+        sent: 'Invitation sent to {email}',
+        queryHint: 'Click to query remaining invitations',
+        checkedAt: 'Checked: {time}. Click to refresh.',
+        unavailable: 'Invitations are unavailable. Eligibility requirements may not be met, or the limit has been reached.',
+        invalidEmail: 'Enter one valid email address.',
+        rejected: 'The invitation was rejected. Check the email and offer eligibility.',
+        alreadyInvited: 'An invitation already exists for this email. Check its status in Codex.',
+        rateLimited: 'The invitation rate or capacity limit has been reached. Try again later.',
+        sendUnknown: 'The invitation outcome is unknown. Check its status in Codex before deciding whether to retry.',
+        programChanged: 'The account’s referral program changed. Refresh eligibility before sending.',
+        consentRequired: 'Confirm that you have the recipient’s consent first.',
+        shadowHint: 'Send invitations from the parent account.',
+        cacheFailed: 'Live capacity was fetched, but the cache could not be saved. Query again.',
+        refreshFailed: 'The invitation was sent, but remaining capacity could not be refreshed. Query again.'
+      },
       openaiQuotaReset: {
-        count: 'Credits',
+        count: 'Resets',
+        points: 'Points',
+        pointsUnlimited: 'Unlimited',
+        pointsAvailable: 'Available',
+        pointsTooltip: 'Click to query Codex points and reset credits',
+        pointsUpdatedAt: 'Balance checked: {time}',
+        pointsCachePersistFailed: 'Showing live points, but the cache could not be saved. Query again.',
         reset: 'Reset',
-        countTooltipLoad: 'Click to load the available reset-credit count',
-        countTooltipRefresh: 'Click to refresh the available reset-credit count',
+        countTooltipLoad: 'Click to load the available reset-credit count and points balance',
+        countTooltipRefresh: 'Click to refresh the available reset-credit count and points balance',
         resetTooltipReady: 'Consume 1 reset credit to immediately restore the window',
-        resetTooltipNeedQuery: 'Click Credits first to load the available count',
+        resetTooltipNeedQuery: 'Click Resets first to load the available count',
         resetTooltipNoCredits: 'No reset credits available',
         resetTooltipShadow: 'Spark shadow accounts cannot reset credits; reset on the parent account',
         expiresAt: 'Expires {time}',

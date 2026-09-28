@@ -131,10 +131,7 @@ func offerPluginHostServices(
 	})
 	initCtx, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
-	resp, err := api.InitHostServices(initCtx, &pluginv1.InitHostServicesRequest{
-		HostServiceId:         brokerID,
-		HostServiceApiVersion: pluginv1.HostServiceAPIVersion,
-	})
+	resp, err := initializePluginHostServices(initCtx, api, brokerID)
 	pluginKey := ""
 	if installation != nil {
 		pluginKey = installation.PluginKey
@@ -150,6 +147,19 @@ func offerPluginHostServices(
 	if resp != nil && !resp.Ready {
 		slog.Debug("plugin_host_services_declined", "plugin", pluginKey, "message", resp.Message)
 	}
+}
+
+// STATE Kit 0.3.4 explicitly rejects v2 even though its v1 contract is an
+// additive subset. Retry v1 only for that version rejection, never on transport
+// failures or arbitrary plugin startup errors. Other plugins retain v2 metadata.
+func initializePluginHostServices(ctx context.Context, api pluginv1.TransportPluginClient, brokerID uint32) (*pluginv1.InitHostServicesResponse, error) {
+	request := &pluginv1.InitHostServicesRequest{HostServiceId: brokerID, HostServiceApiVersion: pluginv1.HostServiceAPIVersion}
+	response, err := api.InitHostServices(ctx, request)
+	if err == nil && response != nil && !response.Ready && request.HostServiceApiVersion > 1 && response.Message == "unsupported host service API" {
+		request.HostServiceApiVersion = 1
+		return api.InitHostServices(ctx, request)
+	}
+	return response, err
 }
 
 func (r *pluginRuntime) validateAndApplyConfig(ctx context.Context, configJSON []byte) error {

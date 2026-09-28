@@ -61,3 +61,8 @@ Windows 一键安装器实机扩展测试执行未正常结束，已终止该测
 ## 当前流程位置
 
 2026-09-21，项目负责人已审核冲突处理与发布范围，并明确批准继续下一步。按 CUSTOM_UPGRADE.md 完成 merge commit、推进 custom 和远端 CI；仅在 CI 通过后创建发布标签。生产切换仍须先完成最新备份、真实恢复及迁移验证。
+
+
+## STATE Kit 分支历史
+
+STATE Kit 独立同步记录保存在 [STATE_KIT_V027_SYNC_HISTORY_20260921.md](STATE_KIT_V027_SYNC_HISTORY_20260921.md)，避免把不同日期的升级记录互相覆盖。
