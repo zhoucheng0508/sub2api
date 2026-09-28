@@ -539,7 +539,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'laogou' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'composite'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'seedance' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'composite'
 
 export type VideoModelPrices = Record<string, Record<string, number>>
 
@@ -592,8 +592,7 @@ export interface Group {
   video_rate_multiplier: number
   video_price_480p: number | null
   video_price_720p: number | null
-	video_price_1080p: number | null
-	video_price_per_request: number | null
+  video_price_1080p: number | null
   // Optional model-family x resolution overrides for Grok video pricing.
   video_model_prices?: VideoModelPrices
   // Codex 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
@@ -815,8 +814,7 @@ export interface CreateGroupRequest {
   video_rate_multiplier?: number
   video_price_480p?: number | null
   video_price_720p?: number | null
-	video_price_1080p?: number | null
-	video_price_per_request?: number | null
+  video_price_1080p?: number | null
   video_model_prices?: VideoModelPrices
   web_search_price_per_call?: number | null
   search_price_per_1k?: number | null
@@ -882,8 +880,7 @@ export interface UpdateGroupRequest {
   video_rate_multiplier?: number
   video_price_480p?: number | null
   video_price_720p?: number | null
-	video_price_1080p?: number | null
-	video_price_per_request?: number | null
+  video_price_1080p?: number | null
   video_model_prices?: VideoModelPrices
   web_search_price_per_call?: number | null
   search_price_per_1k?: number | null
@@ -922,7 +919,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'laogou' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'seedance' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'

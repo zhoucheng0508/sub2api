@@ -120,7 +120,6 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetNillableVideoPrice480p(groupIn.VideoPrice480P).
 		SetNillableVideoPrice720p(groupIn.VideoPrice720P).
 		SetNillableVideoPrice1080p(groupIn.VideoPrice1080P).
-		SetNillableVideoPricePerRequest(groupIn.VideoPricePerRequest).
 		SetVideoModelPrices(service.NormalizeVideoModelPrices(groupIn.VideoModelPrices)).
 		SetNillableWebSearchPricePerCall(groupIn.WebSearchPricePerCall).
 		SetNillableSearchPricePer1k(groupIn.SearchPricePer1k).
@@ -308,7 +307,6 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetNillableVideoPrice480p(groupIn.VideoPrice480P).
 		SetNillableVideoPrice720p(groupIn.VideoPrice720P).
 		SetNillableVideoPrice1080p(groupIn.VideoPrice1080P).
-		SetNillableVideoPricePerRequest(groupIn.VideoPricePerRequest).
 		SetVideoModelPrices(service.NormalizeVideoModelPrices(groupIn.VideoModelPrices)).
 		SetLongContextPricingEnabled(groupIn.LongContextPricingEnabled).
 		SetModelPricing(modelPricing).
@@ -383,11 +381,6 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		builder = builder.SetVideoPrice1080p(*groupIn.VideoPrice1080P)
 	} else {
 		builder = builder.ClearVideoPrice1080p()
-	}
-	if groupIn.VideoPricePerRequest != nil {
-		builder = builder.SetVideoPricePerRequest(*groupIn.VideoPricePerRequest)
-	} else {
-		builder = builder.ClearVideoPricePerRequest()
 	}
 	if groupIn.WebSearchPricePerCall != nil {
 		builder = builder.SetWebSearchPricePerCall(*groupIn.WebSearchPricePerCall)

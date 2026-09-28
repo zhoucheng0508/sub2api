@@ -356,6 +356,9 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	// Route to platform-specific test method
+	if account.IsSeedance() {
+		return s.testSeedanceConnection(c, account)
+	}
 	if account.IsCNProvider() {
 		switch account.GetAPIProtocol() {
 		case APIProtocolAdaptive:
@@ -390,6 +393,29 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testSeedanceConnection(c *gin.Context, account *Account) error {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: "seedance"})
+	if s.httpUpstream == nil {
+		return s.sendErrorAndEnd(c, "Seedance upstream transport is unavailable")
+	}
+	prober := seedanceProberFor(s.httpUpstream)
+	if prober == nil {
+		return s.sendErrorAndEnd(c, "Seedance credential probe is unavailable")
+	}
+	if err := prober.ProbeCredential(c.Request.Context(), account); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Seedance credential probe succeeded"})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // testOpenCodeGoAccountConnection probes the native endpoint for the selected

@@ -7,7 +7,7 @@ const concretePlatforms = [
   'gemini',
   'antigravity',
   'grok',
-  'laogou',
+  'seedance',
   'kimi',
   'zhipu',
   'deepseek',

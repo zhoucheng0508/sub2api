@@ -187,6 +187,13 @@ func (s *RateLimitService) applyOllamaCloudUsageProbeReset(
 	if !valid || currentFingerprint != expectedFingerprint {
 		return
 	}
+	// Snapshot persistence may legitimately advance UpdatedAt while the probe is
+	// running, but a changed rate-limit value means a newer policy generation has
+	// replaced the one captured when this callback was scheduled.
+	if !ollamaCloudUsageOptionalTimesEqual(account.RateLimitedAt, expectedLimitedAt) ||
+		!ollamaCloudUsageOptionalTimesEqual(account.RateLimitResetAt, expectedResetAt) {
+		return
+	}
 
 	setter, ok := s.accountRepo.(ollamaCloudUsageRateLimitSetterIfGeneration)
 	if !ok {
@@ -215,4 +222,11 @@ func (s *RateLimitService) applyOllamaCloudUsageProbeReset(
 		"reset_at", resetAt.UTC(),
 		"reset_in", time.Until(resetAt).Truncate(time.Second),
 	)
+}
+
+func ollamaCloudUsageOptionalTimesEqual(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }

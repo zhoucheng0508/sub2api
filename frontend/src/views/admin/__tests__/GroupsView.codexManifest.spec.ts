@@ -26,6 +26,7 @@ vi.mock("@/api/admin", () => ({
       list: listGroups,
       getAll: vi.fn(),
       getModelsListCandidates,
+      getModelAllowlistCandidates: getModelsListCandidates,
       getUsageSummary,
       getCapacitySummary,
       getLiveCapability,

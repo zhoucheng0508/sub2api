@@ -343,15 +343,17 @@ func TestPluginAccountScopeFromManifest(t *testing.T) {
 
 // buildHostServices 只对声明了 OpenAI OAuth 能力的插件注入账号目录。
 func TestBuildHostServicesGatesDirectoryByCapability(t *testing.T) {
-	dir := &fakeAccountDirectory{}
-	m := &PluginManager{kvStore: newFakePluginKVStore(), accountDirectory: dir}
+	dir := &OpenAIGatewayService{}
+	m := ProvidePluginManager(nil, nil, nil, PluginHostInfo{}, newFakePluginKVStore(), dir, nil)
 
 	authorized := &PluginInstallation{PluginKey: "p.authorized", Manifest: PluginManifest{
 		Capabilities: []PluginCapability{{ID: PluginCapabilityOpenAIOAuthOutbound, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}},
 	}}
 	srv, ok := m.buildHostServices(authorized).(*pluginHostServiceServer)
 	require.True(t, ok)
-	require.NotNil(t, srv.directory)
+	resources, ok := srv.directory.(*pluginResourceDirectory)
+	require.True(t, ok, "application wiring must preserve STATE Kit resource capabilities")
+	require.Same(t, dir, resources.PluginAccountDirectory, "resource wrapper must retain the authorized account directory")
 
 	unauthorized := &PluginInstallation{PluginKey: "p.other", Manifest: PluginManifest{
 		Capabilities: []PluginCapability{{ID: "some.other.capability", Platform: "x", AccountType: "y"}},

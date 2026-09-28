@@ -40,8 +40,6 @@ node_modules/
 backend/vendor/
 
 # Test files
-/accepted-video*.mp4
-/tools/1.png
 /outputs/
 /tools/
 *_test.go

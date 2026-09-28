@@ -55,7 +55,6 @@ type Group struct {
 	VideoPrice480P               *float64
 	VideoPrice720P               *float64
 	VideoPrice1080P              *float64
-	VideoPricePerRequest         *float64
 	// VideoModelPrices is optional per-model-family per-second pricing
 	// (groups.video_model_prices JSONB). Shape: family → resolution → USD/s.
 	// When set for a model, overrides VideoPrice* for that model only.

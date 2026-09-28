@@ -268,6 +268,13 @@ func RegisterGatewayRoutes(
 		gateway.GET("/images/batches/:id", h.BatchImage.Get)
 		gateway.GET("/images/batches/:id/items", h.BatchImage.Items)
 		gateway.GET("/images/batches/:id/items/:custom_id/content", h.BatchImage.ItemContent)
+		if h.MediaTask != nil {
+			gateway.POST("/media/videos", h.MediaTask.CreateVideo)
+			gateway.GET("/media/videos/:task_id", h.MediaTask.GetVideo)
+			gateway.GET("/media/videos/:task_id/content", h.MediaTask.GetVideoContent)
+			gateway.POST("/media/files", h.MediaTask.UploadFile)
+			gateway.GET("/media/models", h.MediaTask.Models)
+		}
 		gateway.GET("/images/batches/:id/download", h.BatchImage.Download)
 		gateway.POST("/images/batches/:id/cancel", h.BatchImage.Cancel)
 		gateway.DELETE("/images/batches/:id", h.BatchImage.DeleteRecord)
@@ -437,16 +444,12 @@ func RegisterGatewayRoutes(
 	rootRoute(http.MethodGet, "/videos/extensions/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id", bodyLimit, videoStatusHandler)
 	rootRoute(http.MethodGet, "/videos/:request_id/content", bodyLimit, videoContentHandler)
-	// Laogou Seedance asynchronous video API. These routes use a dedicated
-	// task store and supplier adapter; the supplier credential never leaves
-	// the account-bound service layer.
-	if h.MediaVideo != nil {
-		gateway.GET("/media/billing", h.MediaVideo.Billing)
-		gateway.POST("/media/videos", h.MediaVideo.Create)
-		gateway.GET("/media/videos/tasks", h.MediaVideo.List)
-		gateway.GET("/media/videos/:task_id/content", h.MediaVideo.Content)
-		gateway.GET("/media/videos/:task_id", h.MediaVideo.Get)
-		gateway.GET("/media/models", h.MediaVideo.Models)
+	if h.MediaTask != nil {
+		rootRoute(http.MethodPost, "/media/videos", bodyLimit, h.MediaTask.CreateVideo)
+		rootRoute(http.MethodGet, "/media/videos/:task_id", bodyLimit, h.MediaTask.GetVideo)
+		rootRoute(http.MethodGet, "/media/videos/:task_id/content", bodyLimit, h.MediaTask.GetVideoContent)
+		rootRoute(http.MethodPost, "/media/files", bodyLimit, h.MediaTask.UploadFile)
+		rootRoute(http.MethodGet, "/media/models", bodyLimit, h.MediaTask.Models)
 	}
 
 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {

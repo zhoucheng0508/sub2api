@@ -1,100 +1,68 @@
-# 官方 main 同步记录：0.2.7
+# v0.2.7 定制同步与冲突审核
 
-日期：2026-09-20 开始，2026-09-21 完成本地验证。
+日期：2026-09-21。依据根目录 CUSTOM_UPGRADE.md 执行，采用 merge，不改写 custom 历史。
 
-## 来源与状态
+## 基线与范围
 
-- 定制版基线：`zhoucheng0508/sub2api` 的 `custom`，`5d24d82127fd9b8a408f74b8951bb7acf75b4202`。
-- 官方来源：`https://github.com/Wei-Shaw/sub2api.git`。
-- 官方目标：本次拉取的 `upstream/main`，`7c700729c23187d31ed320f6b19c790e2f194826`，源码 VERSION 为 `0.2.7`。
-- 使用 main 的固定提交，不使用版本标签代替提交：本次读取的 `v0.2.7` 标签内 VERSION 仍是 `0.2.5`。
-- 共同祖先：`5de5e2bed035d43591a2e10e51f420ef6a84eb98`。
-- 备份分支：`backup/custom-before-v0.2.7-20260920`，指向定制版基线。
-- 同步分支：`sync/upstream-v0.2.7-20260920`。
-- 工作区：`C:/Users/Administrator/Documents/AI_project/.worktrees/sync-upstream-v0.2.7-20260920`。
-- 使用 `merge --no-ff --no-commit`。文本冲突已解决，并于 2026-09-21 经用户明确确认后提交：`430e43e6e0f8fd8719793aab8d8f2e9ebadc8ee8`。
-- 未推送分支、创建发布标签或部署服务器。
+- 生产及 custom 基线：custom-v0.2.4-4，5d24d82127fd9b8a408f74b8951bb7acf75b4202。
+- 官方目标：v0.2.7，aea725f2ea644d5592d0bbb1d63b607efa7e200a。
+- 升级分支：codex/sync-upstream-v0.2.7；独立工作区 C:/Users/Administrator/.codex/worktrees/sub2api-upgrade-v027/sub2api。
+- 本地备份分支：backup/custom-before-v0.2.7-20260921-215728。
+- 备份及验证记录：D:/sub2api-upgrade-prep/v0.2.7-20260921-215728。
+- 原 D:/sub2api 工作区的 16 个未提交文件已单独复制和校验，未纳入本次从生产基线进行的合并；原文件哈希复核未变化。其中包含未发布的 Seedance 供应商适配和 Windows 一键安装器修改，后续发布范围应明确区分。
 
-原 `shared-subscription-20260914` 工作区及其暂存的共享订阅设计文档未改动。文档 SHA-256：`03592e27858fa31c4f011b4acdf4f8983a2a6a89f1afd55c73ab58223c0e0774a`。
+官方 v0.2.4 到 v0.2.7 共改变 541 个文件，与已提交定制内容交叉 90 个文件。保留 Vote AI 首页、首页优先级、上传 Logo、站内文档、模型广场跳转、账号 TLS 路由、提示缓存设置、内容审查、图片任务、视频钱包/账本/续传和一键接入功能。
 
-## 范围与合并决策
+## 冲突决策
 
-相对共同祖先，官方侧有 598 个变更文件，定制侧有 405 个变更文件，交集为 98 个文件；合并首次报告 29 个文本冲突文件。官方侧有 296 个基线尚未包含的提交。
+| 文件或范围 | 处理方式 |
+| --- | --- |
+| .gitignore | 保留定制文档规则，加入官方归因说明文档例外 |
+| backend/cmd/server/VERSION | 明确设为 0.2.7；官方标签中的 0.2.5 是 release 工作流注入前的值 |
+| backend/go.mod | 保留定制已有 x/image v0.45.0，Go 1.27.0 工具链验证 |
+| backend/cmd/server/wire_gen.go | 由 Wire 重新生成，合入官方插件 KV 依赖并保留定制依赖 |
+| backend/internal/handler/admin/group_handler.go | Laogou 和官方 OpenCode 平台同时可用，保留单条视频价格字段 |
+| backend/internal/handler/dto/settings.go | 同时保留 pass_user_context 和 hide_open_button |
+| backend/internal/handler/grok_media.go | 先按官方协议解析 Seedance，再生成定制审查输入 |
+| backend/internal/handler/openai_gateway_handler.go | 采用官方 XML 心跳校验，移除重复的旧版校验函数 |
+| backend/internal/service/account_test_models_test.go | 保留官方模型显示名断言，使用定制 HTTP 传输测试桩 |
+| backend/internal/service/openai_models_list_test.go | 同上，保证目录字段与共享缓存行为 |
+| backend/internal/service/channel_monitor_checker.go | 保留内部探测签名及重定向防泄露，加入官方 URL 路径拼接修复 |
+| backend/internal/service/composite_platform_test.go | 平台断言同时包含 Laogou 和 OpenCode |
+| backend/internal/service/scheduler_snapshot_service.go | 保留两种平台的调度桶，平台数组扩为 11 项 |
+| frontend/src/App.vue | 同时保留 Vote AI 品牌逻辑及官方计费/功能标志逻辑 |
+| frontend/src/types/index.ts | 平台、提示缓存和官方 Seedance 能力类型合并 |
+| frontend/src/views/admin/SettingsView.vue | 保留两个独立的自定义菜单选项 |
+| frontend/src/views/user/KeysView.vue | 保留一键接入，同时合入官方分组分类和批量编辑；清理不再使用的导入 |
+| frontend/src/views/user/__tests__/KeysView.spec.ts | 保留两种弹窗桩；消除自动合并产生的重复 actions 槽，保留原行为断言 |
 
-保留 Vote AI 首页、站内文档及管理接口、站点 Logo、主题、`/pricing` 到 `/model-plaza` 的跳转、TLS 指纹路由、提示缓存、AI 多轮风险审计和异步视频计费。
+## 自动合并复核及补充修复
 
-主要处理：
+- frontend/src/utils/keyGroupProviders.ts 补充 Laogou 分类，避免平台类型扩展后遗漏映射。
+- 官方在生成文件中手工调用 SetAccountDirectory，Wire 再生成会丢失该调用。新增 ProvidePluginManager 将装配纳入源依赖图，再生成 wire_gen.go；插件能力门控测试通过正式 provider 构建实例，验证授权插件取得目录、未授权插件仍无法取得目录。
+- 原定制账号弹窗缺失官方请求 ID 响应头和图片 URL 转 base64 选项；新官方编辑测试暴露这些遗漏。恢复创建/编辑界面、初始化、保存和中英文文案，同时保留提示缓存及 TLS 定制字段。保留 Laogou 禁用上游倍率探测的逻辑。
+- 管理分组的模型候选请求桩适配官方接口名，防止测试挂载时出现无效 API 调用。
+- 已执行的定制迁移 194—196、235—239 原文件保持不变；仅加入官方新迁移。
 
-1. **风控引擎兼容**：接入官方 OpenAI/TypeSafe 引擎配置、密钥状态、阈值及 engine_meta 日志，同时保留定制 AI Chat 配置、会话风险、审核细节、预算和成本统计。AI Chat、OpenAI、TypeSafe 的地址与密钥独立保存；增加前后端切换回归测试。
-2. **输入提取边界**：定制的有界多轮提取及来源归一化继续用于 AI Chat。官方 OpenAI/TypeSafe 路径使用当前用户输入提取器；本地关键词检查仍检查用户提交的 reminder 原文。官方提取器放入 `content_moderation_current_user.go`，现有多轮提取接口继续保留，相关官方测试明确调用当前用户提取器。
-3. **审核缓存与日志**：OpenAI/TypeSafe 采用官方当前输入哈希，AI Chat 保持定制审核目标哈希；旧版不同输入边界生成的缓存不会自动转换。关键词命中的日志记录实际匹配文本，即使语义审核过滤了 reminder 也保留诊断信息。日志 SQL 同时保留定制 audit_details 与官方 engine_meta，插入参数和读取顺序均有测试。
-4. **平台和视频**：分组校验、前端平台类型和调度平台集合同时容纳 `laogou` 与官方新增 `opencode_go`；保留视频按次计费字段。官方 Seedance 解析先完成，再生成审核请求体。
-5. **网关与依赖注入**：采用官方 XML 心跳校验函数并移除旧同名实现；采用官方插件 Provider 并保留定制 TLS Provider；Wire 已实际重新生成，结果通过编译。
-6. **前端兼容**：保留定制一键配置和官方批量 Key 编辑；修复测试桩重复渲染操作栏的问题。补回账号编辑页上游请求 ID 和图片 URL 转 base64 配置，并补齐中英文翻译。官方隐藏外链按钮与定制用户上下文开关均保留。
-7. **测试兼容**：一键配置测试中的 `base_instructions` 在当前安装的 Codex 解析器中已不是必填字段；改用非法 `context_window` 验证解析失败及配置不落盘，未移除失败保护断言。
-8. **依赖**：保留二开版较新的 `golang.org/x/image v0.45.0` 及 grpc 修复版本；保留官方合并后的其他依赖。Wire 运行补充其工具依赖 `github.com/google/subcommands v1.2.0` 的 go.sum 校验。
+## 验证记录
 
-## 数据库迁移检查
+详细结果及限制以备份目录中的 VALIDATION_RESULTS.md 为准。未运行本地全量测试，按固定流程运行 Makefile 前端关键用例、Vote AI 专项及交叉文件用例，后端运行文档、视频、模型、调度、内部探测、审查、提示缓存、TLS、插件及迁移相关定向用例。
 
-官方新增：
+Windows 一键安装器实机扩展测试执行未正常结束，已终止该测试进程且未记为通过；其源文件不在本次官方交叉改动范围，原工作区对此的未提交修改未合入。该工具的两个静态测试通过。后续若一并发布未提交的一键安装器修改，必须另行完成实机回归。
 
-- `238_opencode_go_platform.sql`：扩展平台检查约束。
-- `238_purge_unlimited_user_platform_quotas.sql`：清理三档限额均为 NULL 的不限额记录。
-- `238b_content_moderation_engine_meta.sql`：新增可空的审核引擎元数据字段。
+## 数据库和上线关卡
 
-迁移执行器按完整文件名排序并记录校验和，以上文件没有与现有二开文件同名冲突。迁移静态测试通过；本次没有对数据库执行迁移或进行数据库恢复演练。
+生产只读核验：应用 healthy，数据库和 Redis 正常，本机及公网 /health 正常，Nginx 配置通过；根分区可用约 34 GB，数据库约 4,298 MB。查询时没有待完成或账务未结清视频任务，切换前需重新统计。
 
-## 本地验证
+新增官方迁移为 238_opencode_go_platform.sql 和 238_purge_unlimited_user_platform_quotas.sql。前者扩展平台约束；后者清理三档限额均为 NULL 的配额行，预检时 632 行。迁移按完整文件名识别，与定制 238 文件不重名。静态迁移测试不代替真实数据库升级演练。
 
-- 前端定向测试：361 项通过（原 27 个测试文件共 360 项，加 1 项风控切换回归；失败项修正后已复测）。范围包含品牌首页/文档、Logo、账号/分组、设置、风险控制、Key 页面、一键配置及翻译完整性。
-- 前端 `vue-tsc --noEmit`、`vue-tsc -b`：通过。
-- 冲突相关前端文件 ESLint：通过。
-- Vite 生产构建：通过，输出到 `backend/internal/web/dist`。仅有现存大块体积、Browserslist 数据龄期和 Node 弃用提示。
-- 后端定向验证累计去重：2301 项通过（包含子测试），21 个包通过，5 项按测试自身条件跳过。
-- 跳过项：TypeSafe 实际服务、插件实际进程、3 项 TLS 外网测试；它们需要显式测试开关、凭据或外部测试包。
-- 定向范围：AI 审计及缓存/配置、审核存储、视频/Seedance、模型清单、插件、调度、网关路由、接口契约、Wire、迁移及定制辅助包。
-- `go run -mod=mod github.com/google/wire/cmd/wire ./cmd/server`：通过。
-- 后端普通构建及嵌入新前端资源的 `go build -tags embed ./cmd/server`：通过，构建产物置于工作区外部 output 目录。
-- `git diff --check`、暂存区差异检查、未合并文件检查：通过。
+9 月 16 日现有数据库备份目录校验通过，本轮尚未做生产快照恢复、迁移/回滚演练或应用切换。正式上线前应重新取得一致性备份，验证恢复，并按当前运行容器记录的完整 8 层 Compose 覆盖配置仅重建 sub2api。
 
-遵照仓库升级流程，本次未运行全量项目测试。没有进行浏览器端到端验证、PostgreSQL/Redis 实例集成或生产部署，不能把本地构建结果视为生产验收。
+## 当前流程位置
 
-本地验证日志保存在 `C:/Users/Administrator/Documents/AI_project/output/sub2api-v027-*`。pnpm 使用现有 9.15.9 工具链及冻结锁文件安装；Go 依赖直连超时后使用 goproxy.cn 下载，未改变仓库的依赖代理配置。
+2026-09-21，项目负责人已审核冲突处理与发布范围，并明确批准继续下一步。按 CUSTOM_UPGRADE.md 完成 merge commit、推进 custom 和远端 CI；仅在 CI 通过后创建发布标签。生产切换仍须先完成最新备份、真实恢复及迁移验证。
 
-## 原始文本冲突清单
 
-以下 29 个文件均已处理，供最终审核定位：
+## STATE Kit 分支历史
 
-```text
-.gitignore
-backend/cmd/server/VERSION
-backend/cmd/server/wire_gen.go
-backend/go.mod
-backend/internal/handler/admin/content_moderation_handler.go
-backend/internal/handler/admin/group_handler.go
-backend/internal/handler/dto/settings.go
-backend/internal/handler/grok_media.go
-backend/internal/handler/openai_gateway_handler.go
-backend/internal/repository/content_moderation_repo.go
-backend/internal/repository/content_moderation_repo_test.go
-backend/internal/service/account_test_models_test.go
-backend/internal/service/channel_monitor_checker.go
-backend/internal/service/composite_platform_test.go
-backend/internal/service/content_moderation.go
-backend/internal/service/content_moderation_input.go
-backend/internal/service/openai_models_list_test.go
-backend/internal/service/scheduler_snapshot_service.go
-backend/internal/service/wire.go
-frontend/src/App.vue
-frontend/src/api/admin/riskControl.ts
-frontend/src/i18n/locales/en/admin/channels.ts
-frontend/src/i18n/locales/zh/admin/channels.ts
-frontend/src/types/index.ts
-frontend/src/views/admin/RiskControlView.vue
-frontend/src/views/admin/SettingsView.vue
-frontend/src/views/admin/__tests__/RiskControlView.spec.ts
-frontend/src/views/user/KeysView.vue
-frontend/src/views/user/__tests__/KeysView.spec.ts
-```
-
-审核重点是风控输入边界及配置隔离、平台并集、视频审核顺序。用户已确认并完成本地合并提交；远程发布和部署另行执行。
+STATE Kit 独立同步记录保存在 [STATE_KIT_V027_SYNC_HISTORY_20260921.md](STATE_KIT_V027_SYNC_HISTORY_20260921.md)，避免把不同日期的升级记录互相覆盖。

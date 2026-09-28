@@ -209,7 +209,6 @@ func groupFromServiceBase(g *service.Group) Group {
 		VideoPrice480P:                  g.VideoPrice480P,
 		VideoPrice720P:                  g.VideoPrice720P,
 		VideoPrice1080P:                 g.VideoPrice1080P,
-		VideoPricePerRequest:            g.VideoPricePerRequest,
 		VideoModelPrices:                g.VideoModelPrices,
 		WebSearchPricePerCall:           g.WebSearchPricePerCall,
 		SearchPricePer1k:                g.SearchPricePer1k,

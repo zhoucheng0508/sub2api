@@ -3192,6 +3192,7 @@ const baseUrlHint = computed(() => {
   if (props.account.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (props.account.platform === 'grok') return ''
+  if (props.account.platform === 'seedance') return t('admin.accounts.seedance.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -4322,7 +4323,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
                 newAccount.platform === 'deepseek' ||
                 newAccount.platform === 'opencode_go'
               ? defaultCNBaseUrl(newAccount.platform, currentOpenCodeOrCNMode(), editApiProtocol.value)
-              : 'https://api.anthropic.com'
+              : newAccount.platform === 'seedance'
+                ? 'https://api.laogou.org/seedance'
+                : 'https://api.anthropic.com'
     editBaseUrl.value = isCNApiKeyAccount.value && editApiProtocol.value === 'adaptive'
       ? editAdaptiveBaseUrls.value.chat_completions
       : (credentials.base_url as string) || platformDefaultUrl
@@ -4395,6 +4398,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           ? 'https://generativelanguage.googleapis.com'
           : newAccount.platform === 'grok'
             ? 'https://api.x.ai/v1'
+            : newAccount.platform === 'seedance'
+              ? 'https://api.laogou.org/seedance'
             : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 

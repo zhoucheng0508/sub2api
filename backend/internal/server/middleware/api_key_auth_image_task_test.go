@@ -7,9 +7,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsAsyncImageTaskRead(t *testing.T) {
-	require.True(t, isAsyncImageTaskRead(http.MethodGet, "/v1/images/tasks/imgtask_123"))
-	require.True(t, isAsyncImageTaskRead(http.MethodGet, "/images/tasks/imgtask_123"))
-	require.False(t, isAsyncImageTaskRead(http.MethodPost, "/v1/images/tasks/imgtask_123"))
-	require.False(t, isAsyncImageTaskRead(http.MethodGet, "/v1/images/generations"))
+func TestIsGeneratedTaskRead(t *testing.T) {
+	for _, path := range []string{
+		"/v1/images/tasks/imgtask_123",
+		"/images/tasks/imgtask_123",
+		"/v1/media/videos/media_123",
+		"/v1/media/videos/media_123/content",
+		"/media/videos/media_123",
+		"/media/videos/media_123/content",
+	} {
+		require.True(t, isGeneratedTaskRead(http.MethodGet, path), path)
+	}
+
+	require.False(t, isGeneratedTaskRead(http.MethodPost, "/v1/media/videos/media_123"))
+	require.False(t, isGeneratedTaskRead(http.MethodGet, "/v1/media/videos"))
+	require.False(t, isGeneratedTaskRead(http.MethodGet, "/v1/media/models"))
+	require.False(t, isGeneratedTaskRead(http.MethodGet, "/v1/images/generations"))
 }

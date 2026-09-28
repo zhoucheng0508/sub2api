@@ -15,6 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type stubMediaTaskRoutes struct{}
+
+func (stubMediaTaskRoutes) Models(c *gin.Context)          { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) CreateVideo(c *gin.Context)     { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) GetVideo(c *gin.Context)        { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) GetVideoContent(c *gin.Context) { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) UploadFile(c *gin.Context)      { c.Status(http.StatusNotImplemented) }
+
 func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 	return newGatewayRoutesTestRouterWithConfig(&config.Config{
 		Gateway: config.GatewayConfig{
@@ -38,6 +46,7 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
 			Gateway:       &handler.GatewayHandler{},
 			OpenAIGateway: &handler.OpenAIGatewayHandler{},
 			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
+			MediaTask:     stubMediaTaskRoutes{},
 		},
 		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
 			groupID := int64(1)

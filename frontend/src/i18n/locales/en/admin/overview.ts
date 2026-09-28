@@ -979,7 +979,7 @@ export default {
         gemini: 'Gemini',
         antigravity: 'Antigravity',
         grok: 'Grok',
-        laogou: 'Laogou / Seedance',
+        seedance: 'Seedance',
         kimi: 'Kimi',
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',

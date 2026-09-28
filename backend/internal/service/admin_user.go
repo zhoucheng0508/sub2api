@@ -379,11 +379,6 @@ func (s *adminServiceImpl) DeleteUser(ctx context.Context, id int64) error {
 		defer func() { _ = tx.Rollback() }()
 
 		opCtx := dbent.NewTxContext(ctx, tx)
-		// Lock the user before tombstoning keys, matching video admission's
-		// parent-before-key order. The deletion trigger checks video state.
-		if _, err := tx.Client().ExecContext(opCtx, "SELECT id FROM users WHERE id=$1 FOR UPDATE", id); err != nil {
-			return err
-		}
 		if err := s.deleteUserWithAPIKeys(opCtx, id, apiKeys); err != nil {
 			return err
 		}
