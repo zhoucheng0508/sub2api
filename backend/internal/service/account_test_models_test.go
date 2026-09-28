@@ -163,7 +163,7 @@ func pickerModelIDs(models []openai.Model) []string {
 // not configure must not become a testable choice.
 func TestFetchOpenAIAccountModelsOAuthExcludesUnconfiguredTextModels(t *testing.T) {
 	newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"gpt-5.6-sol"},{"slug":"gpt-6-astra"}]}`)
-	svc := &AccountTestService{openaiGatewayService: &OpenAIGatewayService{}}
+	svc := &AccountTestService{openaiGatewayService: newCodexModelsOAuthTestService()}
 	account := newCodexModelsTestAccount()
 	account.Credentials["model_mapping"] = map[string]any{"gpt-5.6-sol": "gpt-5.6-sol"}
 
@@ -176,7 +176,7 @@ func TestFetchOpenAIAccountModelsOAuthExcludesUnconfiguredTextModels(t *testing.
 // the picker has to resolve the target before deciding to offer the public name.
 func TestFetchOpenAIAccountModelsOAuthLocalImageAlias(t *testing.T) {
 	newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"gpt-6-astra"}]}`)
-	svc := &AccountTestService{openaiGatewayService: &OpenAIGatewayService{}}
+	svc := &AccountTestService{openaiGatewayService: newCodexModelsOAuthTestService()}
 	account := newCodexModelsTestAccount()
 	account.Credentials["model_mapping"] = map[string]any{"paint": "gpt-image-2.5-flare"}
 
@@ -193,7 +193,7 @@ func TestFetchOpenAIAccountModelsOAuthImageNamesMappedToText(t *testing.T) {
 		for _, target := range []string{"text-target-missing", "gpt-6-astra"} {
 			t.Run(publicID+"/"+target, func(t *testing.T) {
 				newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"gpt-6-astra","display_name":"Upstream Text Model"}]}`)
-				svc := &AccountTestService{openaiGatewayService: &OpenAIGatewayService{}}
+				svc := &AccountTestService{openaiGatewayService: newCodexModelsOAuthTestService()}
 				account := newCodexModelsTestAccount()
 				account.Credentials["model_mapping"] = map[string]any{publicID: target}
 
@@ -214,7 +214,7 @@ func TestFetchOpenAIAccountModelsOAuthPassthroughIgnoresMappingTargets(t *testin
 	for _, flag := range []string{"openai_passthrough", "openai_oauth_passthrough"} {
 		t.Run(flag, func(t *testing.T) {
 			newCodexModelsOAuthCacheServer(t, `{"models":[{"slug":"gpt-6-astra"}]}`)
-			svc := &AccountTestService{openaiGatewayService: &OpenAIGatewayService{}}
+			svc := &AccountTestService{openaiGatewayService: newCodexModelsOAuthTestService()}
 			account := newCodexModelsTestAccount()
 			account.Extra = map[string]any{flag: true}
 			account.Credentials["model_mapping"] = map[string]any{
