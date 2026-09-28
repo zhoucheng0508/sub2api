@@ -112,6 +112,12 @@ func TestNormalizeAndClassifySystemPrompt(t *testing.T) {
 	if version, active := ClassifySystemPrompt(RecommendedSystemPrompt); version != RecommendedSystemPromptVersion || !active {
 		t.Fatalf("recommended prompt classified as version=%q active=%v", version, active)
 	}
+	if got := NormalizeSystemPrompt(recommendedSystemPromptV3); got != RecommendedSystemPrompt {
+		t.Fatal("previous recommended prompt was not upgraded")
+	}
+	if version, active := ClassifySystemPrompt(recommendedSystemPromptV3); version != RecommendedSystemPromptVersion || !active {
+		t.Fatalf("previous recommended prompt classified as version=%q active=%v", version, active)
+	}
 	if got := NormalizeSystemPrompt(LegacyDefaultSystemPrompt); got != LegacyDefaultSystemPrompt {
 		t.Fatalf("legacy prompt was silently replaced: %q", got)
 	}

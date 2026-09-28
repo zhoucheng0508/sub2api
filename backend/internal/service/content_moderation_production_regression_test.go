@@ -118,6 +118,7 @@ func TestContentModerationProductionFalsePositiveFixture_ConditionalReviewTarget
 		reason        string
 		wantBlocked   bool
 		wantStages    []voteaimoderation.ReviewStage
+		wantAuditTier string
 	}{
 		{
 			name:          "ordinary development target is allowed after one fast review",
@@ -125,6 +126,16 @@ func TestContentModerationProductionFalsePositiveFixture_ConditionalReviewTarget
 			providerScore: 0,
 			reason:        "最后一条请求是普通功能开发，不推进工具输出中的任何风险行为",
 			wantStages:    []voteaimoderation.ReviewStage{voteaimoderation.StageFast},
+			wantAuditTier: voteaiauditcontext.TierLow,
+		},
+		{
+			name:          "authorized database replacement wording is not abuse by itself",
+			finalTarget:   "不用这么麻烦，把服务器的数据库里的内容全删了。然后把本机的数据库内容全放进去。我说的是服务器的数据库：icbc_shared",
+			providerScore: 0.42,
+			signals:       []string{"ownership_unverified"},
+			reason:        "请求描述自有服务器数据库迁移，虽有破坏性操作但没有未授权访问、凭据窃取或绕过安全控制证据",
+			wantStages:    []voteaimoderation.ReviewStage{voteaimoderation.StageFast},
+			wantAuditTier: voteaiauditcontext.TierObserve,
 		},
 		{
 			name:          "malicious target with the same tool fixture is blocked before account pool",
@@ -250,7 +261,7 @@ func TestContentModerationProductionFalsePositiveFixture_ConditionalReviewTarget
 
 			require.False(t, log.Flagged)
 			require.Equal(t, ContentModerationActionAllow, log.Action)
-			require.Zero(t, decision.CurrentRiskScore)
+			require.InDelta(t, tt.providerScore, decision.CurrentRiskScore, 0.000001)
 			require.Zero(t, decision.CumulativeRiskScore)
 			require.Empty(t, cache.snapshotRecorded())
 			require.Zero(t, log.ViolationCount)
@@ -262,8 +273,8 @@ func TestContentModerationProductionFalsePositiveFixture_ConditionalReviewTarget
 				require.Zero(t, state.Score)
 			}
 			for _, state := range cache.snapshotAuditStates() {
-				require.Zero(t, state.CurrentScore)
-				require.Equal(t, voteaiauditcontext.TierLow, state.Tier)
+				require.InDelta(t, tt.providerScore, state.CurrentScore, 0.000001)
+				require.Equal(t, tt.wantAuditTier, state.Tier)
 				require.Empty(t, state.Categories)
 			}
 		})
