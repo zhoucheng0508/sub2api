@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -338,6 +339,53 @@ func (s *GitHubReleaseServiceSuite) TestFetchLatestRelease_Success() {
 	require.Equal(s.T(), "Release 1.0.0", release.Name)
 	require.Len(s.T(), release.Assets, 1)
 	require.Equal(s.T(), "app-linux-amd64.tar.gz", release.Assets[0].Name)
+}
+
+func (s *GitHubReleaseServiceSuite) TestFetchReleaseByTag_Success() {
+	releaseJSON := `{
+		"tag_name": "v3.19.1",
+		"name": "Release 3.19.1",
+		"html_url": "https://github.com/test/repo/releases/tag/v3.19.1",
+		"assets": []
+	}`
+
+	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/test/repo/releases/tags/v3.19.1", r.URL.Path)
+		require.Equal(s.T(), "application/vnd.github.v3+json", r.Header.Get("Accept"))
+		require.Equal(s.T(), "Sub2API-Updater", r.Header.Get("User-Agent"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(releaseJSON))
+	}))
+
+	s.client = &githubReleaseClient{
+		httpClient: &http.Client{
+			Transport: &testTransport{testServerURL: s.srv.URL},
+		},
+		downloadHTTPClient: &http.Client{},
+	}
+
+	release, err := s.client.FetchReleaseByTag(context.Background(), "test/repo", "v3.19.1")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "v3.19.1", release.TagName)
+	require.Equal(s.T(), "Release 3.19.1", release.Name)
+}
+
+func (s *GitHubReleaseServiceSuite) TestFetchReleaseByTag_NotFound() {
+	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/test/repo/releases/tags/v0.0.0", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	s.client = &githubReleaseClient{
+		httpClient: &http.Client{
+			Transport: &testTransport{testServerURL: s.srv.URL},
+		},
+		downloadHTTPClient: &http.Client{},
+	}
+
+	_, err := s.client.FetchReleaseByTag(context.Background(), "test/repo", "v0.0.0")
+	require.ErrorIs(s.T(), err, service.ErrGitHubReleaseNotFound)
 }
 
 func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_Success() {

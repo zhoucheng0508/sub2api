@@ -3,38 +3,6 @@
     <TablePageLayout>
       <template #filters>
         <div class="flex flex-col gap-3">
-          <div
-            v-if="apiKeys.length > 0 && !isCodexBannerDismissed"
-            class="relative flex flex-col gap-3 rounded-lg border border-primary-200 bg-primary-50 px-4 py-3 pr-12 sm:flex-row sm:items-center sm:justify-between dark:border-primary-800 dark:bg-primary-950/30"
-            data-testid="codex-one-click-banner"
-          >
-            <div>
-              <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('keys.oneClick.bannerTitle') }}</p>
-              <p class="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
-                {{ eligibleCodexKey ? t('keys.oneClick.bannerDescription') : t('keys.oneClick.noEligibleKey') }}
-              </p>
-            </div>
-            <button
-              type="button"
-              class="btn btn-primary shrink-0"
-              :disabled="!eligibleCodexKey"
-              :title="eligibleCodexKey ? t('keys.oneClick.action') : t('keys.oneClick.ineligibleHint')"
-              data-testid="codex-one-click-banner-action"
-              @click="openCodexOneClick(eligibleCodexKey)"
-            >
-              <Icon name="bolt" size="sm" />
-              {{ t('keys.oneClick.action') }}
-            </button>
-            <button
-              type="button"
-              class="absolute right-3 top-3 rounded-md p-1 text-gray-400 transition-colors hover:bg-white/70 hover:text-gray-700 dark:hover:bg-dark-800 dark:hover:text-gray-200"
-              :aria-label="t('keys.oneClick.dismissBanner')"
-              data-testid="dismiss-codex-one-click-banner"
-              @click="dismissCodexBanner"
-            >
-              <Icon name="x" size="sm" />
-            </button>
-          </div>
           <div class="flex flex-wrap items-center gap-3">
             <SearchInput
               v-model="filterSearch"
@@ -60,11 +28,27 @@
             :api-base-url="publicSettings?.api_base_url || ''"
             :custom-endpoints="publicSettings?.custom_endpoints || []"
           />
+          <div v-if="selectedIds.length" class="flex flex-wrap items-center gap-3 text-sm">
+            <span class="text-gray-600 dark:text-gray-300">
+              {{ t('keys.bulkEdit.selectedCount', { count: selectedIds.length }) }}
+            </span>
+            <button
+              class="btn btn-primary btn-sm"
+              :disabled="loading"
+              data-test="bulk-edit-keys"
+              @click="showBulkEditModal = true"
+            >
+              {{ t('keys.bulkEdit.title') }}
+            </button>
+            <button class="btn btn-secondary btn-sm" @click="selectedIds = []">
+              {{ t('keys.bulkEdit.clearSelection') }}
+            </button>
+          </div>
         </div>
       </template>
 
       <template #actions>
-        <div class="flex justify-end gap-3">
+        <div class="flex flex-wrap justify-end gap-3">
           <button
             @click="loadApiKeys"
             :disabled="loading"
@@ -105,6 +89,17 @@
               </button>
             </div>
           </div>
+          <button
+            type="button"
+            class="btn btn-secondary shrink-0"
+            :disabled="!eligibleCodexKey"
+            :title="eligibleCodexKey ? t('keys.oneClick.action') : t('keys.oneClick.ineligibleHint')"
+            data-testid="codex-one-click-action"
+            @click="openCodexOneClick(eligibleCodexKey)"
+          >
+            <Icon name="bolt" size="sm" />
+            {{ t('keys.oneClick.action') }}
+          </button>
           <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
             <Icon name="plus" size="md" class="mr-2" />
             {{ t('keys.createKey') }}
@@ -117,6 +112,11 @@
           :columns="columns"
           :data="apiKeys"
           :loading="loading"
+          selectable
+          row-key="id"
+          :selected-keys="selectedIds"
+          :selection-label="(key: ApiKey) => t('keys.bulkEdit.selectKey', { name: key.name })"
+          @update:selected-keys="handleSelectionChange"
           :server-side-sort="true"
           default-sort-key="created_at"
           default-sort-order="desc"
@@ -429,8 +429,9 @@
               <!-- Import to CC Switch Button -->
               <button
                 v-if="!publicSettings?.hide_ccs_import_button"
-                @click="importToCcswitch(row)"
+                @click="openCodexOneClick(row, 'ccswitch')"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
+                data-testid="ccswitch-import-row"
               >
                 <Icon name="upload" size="sm" />
                 <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
@@ -511,12 +512,64 @@
           />
         </div>
 
+        <fieldset v-if="!showEditModal" data-tour="key-form-provider">
+          <legend class="input-label">{{ t('keys.providerLabel') }}</legend>
+          <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <label
+              v-for="provider in createProviderOptions"
+              :key="provider.value"
+              class="relative min-w-0"
+              :class="provider.count === 0 ? 'cursor-not-allowed' : 'cursor-pointer'"
+            >
+              <input
+                type="radio"
+                name="key-provider"
+                :value="provider.value"
+                :checked="createProvider === provider.value"
+                :disabled="provider.count === 0"
+                class="peer sr-only"
+                @change="selectCreateProvider(provider.value)"
+              />
+              <span
+                class="flex h-full flex-col items-center gap-2 rounded-xl border border-gray-200 bg-white px-2 py-3 text-center transition-colors peer-checked:border-primary-500 peer-checked:bg-primary-50/60 peer-checked:ring-1 peer-checked:ring-primary-500 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-primary-500 peer-disabled:opacity-40 dark:border-dark-600 dark:bg-dark-800 dark:peer-checked:border-primary-500 dark:peer-checked:bg-primary-500/10"
+                :class="provider.count > 0 && 'hover:border-primary-300 dark:hover:border-primary-700'"
+              >
+                <span class="flex h-8 items-center justify-center gap-1.5" aria-hidden="true">
+                  <span
+                    v-for="platform in KEY_GROUP_PROVIDER_ICONS[provider.value]"
+                    :key="platform"
+                    class="flex h-8 w-8 items-center justify-center rounded-lg"
+                    :class="platformBadgeLightClass(platform)"
+                  >
+                    <PlatformIcon :platform="platform" size="lg" />
+                  </span>
+                </span>
+                <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ provider.label }}</span>
+              </span>
+              <span
+                v-if="createProvider === provider.value"
+                class="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary-500 text-white"
+                aria-hidden="true"
+              >
+                <Icon name="check" size="xs" :stroke-width="3" />
+              </span>
+            </label>
+          </div>
+          <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400" aria-live="polite">
+            {{ groups.length === 0 ? t('common.noGroupsAvailable') : t(`keys.providerHints.${createProvider}`) }}
+          </p>
+        </fieldset>
+
         <div>
-          <label class="input-label">{{ t('keys.groupLabel') }}</label>
+          <label class="input-label" for="key-form-group">{{ t('keys.groupLabel') }}</label>
           <Select
+            :key="showEditModal ? 'edit' : createProvider"
+            id="key-form-group"
+            :aria-label="t('keys.groupLabel')"
             v-model="formData.group_id"
-            :options="groupOptions"
+            :options="formGroupOptions"
             :placeholder="t('keys.selectGroup')"
+            :empty-text="t('common.noGroupsAvailable')"
             :searchable="true"
             :search-placeholder="t('keys.searchGroup')"
             data-tour="key-form-group"
@@ -999,6 +1052,14 @@
       </template>
     </BaseDialog>
 
+    <BulkEditKeysModal
+      :show="showBulkEditModal"
+      :selected-keys="selectedApiKeys"
+      :groups="groups"
+      @close="showBulkEditModal = false"
+      @updated="handleBulkUpdated"
+    />
+
     <!-- Delete Confirmation Dialog -->
     <ConfirmDialog
       :show="showDeleteDialog"
@@ -1051,56 +1112,14 @@
       :key-name="codexOneClickKey?.name || ''"
       :base-url="codexBaseUrl"
       :provider-name="(publicSettings?.site_name || 'sub2api').trim() || 'sub2api'"
+      :platform="codexOneClickKey?.group?.platform || null"
+      :initial-method="codexOneClickInitialMethod"
+      :available-keys="quickConnectKeys"
+      :initial-key-id="codexOneClickKey?.id || null"
       @close="closeCodexOneClick"
+      @manage-keys="closeCodexOneClick"
       @protocol-failed="appStore.showError(t('keys.ccSwitchNotInstalled'))"
     />
-
-    <!-- CCS Client Selection Dialog for Antigravity -->
-    <BaseDialog
-      :show="showCcsClientSelect"
-      :title="t('keys.ccsClientSelect.title')"
-      width="narrow"
-      @close="closeCcsClientSelect"
-    >
-      <div class="space-y-4">
-        <p class="text-sm text-gray-600 dark:text-gray-400">
-          {{ t('keys.ccsClientSelect.description') }}
-	        </p>
-	        <div class="grid grid-cols-2 gap-3">
-	          <button
-	            @click="handleCcsClientSelect('claude')"
-	            class="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-gray-200 dark:border-dark-600 hover:border-primary-500 dark:hover:border-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all"
-	          >
-	            <Icon name="terminal" size="xl" class="text-gray-600 dark:text-gray-400" />
-	            <span class="font-medium text-gray-900 dark:text-white">{{
-	              t('keys.ccsClientSelect.claudeCode')
-	            }}</span>
-	            <span class="text-xs text-gray-500 dark:text-gray-400">{{
-	              t('keys.ccsClientSelect.claudeCodeDesc')
-	            }}</span>
-	          </button>
-	          <button
-	            @click="handleCcsClientSelect('gemini')"
-	            class="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-gray-200 dark:border-dark-600 hover:border-primary-500 dark:hover:border-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all"
-	          >
-	            <Icon name="sparkles" size="xl" class="text-gray-600 dark:text-gray-400" />
-	            <span class="font-medium text-gray-900 dark:text-white">{{
-	              t('keys.ccsClientSelect.geminiCli')
-	            }}</span>
-	            <span class="text-xs text-gray-500 dark:text-gray-400">{{
-	              t('keys.ccsClientSelect.geminiCliDesc')
-	            }}</span>
-	          </button>
-	        </div>
-	      </div>
-      <template #footer>
-        <div class="flex justify-end">
-          <button @click="closeCcsClientSelect" class="btn btn-secondary">
-            {{ t('common.cancel') }}
-          </button>
-        </div>
-      </template>
-    </BaseDialog>
 
     <!-- Group Selector Dropdown (Teleported to body to avoid overflow clipping) -->
     <Teleport to="body">
@@ -1174,7 +1193,7 @@
 </template>
 
 <script setup lang="ts">
-	import { ref, reactive, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
+	import { ref, reactive, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
 	import { useOnboardingStore } from '@/stores/onboarding'
@@ -1185,6 +1204,7 @@ const { t } = useI18n()
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import DataTable from '@/components/common/DataTable.vue'
 	import Pagination from '@/components/common/Pagination.vue'
 	import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -1203,12 +1223,10 @@ import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
-import {
-  buildCcSwitchImportDeeplink,
-  buildCcSwitchUsageUrl,
-  type CcSwitchClientType
-} from '@/utils/ccswitchImport'
 import { isCodexOneClickEligible } from '@/utils/codexOneClick'
+import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import { platformBadgeLightClass } from '@/utils/platformColors'
+import { KEY_GROUP_PROVIDERS, KEY_GROUP_PROVIDER_ICONS, getKeyGroupProvider, type KeyGroupProvider } from '@/utils/keyGroupProviders'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1330,6 +1348,21 @@ const columns = computed<Column[]>(() =>
 )
 
 const apiKeys = ref<ApiKey[]>([])
+const selectedIds = ref<number[]>([])
+const showBulkEditModal = ref(false)
+const selectedApiKeys = computed(() => apiKeys.value.filter((key) => selectedIds.value.includes(key.id)))
+
+const handleSelectionChange = (ids: Array<string | number>) => {
+  const visibleIds = new Set(apiKeys.value.map((key) => key.id))
+  selectedIds.value = [...new Set(ids.map(Number))].filter((id) => visibleIds.has(id))
+}
+
+const handleBulkUpdated = (succeededIds: number[]) => {
+  const succeeded = new Set(succeededIds)
+  selectedIds.value = selectedIds.value.filter((id) => !succeeded.has(id))
+  loadApiKeys()
+}
+
 const groups = ref<Group[]>([])
 const loading = ref(false)
 const submitting = ref(false)
@@ -1361,11 +1394,11 @@ const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
 const showCodexOneClick = ref(false)
-const showCcsClientSelect = ref(false)
 const showColumnDropdown = ref(false)
-const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
 const codexOneClickKey = ref<ApiKey | null>(null)
+const codexOneClickInitialMethod = ref<'guide' | 'ccswitch' | 'script'>('guide')
+const quickConnectKeys = ref<ApiKey[]>([])
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
@@ -1373,13 +1406,6 @@ const eligibleCodexKey = computed(() =>
   apiKeys.value.find(isCodexOneClickEligible) || null
 )
 const codexBaseUrl = computed(() => publicSettings.value?.api_base_url || window.location.origin)
-const CODEX_BANNER_DISMISSED_KEY = 'sub2api_codex_one_click_banner_dismissed'
-const isCodexBannerDismissed = ref(localStorage.getItem(CODEX_BANNER_DISMISSED_KEY) === 'true')
-
-const dismissCodexBanner = () => {
-  isCodexBannerDismissed.value = true
-  localStorage.setItem(CODEX_BANNER_DISMISSED_KEY, 'true')
-}
 const dropdownRef = ref<HTMLElement | null>(null)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
@@ -1466,6 +1492,7 @@ const statusFilterOptions = computed(() => [
 ])
 
 const onFilterChange = () => {
+  selectedIds.value = []
   pagination.value.page = 1
   loadApiKeys()
 }
@@ -1496,6 +1523,35 @@ const groupOptions = computed(() =>
     platform: group.platform
   }))
 )
+
+const createProvider = ref<KeyGroupProvider>('anthropic')
+const createProviderOptions = computed(() => KEY_GROUP_PROVIDERS.map((value) => ({
+  value,
+  label: t(`keys.providers.${value}`),
+  count: groups.value.filter((group) => getKeyGroupProvider(group.platform) === value).length
+})))
+
+const formGroupOptions = computed(() => showEditModal.value
+  ? groupOptions.value
+  : groupOptions.value.filter((group) => getKeyGroupProvider(group.platform) === createProvider.value)
+)
+
+const selectCreateProvider = (provider: KeyGroupProvider) => {
+  if (createProvider.value === provider) return
+  createProvider.value = provider
+  formData.value.group_id = null
+}
+
+// Also handles groups arriving after the create dialog has already opened.
+watch([showCreateModal, createProviderOptions], ([isOpen, providers], [wasOpen]) => {
+  if (!isOpen) return
+  if (!wasOpen || !providers.some((provider) => provider.value === createProvider.value && provider.count > 0)) {
+    selectCreateProvider(providers.find((provider) => provider.count > 0)?.value ?? 'anthropic')
+  }
+  if (!formGroupOptions.value.some((group) => group.value === formData.value.group_id)) {
+    formData.value.group_id = null
+  }
+})
 
 // Group dropdown search
 const groupSearchQuery = ref('')
@@ -1550,6 +1606,7 @@ const loadApiKeys = async () => {
     })
     if (signal.aborted) return
     apiKeys.value = response.items
+    handleSelectionChange(selectedIds.value)
     pagination.value.total = response.total
     pagination.value.pages = response.pages
 
@@ -1612,29 +1669,55 @@ const closeUseKeyModal = () => {
   selectedKey.value = null
 }
 
-const openCodexOneClick = (key: ApiKey | null) => {
+const loadQuickConnectKeys = async (): Promise<void> => {
+  const hasTableFilter = Boolean(
+    filterSearch.value.trim() ||
+    filterStatus.value ||
+    filterGroupId.value !== ''
+  )
+  if (!hasTableFilter && pagination.value.total <= apiKeys.value.length) return
+  try {
+    const response = await keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' })
+    if (!showCodexOneClick.value) return
+    const merged = new Map<number, ApiKey>()
+    apiKeys.value.forEach((item) => merged.set(item.id, item))
+    response.items.forEach((item) => merged.set(item.id, item))
+    quickConnectKeys.value = Array.from(merged.values()).filter((item) => isCodexOneClickEligible(item))
+  } catch (error) {
+    console.warn('Failed to load additional API keys for quick connect:', error)
+  }
+}
+
+const openCodexOneClick = (key: ApiKey | null, initialMethod: 'guide' | 'ccswitch' | 'script' = 'guide') => {
   if (!key || !isCodexOneClickEligible(key)) return
   codexOneClickKey.value = key
+  codexOneClickInitialMethod.value = initialMethod
+  quickConnectKeys.value = apiKeys.value.filter((item) => isCodexOneClickEligible(item))
   showCodexOneClick.value = true
+  void loadQuickConnectKeys()
 }
 
 const closeCodexOneClick = () => {
   showCodexOneClick.value = false
   codexOneClickKey.value = null
+  codexOneClickInitialMethod.value = 'guide'
 }
 
 const handlePageChange = (page: number) => {
+  selectedIds.value = []
   pagination.value.page = page
   loadApiKeys()
 }
 
 const handlePageSizeChange = (pageSize: number) => {
+  selectedIds.value = []
   pagination.value.page_size = pageSize
   pagination.value.page = 1
   loadApiKeys()
 }
 
 const handleSort = (key: string, order: 'asc' | 'desc') => {
+  selectedIds.value = []
   sortState.value.sort_by = key
   sortState.value.sort_order = order
   pagination.value.page = 1
@@ -1907,14 +1990,18 @@ const setExpirationDays = (days: number) => {
 
 // Reset quota used for an API key
 const resetQuotaUsed = async () => {
-  if (!selectedKey.value) return
+  const key = selectedKey.value
+  if (!key) return
   showResetQuotaDialog.value = false
   try {
-    await keysAPI.update(selectedKey.value.id, { reset_quota: true })
+    const updatedKey = await keysAPI.update(key.id, { reset_quota: true })
     appStore.showSuccess(t('keys.quotaResetSuccess'))
-    // Update local state
-    if (selectedKey.value) {
-      selectedKey.value.quota_used = 0
+    key.quota_used = updatedKey.quota_used
+    if (key.status !== updatedKey.status) {
+      key.status = updatedKey.status
+      if (selectedKey.value?.id === key.id) {
+        formData.value.status = updatedKey.status === 'active' ? 'active' : 'inactive'
+      }
     }
   } catch (error: any) {
     const errorMsg = error.response?.data?.detail || t('keys.failedToResetQuota')
@@ -1951,79 +2038,6 @@ const resetRateLimitUsage = async () => {
     const errorMsg = error.response?.data?.detail || t('keys.failedToResetRateLimit')
     appStore.showError(errorMsg)
   }
-}
-
-const importToCcswitch = (row: ApiKey) => {
-  const platform = row.group?.platform || 'anthropic'
-
-  // For antigravity platform, show client selection dialog
-  if (platform === 'antigravity') {
-    pendingCcsRow.value = row
-    showCcsClientSelect.value = true
-    return
-  }
-
-  // For other platforms, execute directly
-  executeCcsImport(row, platform === 'gemini' ? 'gemini' : 'claude')
-}
-
-const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
-  const baseUrl = publicSettings.value?.api_base_url || window.location.origin
-  const platform = row.group?.platform || 'anthropic'
-  const usageUrl = buildCcSwitchUsageUrl(baseUrl)
-
-  const usageScript = `({
-    request: {
-      url: "${usageUrl}",
-      method: "GET",
-      headers: { "Authorization": "Bearer {{apiKey}}" }
-    },
-    extractor: function(response) {
-      const remaining = response?.remaining ?? response?.quota?.remaining ?? response?.balance;
-      const unit = response?.unit ?? response?.quota?.unit ?? "USD";
-      return {
-        isValid: response?.is_active ?? response?.isValid ?? true,
-        remaining,
-        unit
-      };
-    }
-  })`
-  const providerName = (publicSettings.value?.site_name || 'sub2api').trim() || 'sub2api'
-  const deeplink = buildCcSwitchImportDeeplink({
-    baseUrl,
-    platform,
-    clientType,
-    providerName,
-    apiKey: row.key,
-    usageScript
-  })
-
-  try {
-    window.open(deeplink, '_self')
-
-    // Check if the protocol handler worked by detecting if we're still focused
-    setTimeout(() => {
-      if (document.hasFocus()) {
-        // Still focused means the protocol handler likely failed
-        appStore.showError(t('keys.ccSwitchNotInstalled'))
-      }
-    }, 100)
-  } catch (error) {
-    appStore.showError(t('keys.ccSwitchNotInstalled'))
-  }
-}
-
-const handleCcsClientSelect = (clientType: CcSwitchClientType) => {
-  if (pendingCcsRow.value) {
-    executeCcsImport(pendingCcsRow.value, clientType)
-  }
-  showCcsClientSelect.value = false
-  pendingCcsRow.value = null
-}
-
-const closeCcsClientSelect = () => {
-  showCcsClientSelect.value = false
-  pendingCcsRow.value = null
 }
 
 function formatResetTime(resetAt: string | null): string {

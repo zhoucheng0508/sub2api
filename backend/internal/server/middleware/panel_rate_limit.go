@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/middleware"
+	ippkg "github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -106,6 +107,18 @@ func (p *PanelRateLimiter) userScoped(scope string, limitOf func(service.PanelRa
 // 链路本地地址时跳过计数（这类地址通常是反代内部转发地址，按它计数会把
 // 整条反代链路的所有真实用户合并进同一个桶造成大面积误拦截）。
 func (p *PanelRateLimiter) PublicIP() gin.HandlerFunc {
+	return p.publicIP(SecurityClientIP)
+}
+
+// PublicTrustedIP is the strict variant for anonymous endpoints that trigger
+// outbound work. It deliberately ignores the compatibility mode that trusts
+// raw forwarding headers, so a caller cannot mint a new bucket by changing
+// X-Forwarded-For/CF-Connecting-IP on a direct request.
+func (p *PanelRateLimiter) PublicTrustedIP() gin.HandlerFunc {
+	return p.publicIP(ippkg.GetTrustedClientIP)
+}
+
+func (p *PanelRateLimiter) publicIP(resolveClientIP func(*gin.Context) string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if p == nil || p.limiter == nil || p.settingService == nil {
 			c.Next()
@@ -116,7 +129,7 @@ func (p *PanelRateLimiter) PublicIP() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		clientIP := SecurityClientIP(c)
+		clientIP := resolveClientIP(c)
 		if !isPubliclyRoutableClientIP(clientIP) {
 			c.Next()
 			return

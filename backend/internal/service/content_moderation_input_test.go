@@ -21,7 +21,7 @@ func TestExtractContentModerationInput_OpenAIChatKeepsLongConversation(t *testin
 		if i == 19 {
 			role = "user"
 		}
-		_, _ = messages.WriteString(fmt.Sprintf(`{"role":%q,"content":%q}`, role, fmt.Sprintf("turn-%02d", i)))
+		_, _ = fmt.Fprintf(&messages, `{"role":%q,"content":%q}`, role, fmt.Sprintf("turn-%02d", i))
 	}
 	body := []byte(`{"messages":[` + messages.String() + `]}`)
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -20,6 +21,27 @@ func NewUsageBillingRepository(_ *dbent.Client, sqlDB *sql.DB) service.UsageBill
 }
 
 func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBillingCommand) (_ *service.UsageBillingApplyResult, err error) {
+	return retryUsageBillingTransaction(ctx, func() (*service.UsageBillingApplyResult, error) { return r.applyOnce(ctx, cmd) })
+}
+
+func retryUsageBillingTransaction[T any](ctx context.Context, run func() (*T, error)) (*T, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := run()
+		var sqlState interface{ SQLState() string }
+		if err == nil || attempt >= 2 || !errors.As(err, &sqlState) || (sqlState.SQLState() != "40P01" && sqlState.SQLState() != "40001") {
+			return result, err
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * 10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *usageBillingRepository) applyOnce(ctx context.Context, cmd *service.UsageBillingCommand) (_ *service.UsageBillingApplyResult, err error) {
 	if cmd == nil {
 		return &service.UsageBillingApplyResult{}, nil
 	}
@@ -122,6 +144,15 @@ func (r *usageBillingRepository) ReleaseBatchImageBalance(ctx context.Context, c
 }
 
 func (r *usageBillingRepository) applyBatchImageBalanceHold(
+	ctx context.Context, cmd *service.BatchImageBalanceHoldCommand,
+	apply func(context.Context, *sql.Tx, *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error),
+) (*service.BatchImageBalanceHoldResult, error) {
+	return retryUsageBillingTransaction(ctx, func() (*service.BatchImageBalanceHoldResult, error) {
+		return r.applyBatchImageBalanceHoldOnce(ctx, cmd, apply)
+	})
+}
+
+func (r *usageBillingRepository) applyBatchImageBalanceHoldOnce(
 	ctx context.Context,
 	cmd *service.BatchImageBalanceHoldCommand,
 	apply func(context.Context, *sql.Tx, *service.BatchImageBalanceHoldCommand) (*service.BatchImageBalanceHoldResult, error),

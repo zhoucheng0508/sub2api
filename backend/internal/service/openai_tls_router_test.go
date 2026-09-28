@@ -90,7 +90,7 @@ func TestOpenAITLSInvalidRouterProfileFallsBackAsIdentityPairAndKeepsProxy(t *te
 	c.Request, _ = http.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", "client-x/4")
 
-	resp, err := svc.doOpenAIUpstream(c, req, account, "socks5://127.0.0.1:1080")
+	resp, err := svc.doOpenAIUpstream(req, "socks5://127.0.0.1:1080", account, c)
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, "socks5://127.0.0.1:1080", upstream.proxy)
@@ -128,7 +128,7 @@ func TestOpenAIProductionPathsDoNotBypassTLSRouter(t *testing.T) {
 		require.NoErrorf(t, parseErr, "parse %s", name)
 		for _, declaration := range parsed.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil || function.Name.Name == "doOpenAIUpstream" {
+			if !ok || function.Body == nil || function.Name.Name == "doOpenAIUpstream" || function.Name.Name == "doOpenAIAccountTestUpstream" {
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {

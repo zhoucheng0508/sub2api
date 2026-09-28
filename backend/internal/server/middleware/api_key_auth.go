@@ -166,10 +166,16 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
 		c.Request = c.Request.WithContext(ctx)
 		billingInfoRequest := c.Request.URL.Path == "/v1/sub2api/billing"
-		// Async image task polling only reads data that already belongs to the
-		// authenticated key and must remain available after the completed
-		// generation consumes the key's remaining balance.
-		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
+		mediaTaskRead := isMediaVideoTaskRead(c.Request.Method, c.Request.URL.Path)
+		// Task polling and result downloads only read data that already belongs
+		// to the authenticated key. They must remain available after generation
+		// consumes the key's remaining balance or quota.
+		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isGeneratedTaskRead(c.Request.Method, c.Request.URL.Path)
+		// 媒体任务读取只豁免计费门禁；过期凭证仍不能读取或下载结果。
+		if mediaTaskRead && (apiKey.Status == service.StatusAPIKeyExpired || apiKey.IsExpired()) {
+			AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+			return
+		}
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 
@@ -212,7 +218,6 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		}
 
 		// ── 6. 计费执行（skipBilling 时整块跳过） ────────────────────
-
 		if !skipBilling {
 			// Key 状态检查
 			switch apiKey.Status {
@@ -333,11 +338,21 @@ func isOpenAICompatibleAPIKeyRequest(c *gin.Context) bool {
 	return false
 }
 
-func isAsyncImageTaskRead(method, path string) bool {
+func isGeneratedTaskRead(method, path string) bool {
 	if method != http.MethodGet {
 		return false
 	}
-	return strings.HasPrefix(path, "/v1/images/tasks/") || strings.HasPrefix(path, "/images/tasks/")
+	return strings.HasPrefix(path, "/v1/images/tasks/") ||
+		strings.HasPrefix(path, "/images/tasks/") ||
+		isMediaVideoTaskRead(method, path)
+}
+
+func isMediaVideoTaskRead(method, path string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	return strings.HasPrefix(path, "/v1/media/videos/") ||
+		strings.HasPrefix(path, "/media/videos/")
 }
 
 // GetAPIKeyFromContext 从上下文中获取API key

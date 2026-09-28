@@ -1,5 +1,15 @@
 export default {
     accounts: {
+      syncUpstreamModelsMetadataPartial: 'Models synced; some upstream metadata was unavailable.',
+      upstreamRequestIdHeader: 'Upstream request ID header',
+      upstreamRequestIdHeaderPlaceholder: 'For example, X-Request-ID',
+      upstreamRequestIdHeaderHelp: {
+        intro: 'Response header used to identify requests in upstream logs.',
+        examplesTitle: 'Common header names',
+        official: 'Official upstream',
+        sub2apiNote: 'For Sub2API upstreams, use the request ID header returned by that server.'
+      },
+
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',
@@ -104,6 +114,76 @@ export default {
         gemini: 'Gemini',
         antigravity: 'Antigravity',
         grok: 'Grok',
+        seedance: 'Seedance',
+        kimi: 'Kimi',
+        zhipu: 'Zhipu GLM',
+        deepseek: 'DeepSeek',
+        minimax: 'MiniMax',
+        opencode_go: 'OpenCode',
+      },
+      cnProviders: {
+        accountMode: {
+          title: 'Account Type',
+          payg: 'Pay-as-you-go',
+          paygDesc: 'Consumes account balance, billed per token. Auto-cools down on low balance and recovers after top-up.',
+          coding: 'Coding Plan',
+          codingDesc: 'Subscription coding package, rate-limited by 5-hour / weekly rolling usage windows.',
+        },
+        apiProtocol: {
+          title: 'API Protocol',
+          adaptive: 'Adaptive',
+          adaptiveDesc: 'Uses the matching native provider endpoint for each inbound protocol, converting only when unavailable.',
+          endpoints: 'Protocol endpoints',
+          responsesFallbackDesc: 'Responses requests are converted to Chat Completions because this provider has no native Responses endpoint.',
+          chatCompletions: 'Chat Completions',
+          chatCompletionsDesc: 'Standard OpenAI-compatible endpoint; requests in other formats are converted.',
+          anthropic: 'Anthropic',
+          anthropicDesc: 'Native passthrough to the provider’s Anthropic endpoint — ideal for Claude Code.',
+          responses: 'Responses',
+          responsesDesc: 'Provider’s native Responses endpoint — ideal for Codex.',
+        },
+        zhipuTeam: {
+          title: 'Team Plan Organization / Project ID',
+          organization: 'Organization ID (team plan, optional)',
+          organizationPlaceholder: 'Organization ID of the team Coding Plan',
+          project: 'Project ID (team plan, optional)',
+          projectPlaceholder: 'Project ID of the team Coding Plan',
+          hint: 'Only required for the team GLM Coding Plan; when set, usage queries go through the team endpoint. Leave empty for personal plans. Click the question mark for how to obtain the IDs.',
+          help: {
+            title: 'How to get the Organization / Project ID',
+            step1: 'Sign in to the Zhipu open platform (bigmodel.cn) with your team account and open "Coding Plan → Team → My Plan".',
+            step2: 'Press F12 to open browser DevTools, switch to the Network tab, then reload the page.',
+            step3: 'Type /api/biz/v1/organization into the Network filter box and click the matched request (e.g. api_keys).',
+            step4: 'In the request URL, the org-… segment is the Organization ID and the proj_… segment is the Project ID (also visible as the bigmodel-organization / bigmodel-project request headers). Fill them into the fields above.',
+            example: 'Example: …/organization/org-0610bE2D…/projects/proj_0798F20…/api_keys → org-0610bE2D… goes into "Organization ID", proj_0798F20… into "Project ID"',
+          },
+        },
+        balance: 'Balance --',
+        window5h: '5h',
+        windowWeekly: '7d',
+        windowMonthly: '30d',
+        probe: 'Query',
+        probeTooltip: 'Query the provider quota endpoint for 5-hour / weekly rolling window usage',
+        balanceProbeTooltip: 'Query the provider balance endpoint for the account balance',
+        balanceLow: 'Insufficient balance',
+        noBalanceEndpoint: 'This platform has no balance query endpoint',
+      },
+      opencodeGo: {
+        accountMode: {
+          zen: 'Zen',
+          zenDesc: 'Pay-as-you-go gateway. Consumes account credits, billed per token.',
+          go: 'GO',
+          goDesc: 'Subscription gateway, rate-limited by 5-hour / weekly / monthly usage windows.',
+        },
+        protocolRules: {
+          title: 'Model protocol routing',
+          hint: 'In adaptive mode, each model is sent to a native upstream protocol. Use an exact ID or a trailing * glob (e.g. grok-*, qwen*). The first matching rule wins; unmatched models use Chat Completions.',
+          patternPlaceholder: 'grok-* or deepseek-v4-flash',
+          add: 'Add rule',
+          remove: 'Remove rule',
+          restoreDefaults: 'Restore defaults',
+          fallback: 'Unmatched models → Chat Completions (/v1/chat/completions)',
+        },
       },
       types: {
         oauth: 'OAuth',
@@ -130,6 +210,7 @@ export default {
       status: {
         active: 'Active',
         inactive: 'Inactive',
+        expired: 'Expired',
         error: 'Error',
         cooldown: 'Cooldown',
         paused: 'Paused',
@@ -431,12 +512,16 @@ export default {
         submit: 'Update Accounts',
         updating: 'Updating...',
         success: 'Updated {count} account(s)',
+        successWithInherited: 'Updated {count} account(s). {inherited} selected shadow account(s) still follow their parent account.',
         partialSuccess: 'Partially updated: {success} succeeded, {failed} failed',
+        partialSuccessWithInherited: 'Partially updated: {success} succeeded, {failed} failed. {inherited} selected shadow account(s) still follow their parent account.',
         failed: 'Bulk update failed',
         noSelection: 'Please select accounts to edit',
         noFieldsSelected: 'Select at least one field to update',
         rateSyncWarning: 'Accounts with upstream rate sync enabled cannot be changed in bulk. Disable sync in the account editor first.',
         rateSyncConflict: 'Cannot change account rates: {count} target account(s) have upstream rate sync enabled.',
+        longContextShadowHint: 'Long-context billing belongs to the parent account. Selected shadow accounts keep following their parent, including when targets come from a filter.',
+        longContextParentRequired: 'All selected accounts are shadows. Select the parent account to change long-context billing.',
         mixedPlatformWarning: 'Selected accounts span multiple platforms ({platforms}). Model mapping presets shown are combined — ensure mappings are appropriate for each platform.'
       },
       bulkDeleteTitle: 'Bulk Delete Accounts',
@@ -523,16 +608,19 @@ export default {
           'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',
         wsMode: 'WS mode',
         wsModeDesc:
-          'Only applies to the current OpenAI account type; account WS modes, including http_bridge, take effect only when the global gateway.openai_ws.mode_router_v2_enabled=true.',
+          'Applies only to the current OpenAI account type. Select Off to disable WS. Other modes use the selected connection method only when gateway.openai_ws.mode_router_v2_enabled=true; otherwise, they use the context pool.',
         wsModeOff: 'Off (off)',
         wsModeCtxPool: 'Context Pool (ctx_pool)',
         wsModePassthrough: 'Passthrough (passthrough)',
         wsModeHttpBridge: 'HTTP Bridge (http_bridge)',
         wsModeShared: 'Shared (shared)',
         wsModeDedicated: 'Dedicated (dedicated)',
-        wsModeConcurrencyHint:
-          'When WS mode is enabled, account concurrency becomes the WS connection pool limit for this account.',
-        wsModePassthroughHint: 'Passthrough mode does not use the WS connection pool.',
+        wsModeCtxPoolHint:
+          'The gateway gets and reuses upstream WS connections from a pool, with the pool limit determined by gateway configuration.',
+        wsModePassthroughHint:
+          'The gateway opens a separate upstream WS connection for each client session, without using a connection pool.',
+        wsModeHttpBridgeHint:
+          'The gateway converts client WS requests to upstream HTTP requests, then converts SSE streaming responses back into WS messages.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',
@@ -550,6 +638,9 @@ export default {
         responsesModeTextDisabledHint:
           'Not applicable when the Responses / Chat Completions endpoint is not enabled.',
         promptCacheMode: 'GPT-5.6 prompt cache optimization',
+        imagesUrlToB64Json: 'Image result URL to base64',
+        imagesUrlToB64JsonDesc:
+          'Only applies to non-streaming Images responses of OpenAI API Key accounts. When an upstream image item has a url but no b64_json, the gateway downloads the url and fills b64_json with its base64 content (url is kept) for clients built on the official API; the response is returned unchanged if the download fails.',
         promptCacheModeDesc:
           'Only for OpenAI API Key upstreams that support the Responses API. It does not affect OAuth accounts and is not Compact.',
         promptCacheModeOff: 'Off',
@@ -673,6 +764,10 @@ export default {
         fileReadFailed: 'Failed to read the selected file',
         noResponseBody: 'No response body from server'
       },
+      seedance: {
+        baseUrlHint: 'Defaults to the Seedance upstream gateway supplied by the provider.',
+        apiKeyHint: 'API key issued by the Seedance upstream provider.'
+      },
       anthropic: {
         apiKeyPassthrough: 'Auto passthrough (auth only)',
         apiKeyPassthroughDesc:
@@ -691,6 +786,8 @@ export default {
       modelRestriction: 'Model Restriction (Optional)',
       modelWhitelist: 'Model Whitelist',
       modelMapping: 'Model Mapping',
+      fromModel: 'Request model',
+      toModel: 'Target model',
       selectAllowedModels: 'Select allowed models. Leave empty to support all models.',
       mapRequestModels:
         'Map request models to actual models. Left is the requested model, right is the actual model sent to API.',
@@ -712,6 +809,8 @@ export default {
       syncUpstreamModelsEmpty: 'Upstream returned no models to sync',
       syncUpstreamModelsFailed: 'Failed to sync upstream models',
       syncUpstreamModelsError: 'Failed to sync upstream models: {message}',
+      syncUpstreamModelsMetadataIncomplete:
+        'Model IDs were synced, but capability metadata is incomplete and was not updated.',
       clearAllModels: 'Clear all models',
       customModelName: 'Custom model name',
       enterCustomModelName: 'Enter custom model name',
@@ -782,6 +881,30 @@ export default {
         title: 'Client Tool Cache (May Change Automatic Tool Selection)',
         hint: 'For detected Grok Free OAuth accounts, this is enabled by default for client function tools such as Codex and Trae. Turn it off to opt out if the automatic tool-selection behavior is not acceptable.'
       },
+      grokMediaEligibility: {
+        title: 'Media Generation Eligibility',
+        hint: 'Controls whether this Grok OAuth account may be selected for image and video generation.',
+        auto: 'Automatic detection',
+        enabled: 'Force enable',
+        disabled: 'Force disable',
+        current: 'Current decision:',
+        eligible: 'Eligible',
+        ineligible: 'Not eligible',
+        loading: 'Loading eligibility…',
+        loadFailed: 'Unable to load media eligibility',
+        autoHint: 'Automatic detection only clears the manual override; it does not trigger a media request.',
+        forceEnableWarning: 'Force enable bypasses automatic eligibility checks. Use only for accounts confirmed to support image/video generation.',
+        partialSave: 'Other account settings may have been saved, but media eligibility was not updated. Please retry.',
+        reasons: {
+          eligible: 'Paid entitlement confirmed',
+          billing_inconclusive: 'Billing information inconclusive',
+          billing_forbidden: 'Billing endpoint forbidden',
+          billing_free_tier: 'Free tier account',
+          billing_unobserved: 'Billing not observed yet',
+          override_enabled: 'Manually forced enabled',
+          override_disabled: 'Manually forced disabled'
+        }
+      },
       autoPauseOnExpired: 'Auto Pause On Expired',
       autoPauseOnExpiredDesc: 'When enabled, the account will auto pause scheduling after it expires',
 	  autoPause5hThreshold: '5h Usage Threshold (%)',
@@ -790,6 +913,14 @@ export default {
 	  autoPause5hDisabled: 'Disable 5h auto-pause',
 	  autoPause7dDisabled: 'Disable 7d auto-pause',
 	  autoPauseDisabledHint: 'When enabled, this account is never auto-paused (even if a global default threshold is configured).',
+	  autoResetCredit: {
+	    title: 'Automatically use reset credits',
+	    hint: 'Uses the earliest-expiring available credit only when actual usage reaches a threshold. Off by default; the account remains paused if no credit is available or reset fails.',
+	    threshold5h: '5h auto-reset threshold (%)',
+	    threshold7d: '7d auto-reset threshold (%)',
+	    thresholdHint: 'Each window is evaluated independently. Enter 0.1–100; both default to 100.',
+	    thresholdInvalid: 'Automatic reset-credit thresholds must be between 0.1% and 100%.'
+	  },
       // Quota control (Anthropic OAuth/SetupToken only)
       quotaControl: {
         title: 'Quota Control',
@@ -887,6 +1018,7 @@ export default {
       billingRateMultiplierHint: '0 = free, affects account billing only',
       expiresAt: 'Expires At',
       expiresAtHint: 'Leave empty for no expiration',
+      expiresAtTimezoneHint: 'Input is interpreted in your browser time zone ({timezone}).',
       higherPriorityFirst: 'Lower value means higher priority',
       mixedScheduling: 'Use in /v1/messages',
       mixedSchedulingHint: 'Enable to participate in Anthropic/Gemini group scheduling',
@@ -1462,7 +1594,9 @@ export default {
         grokLastProbe: 'Probe {time}',
         grokLastHeadersSeen: 'Headers {time}',
         passiveSampled: 'Passive',
-        activeQuery: 'Query'
+        activeQuery: 'Query',
+        estimatedTotalCost: 'Est. total ${cost}',
+        estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
       },
       openaiQuotaReset: {
         count: 'Credits',
@@ -1484,6 +1618,14 @@ export default {
         resetAccountRecoveryFailed: 'The window was reset, but account state recovery failed. Recover the account state manually.',
         resetAccountRefreshFailed: 'The window, account state, and reset-credit cache were updated, but the latest account display could not be loaded.',
         refreshCachePersistFailed: 'Showing the live count, but its expiration details were unavailable, so the cached details were kept.',
+        autoStatus: {
+          checking: 'Checking',
+          available: 'Credit available',
+          resetting: 'Auto-resetting',
+          success: 'Auto-reset succeeded',
+          noCredit: 'No credit',
+          failed: 'Auto-reset failed'
+        },
         confirmTitle: 'Confirm Weekly Limit Reset',
         confirmMessage: 'This will consume 1 reset credit to immediately restore the current window ({count} remaining). This action cannot be undone. Continue?'
       },

@@ -97,6 +97,8 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughRepository,
 	NewTLSFingerprintProfileRepository,
 	NewTLSFingerprintRouterRepository, // CUSTOM(VOTE-AI-OPENAI-TLS)
+	NewPluginRepository,
+	NewPluginKVStore,
 	NewChannelRepository,
 	NewChannelMonitorRepository,
 	NewChannelMonitorV2Repository,
@@ -138,6 +140,7 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewTLSFingerprintRouterCache, // CUSTOM(VOTE-AI-OPENAI-TLS)
+	NewChannelCache,
 	NewContentModerationHashCache,
 
 	// Encryptors

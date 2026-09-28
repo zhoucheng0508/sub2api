@@ -65,6 +65,13 @@ function compactDestination(wrapper: ReturnType<typeof mountHome>) {
   return links.find((link) => link.props('to') !== '/docs')?.props('to')
 }
 
+function modelPlazaDestination(wrapper: ReturnType<typeof mountHome>) {
+  return wrapper
+    .findAllComponents(RouterLinkStub)
+    .find((link) => link.props('to') === '/model-plaza')
+    ?.props('to')
+}
+
 describe('HomeView compact mode', () => {
   beforeEach(() => {
     authStore.isAuthenticated = false
@@ -119,6 +126,34 @@ describe('HomeView compact mode', () => {
     authStore.isAuthenticated = true
 
     expect(compactDestination(mountHome({ compact_home_enabled: true }))).toBe('/dashboard')
+  })
+
+  it('shows model plaza to anonymous visitors when public access is enabled', () => {
+    const wrapper = mountHome({
+      compact_home_enabled: true,
+      model_plaza_enabled: true,
+      model_plaza_require_auth: false,
+    })
+    expect(modelPlazaDestination(wrapper)).toBe('/model-plaza')
+  })
+
+  it('hides model plaza from anonymous visitors when sign-in is required', () => {
+    const wrapper = mountHome({
+      compact_home_enabled: true,
+      model_plaza_enabled: true,
+      model_plaza_require_auth: true,
+    })
+    expect(modelPlazaDestination(wrapper)).toBeUndefined()
+  })
+
+  it('shows model plaza to authenticated visitors when sign-in is required', () => {
+    authStore.isAuthenticated = true
+    const wrapper = mountHome({
+      compact_home_enabled: true,
+      model_plaza_enabled: true,
+      model_plaza_require_auth: true,
+    })
+    expect(modelPlazaDestination(wrapper)).toBe('/model-plaza')
   })
 
   it('links administrators to the admin dashboard', () => {

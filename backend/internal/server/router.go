@@ -113,15 +113,15 @@ func registerRoutes(
 	cfg *config.Config,
 	redisClient *redis.Client,
 ) {
+	// Create the panel limiter before common routes so the public CC Switch
+	// release resolver shares the same configurable per-IP protection.
+	panelRateLimiter := middleware2.NewPanelRateLimiter(redisClient, settingService)
+
 	// 通用路由（健康检查、状态等）
-	routes.RegisterCommonRoutes(r, h)
+	routes.RegisterCommonRoutes(r, h, panelRateLimiter)
 
 	// API v1
 	v1 := r.Group("/api/v1")
-
-	// 面板 API 限流器：认证接口按用户 ID、公开接口按安全客户端 IP，
-	// 防止高频刷管理面接口打爆数据库（阈值可在系统设置中调整）。
-	panelRateLimiter := middleware2.NewPanelRateLimiter(redisClient, settingService)
 
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, auditLog, redisClient, settingService, panelRateLimiter)

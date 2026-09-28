@@ -15,6 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type stubMediaTaskRoutes struct{}
+
+func (stubMediaTaskRoutes) Models(c *gin.Context)          { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) CreateVideo(c *gin.Context)     { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) GetVideo(c *gin.Context)        { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) GetVideoContent(c *gin.Context) { c.Status(http.StatusNotImplemented) }
+func (stubMediaTaskRoutes) UploadFile(c *gin.Context)      { c.Status(http.StatusNotImplemented) }
+
 func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 	return newGatewayRoutesTestRouterWithConfig(&config.Config{
 		Gateway: config.GatewayConfig{
@@ -38,6 +46,7 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
 			Gateway:       &handler.GatewayHandler{},
 			OpenAIGateway: &handler.OpenAIGatewayHandler{},
 			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
+			MediaTask:     stubMediaTaskRoutes{},
 		},
 		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
 			groupID := int64(1)
@@ -94,7 +103,7 @@ func TestGatewayRoutesOpenAIAlphaSearchPathsAreRegistered(t *testing.T) {
 	}
 }
 
-func TestGatewayRoutesAlphaSearchRejectsNonOpenAIGroup(t *testing.T) {
+func TestGatewayRoutesAlphaSearchRejectsUnsupportedGroup(t *testing.T) {
 	router := newGatewayRoutesTestRouter(service.PlatformGrok)
 	req := httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -103,7 +112,7 @@ func TestGatewayRoutesAlphaSearchRejectsNonOpenAIGroup(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
-	require.Contains(t, w.Body.String(), "only available for OpenAI groups")
+	require.Contains(t, w.Body.String(), "only available for OpenAI and Composite groups")
 }
 
 func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
@@ -343,6 +352,18 @@ func TestGatewayRoutesNonGrokVideosAreRejectedAtPlatformGate(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, w.Code, "method=%s path=%s", tc.method, tc.path)
 		require.Contains(t, w.Body.String(), "Videos API is not supported for this platform")
 	}
+}
+
+func TestGatewayRoutesCompositeVideoGenerationAllowed(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformComposite)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"grok-imagine-video-1.5","prompt":"waves"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	require.NotEqual(t, http.StatusNotFound, w.Code)
+	require.NotContains(t, w.Body.String(), "not supported")
 }
 
 func TestGatewayRoutesCompositeOpenAIOnlyEndpointsRequireOpenAITarget(t *testing.T) {
