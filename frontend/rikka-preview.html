@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RikkaHub 接入功能预览</title></head>
+<body><div id="app"></div><script type="module">
+import { createApp } from 'vue'
+import { createI18n } from 'vue-i18n'
+import RikkaHubImport from './src/custom/vote-ai/rikkahub/RikkaHubImport.vue'
+import messages from './src/custom/vote-ai/rikkahub/messages'
+import './src/style.css'
+// Development preview only: this page never uses a real account, key or upstream.
+window.fetch = async () => new Response(JSON.stringify({ models: [
+  { slug: 'gpt-6-astra', input_modalities: ['text','image'], supported_reasoning_levels: [{effort:'low'}] },
+  { slug: 'text-demo', input_modalities: ['text'] }
+]}), {status:200,headers:{'Content-Type':'application/json'}})
+createApp({components:{RikkaHubImport},template:`<main class="mx-auto max-w-2xl p-4 sm:p-8"><h1 class="mb-2 text-2xl font-semibold">RikkaHub 接入功能预览</h1><p class="mb-6 text-sm text-gray-500">演示页面 · 示例 Key 不可调用模型 · 正式入口在密钥页的“使用密钥 → RikkaHub”</p><div class="rounded-2xl border bg-white p-4 sm:p-6"><RikkaHubImport api-key="DEMO-NOT-A-LIVE-KEY" base-url="https://example.invalid/v1" /></div></main>`})
+.use(createI18n({legacy:false,locale:'zh',messages:{zh:{rikkaHub:messages.zh},en:{rikkaHub:messages.en}}})).mount('#app')
+</script></body></html>
