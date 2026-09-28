@@ -156,7 +156,13 @@ describe('CodexOneClickModal', () => {
     const params = new URLSearchParams((openSpy.mock.calls[0][0] as string).split('?')[1])
     expect(params.get('app')).toBe('codex')
     expect(params.get('apiKey')).toBe('sk-normal')
-    expect(params.get('endpoint')).toBe('https://api.example.com/v1')
+    expect(params.get('endpoint')).toBe('https://api.example.com')
+    const usageScript = atob(params.get('usageScript') || '')
+      .replaceAll('{{baseUrl}}', params.get('endpoint') || '')
+      .replaceAll('{{apiKey}}', 'test-key')
+    // eslint-disable-next-line no-new-func
+    const usage = new Function(`return ${usageScript}`)() as { request: { url: string } }
+    expect(usage.request.url).toBe('https://api.example.com/v1/usage')
   })
 
   it('cancels a pending installer request when closed', async () => {

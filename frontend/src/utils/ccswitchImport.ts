@@ -97,6 +97,23 @@ export interface CcSwitchImportDeeplinkInput {
   model?: string | null
 }
 
+export const CC_SWITCH_USAGE_SCRIPT = `({
+    request: {
+      url: "{{baseUrl}}".replace(/\\/+$/, "").replace(/\\/v1$/, "") + "/v1/usage",
+      method: "GET",
+      headers: { "Authorization": "Bearer {{apiKey}}" }
+    },
+    extractor: function(response) {
+      const remaining = response?.remaining ?? response?.quota?.remaining ?? response?.balance;
+      const unit = response?.unit ?? response?.quota?.unit ?? "USD";
+      return {
+        isValid: response?.is_active ?? response?.isValid ?? true,
+        remaining,
+        unit
+      };
+    }
+  })`
+
 export function normalizeV1Endpoint(baseUrl: string): string {
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
   return normalizedBaseUrl.endsWith('/v1') ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`
@@ -171,7 +188,8 @@ export function resolveCcSwitchImportConfig(
 
   switch (wireApp) {
     case 'codex':
-      endpoint = normalizeV1Endpoint(normalizedBase)
+      // CC Switch must retain a configured Codex root endpoint.
+      endpoint = normalizedBase
       model = OPENAI_CC_SWITCH_CODEX_MODEL
       break
     case 'grokbuild':

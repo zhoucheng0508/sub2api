@@ -396,7 +396,7 @@ import { buildCnOaiSetupScript, CN_OAI_SETUP_FILENAME, isCnOaiGroup } from '@/ut
 import {
   CC_SWITCH_APP_CATALOG,
   buildCcSwitchImportDeeplink,
-  buildCcSwitchUsageUrl,
+  CC_SWITCH_USAGE_SCRIPT,
   resolveCcSwitchImportConfig,
   type CcSwitchAppType
 } from '@/utils/ccswitchImport'
@@ -809,8 +809,7 @@ function startProtocolCheck(): void {
 
 function openCcSwitch(): void {
   if (!selectedAppImportable.value) return
-  const usageUrl = buildCcSwitchUsageUrl(props.baseUrl)
-  const usageScript = `({ request: { url: ${JSON.stringify(usageUrl)}, method: "GET", headers: { "Authorization": "Bearer {{apiKey}}" } }, extractor: function(response) { return { isValid: response?.is_active ?? response?.isValid ?? true, remaining: response?.remaining ?? response?.quota?.remaining ?? response?.balance, unit: response?.unit ?? response?.quota?.unit ?? "USD" }; } })`
+  const usageScript = CC_SWITCH_USAGE_SCRIPT
   const deeplink = buildCcSwitchImportDeeplink({
     baseUrl: props.baseUrl,
     platform: effectivePlatform.value,
