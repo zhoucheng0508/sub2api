@@ -115,6 +115,7 @@
             {{ t('customPage.openInNewTab') }}
           </a>
           <iframe
+            ref="canvasFrame"
             :src="embeddedUrl"
             class="custom-embed-frame"
             allowfullscreen
@@ -126,7 +127,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useResizeObserver } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
@@ -137,6 +138,8 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { buildApiUrl } from '@/api/client'
 import { buildEmbeddedUrl, detectTheme } from '@/utils/embedded-url'
+import { createCanvasKeyBridge, trustedCanvasUrl } from '@/custom/vote-ai/canvas-key-bridge'
+import { keysAPI } from '@/api/keys'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -151,6 +154,16 @@ const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const adminSettingsStore = useAdminSettingsStore()
+const canvasFrame = ref<HTMLIFrameElement | null>(null)
+const canvasBridge = createCanvasKeyBridge({
+  origin: window.location.origin,
+  frame: () => canvasFrame.value,
+  identity: () => authStore.token || '',
+  userId: () => authStore.user?.id,
+  list: (page) => keysAPI.list(page),
+  get: (id) => keysAPI.getById(id),
+})
+watch(() => authStore.token, () => canvasBridge.reset())
 
 const loading = ref(false)
 const pageTheme = ref<'light' | 'dark'>('light')
@@ -249,7 +262,7 @@ const embeddedUrl = computed(() => {
     authStore.token,
     pageTheme.value,
     locale.value,
-    menuItem.value.pass_user_context !== false,
+    !trustedCanvasUrl(window.location.origin, menuItem.value.url) && menuItem.value.pass_user_context !== false,
   )
 })
 
@@ -258,6 +271,7 @@ const isValidUrl = computed(() => {
   const url = embeddedUrl.value
   return url.startsWith('http://') || url.startsWith('https://')
 })
+watch(embeddedUrl, () => canvasBridge.reset())
 
 function generateHeadingId(text: string, index: number): string {
   const base = text
@@ -413,6 +427,7 @@ watch(markdownSlug, (slug) => {
 }, { immediate: true })
 
 onMounted(async () => {
+  window.addEventListener('message', canvasBridge.receive)
   pageTheme.value = detectTheme()
 
   if (typeof document !== 'undefined') {
@@ -434,6 +449,10 @@ onMounted(async () => {
   }
 })
 
+onBeforeUnmount(() => {
+  canvasBridge.reset()
+  window.removeEventListener('message', canvasBridge.receive)
+})
 onUnmounted(() => {
   if (themeObserver) {
     themeObserver.disconnect()
