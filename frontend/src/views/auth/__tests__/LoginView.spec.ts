@@ -2,9 +2,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import LoginView from '@/views/auth/LoginView.vue'
 
-const { getPublicSettingsMock, pushMock } = vi.hoisted(() => ({
+const { getPublicSettingsMock, pushMock, query } = vi.hoisted(() => ({
   getPublicSettingsMock: vi.fn(),
-  pushMock: vi.fn()
+  pushMock: vi.fn(),
+  query: {} as Record<string, string>
 }))
 
 const publicSettings = {
@@ -33,7 +34,7 @@ const publicSettings = {
 vi.mock('vue-router', () => ({
   useRouter: () => ({
     push: pushMock,
-    currentRoute: { value: { query: {} } }
+    currentRoute: { value: { query } }
   })
 }))
 
@@ -80,7 +81,7 @@ function mountLogin() {
         LinuxDoOAuthSection: true,
         LoginAgreementPrompt: true,
         OidcOAuthSection: true,
-        RouterLink: { template: '<a><slot /></a>' },
+        RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' },
         TotpLoginModal: true,
         TurnstileWidget: true,
         WechatOAuthSection: true,
@@ -94,6 +95,7 @@ describe('LoginView registration entry', () => {
   beforeEach(() => {
     getPublicSettingsMock.mockReset()
     pushMock.mockReset()
+    Object.keys(query).forEach(key => delete query[key])
     getPublicSettingsMock.mockResolvedValue(publicSettings)
   })
 
@@ -114,5 +116,17 @@ describe('LoginView registration entry', () => {
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('auth.signUp')
+  })
+  it('preserves a requested internal destination when choosing registration', async () => {
+    query.redirect = '/purchase?plan=starter'
+    const wrapper = mountLogin(); await flushPromises()
+    const link = wrapper.findAllComponents({ name: 'RouterLink' }).find(item => item.text() === 'auth.signUp')!
+    expect(link.props('to')).toEqual({ path: '/register', query: { redirect: '/purchase?plan=starter' } })
+  })
+  it('does not forward an external registration redirect', async () => {
+    query.redirect = '//outside.example'
+    const wrapper = mountLogin(); await flushPromises()
+    const link = wrapper.findAllComponents({ name: 'RouterLink' }).find(item => item.text() === 'auth.signUp')!
+    expect(link.props('to')).toEqual({ path: '/register', query: {} })
   })
 })

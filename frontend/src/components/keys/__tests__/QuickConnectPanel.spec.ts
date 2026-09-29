@@ -23,10 +23,11 @@ const normalKey = {
 const cnKey = { ...normalKey, id: 91, name: 'CN key', key: 'sk-cn-private-value', group_id: 9, group: { ...normalKey.group, id: 9, name: '国模 OAI' } } as ApiKey
 const otherKey = { ...normalKey, id: 93, name: 'Other key', key: 'sk-other-private-value' } as ApiKey
 
-function mountPanel(overrides: Record<string, unknown> = {}) {
+function mountPanel(overrides: Record<string, unknown> = {}, slots: Record<string, string> = {}) {
   const wrapper = mount(QuickConnectPanel, {
     attachTo: document.body,
     props: { show: true, apiKey: normalKey.key, keyName: normalKey.name, baseUrl: 'https://api.example.com', providerName: 'Example', availableKeys: [normalKey], initialKeyId: normalKey.id, ...overrides },
+    slots,
     global: { stubs: { Icon: { template: '<span />' }, CcSwitchAppIcon: { template: '<span />' }, UseKeyModal: true } }
   })
   mounted.push(wrapper)
@@ -49,6 +50,41 @@ afterEach(() => {
 })
 
 describe('QuickConnectPanel guided connection', () => {
+  it('shows inline creation for no usable keys and keeps import disabled', async () => {
+    const wrapper = mountPanel({ availableKeys: [], apiKey: '', initialKeyId: null }, { 'create-key': '<div data-testid="inline-form">Create here</div>' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="inline-form"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="connect-manage-keys"]').exists()).toBe(false)
+  })
+  it('keeps the chosen app after in-place creation even for a manual-setup group', async () => {
+    const wrapper = mountPanel({ availableKeys: [], apiKey: '', initialKeyId: null }, { 'create-key': '<div>Create here</div>' })
+    const created = { ...normalKey, id: 94, group: { ...normalKey.group!, platform: 'anthropic' } } as ApiKey
+    await wrapper.setProps({ availableKeys: [created], initialKeyId: created.id, apiKey: created.key })
+    expect(wrapper.get('[data-testid="connect-app-codex"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('[data-testid="connect-incompatible-key"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
+  })
+  it('switches from creation to the created key without importing an old key', async () => {
+    const wrapper = mountPanel({}, { 'create-key': '<div data-testid="inline-form">Create here</div>' })
+    await wrapper.get('[data-testid="connect-create-key"]').trigger('click')
+    expect(wrapper.find('[data-testid="inline-form"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ availableKeys: [normalKey, otherKey], initialKeyId: otherKey.id, apiKey: otherKey.key })
+    expect(wrapper.find('[data-testid="inline-form"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ccswitch-key-select"]').element.value).toBe(String(otherKey.id))
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeUndefined()
+    expect(openSpy).not.toHaveBeenCalled()
+  })
+  it('does not let local controls unmount a pending create request', async () => {
+    const wrapper = mountPanel({}, { 'create-key': '<div data-testid="pending-create">Create</div>' })
+    await wrapper.get('[data-testid="connect-create-key"]').trigger('click')
+    await wrapper.setProps({ creationBusy: true })
+    expect(wrapper.get('[data-testid="connect-use-existing"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="connect-app-claude"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="connect-use-existing"]').trigger('click')
+    expect(wrapper.find('[data-testid="pending-create"]').exists()).toBe(true)
+  })
   it('starts with installation guidance, masks keys, and keeps advanced settings closed', async () => {
     const wrapper = mountPanel()
     expect(wrapper.find('[data-testid="connect-install-help"]').exists()).toBe(true)

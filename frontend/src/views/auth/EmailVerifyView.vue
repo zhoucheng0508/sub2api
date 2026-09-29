@@ -195,6 +195,7 @@ import {
 } from '@/api/auth'
 import { apiClient } from '@/api/client'
 import { buildAuthErrorMessage } from '@/utils/authError'
+import { getRegistrationDestination } from '@/custom/vote-ai/quick-connect/entry-routing'
 import { extractApiErrorCode } from '@/utils/apiError'
 import {
   formatRegistrationEmailSuffixWhitelistForMessage,
@@ -742,8 +743,11 @@ async function handleVerify(): Promise<void> {
     // Show success toast
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
-    // Redirect to dashboard
-    await router.push(pendingRedirect.value || '/dashboard')
+    // Only plain registration changes its default; pending OAuth may complete an existing login.
+    await router.push(getRegistrationDestination(pendingRedirect.value, {
+      isAdmin: authStore.isAdmin,
+      isPendingOAuth: isPendingOAuthFlow(),
+    }))
   } catch (error: unknown) {
     errorMessage.value = buildRegistrationErrorMessage(error, t('auth.verifyFailed'))
 

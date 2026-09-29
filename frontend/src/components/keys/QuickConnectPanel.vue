@@ -13,7 +13,7 @@
           v-for="app in primaryApps"
           :key="app.id"
           type="button"
-          :disabled="!app.importable"
+          :disabled="!app.importable || creationBusy"
           :aria-pressed="selectedApp === app.id"
           :data-testid="`connect-app-${app.id}`"
           :class="['flex min-h-16 min-w-0 items-center gap-2 rounded-xl border px-3 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45', selectedApp === app.id ? 'border-primary-500 bg-primary-50 text-primary-800 dark:bg-primary-950/40 dark:text-primary-200' : 'border-gray-200 text-gray-700 hover:border-primary-300 dark:border-dark-600 dark:text-gray-200']"
@@ -29,7 +29,7 @@
       <details class="mt-3" :open="isMoreAppSelected || undefined" data-testid="connect-more-apps">
         <summary class="cursor-pointer text-sm text-gray-600 dark:text-gray-300">{{ t('quickConnect.moreApps') }}</summary>
         <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-          <button v-for="app in moreApps" :key="app.id" type="button" :disabled="!app.importable" :aria-pressed="selectedApp === app.id" :data-testid="`connect-app-${app.id}`" :class="['flex min-h-16 min-w-0 items-center gap-2 rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-45', selectedApp === app.id ? 'border-primary-500 bg-primary-50 text-primary-800 dark:bg-primary-950/40 dark:text-primary-200' : 'border-gray-200 text-gray-700 dark:border-dark-600 dark:text-gray-200']" @click="selectApp(app.id)">
+          <button v-for="app in moreApps" :key="app.id" type="button" :disabled="!app.importable || creationBusy" :aria-pressed="selectedApp === app.id" :data-testid="`connect-app-${app.id}`" :class="['flex min-h-16 min-w-0 items-center gap-2 rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-45', selectedApp === app.id ? 'border-primary-500 bg-primary-50 text-primary-800 dark:bg-primary-950/40 dark:text-primary-200' : 'border-gray-200 text-gray-700 dark:border-dark-600 dark:text-gray-200']" @click="selectApp(app.id)">
             <CcSwitchAppIcon :app="app.id" :label="app.label" size="lg" />
             <span class="text-sm font-medium">{{ app.label }}<span v-if="!app.importable" class="mt-1 block text-xs font-normal">{{ t('quickConnect.unsupported') }}</span></span>
           </button>
@@ -45,6 +45,7 @@
           type="button"
           role="radio"
           :aria-checked="activeOs === os.id"
+          :disabled="creationBusy"
           :tabindex="activeOs === os.id ? 0 : -1"
           :data-testid="`guide-os-${os.id}`"
           :data-quick-connect-platform="os.id"
@@ -59,14 +60,18 @@
       <div class="flex items-start gap-3">
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100 text-sm font-semibold text-primary-700 dark:bg-primary-900/40 dark:text-primary-300" aria-hidden="true">2</span>
         <div class="min-w-0 flex-1">
-          <h2 id="quick-connect-key-title" class="text-base font-semibold text-gray-900 dark:text-white">{{ t('quickConnect.chooseKey') }}</h2>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.chooseKeyHint') }}</p>
+          <h2 id="quick-connect-key-title" class="text-base font-semibold text-gray-900 dark:text-white">{{ t(showCreateKey ? 'quickConnect.startPage.createInPlace' : 'quickConnect.chooseKey') }}</h2>
+          <p v-if="!showCreateKey" class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.chooseKeyHint') }}</p>
         </div>
       </div>
       <p v-if="loading" class="mt-5 text-sm text-gray-600 dark:text-gray-300" role="status" data-testid="connect-keys-loading">{{ t('quickConnect.loading') }}</p>
       <div v-else-if="loadError" class="mt-5 flex flex-wrap items-center gap-3" role="alert" data-testid="connect-keys-error">
         <p class="text-sm text-red-600 dark:text-red-400">{{ t('quickConnect.loadError') }}</p>
         <button type="button" class="btn btn-secondary" @click="emit('retry')">{{ t('quickConnect.retry') }}</button>
+      </div>
+      <div v-else-if="showCreateKey" class="mt-5" data-testid="connect-inline-create">
+        <slot name="create-key" :app="selectedApp" :cancel="closeCreateKey" />
+        <button v-if="selectableKeys.length" type="button" class="mt-3 text-sm font-medium text-primary-600 hover:underline disabled:opacity-50 dark:text-primary-400" :disabled="creationBusy" data-testid="connect-use-existing" @click="closeCreateKey">{{ t('quickConnect.startPage.useExisting') }}</button>
       </div>
       <template v-else-if="selectableKeys.length || currentKey">
         <p v-if="selectedUnavailable" class="mt-4 text-sm text-amber-700 dark:text-amber-300" role="status">{{ t('quickConnect.selectedUnavailable') }}</p>
@@ -87,7 +92,10 @@
         <p class="font-medium text-gray-900 dark:text-white">{{ t('quickConnect.noKeys') }}</p>
         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.noKeysHint') }}</p>
       </div>
-      <button type="button" class="mt-4 text-sm font-medium text-primary-600 hover:underline dark:text-primary-400" data-testid="connect-manage-keys" @click="emit('manage-keys')">{{ t('quickConnect.manageKeys') }}</button>
+      <div v-if="!showCreateKey" class="mt-4 flex flex-wrap gap-4">
+        <button v-if="$slots['create-key']" type="button" class="btn btn-secondary" data-testid="connect-create-key" @click="createKeyOpen = true">{{ t('quickConnect.startPage.createAnother') }}</button>
+        <button type="button" class="text-sm font-medium text-gray-500 hover:underline dark:text-gray-400" data-testid="connect-manage-keys" @click="emit('manage-keys')">{{ t('quickConnect.startPage.manageLater') }}</button>
+      </div>
     </section>
 
     <section class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800 sm:p-6" aria-labelledby="quick-connect-install-title">
@@ -188,7 +196,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, useSlots, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import CcSwitchAppIcon from './CcSwitchAppIcon.vue'
@@ -200,6 +208,7 @@ import type { ApiKey, GroupPlatform } from '@/types'
 import { useClipboard } from '@/composables/useClipboard'
 import { buildCCSwitchDirectDownloadURL, listCCSwitchVersions, resolveCCSwitchDownload, startCCSwitchDownload, type CCSwitchArchitecture, type CCSwitchReleaseVersion } from '@/api/downloads'
 import { buildCodexSetupScript, buildCodexSetupScriptPreview, getCodexSetupFilename, isCodexOneClickEligible, type CodexOperatingSystem } from '@/utils/codexOneClick'
+import { supportsAutomaticConfig } from '@/custom/vote-ai/quick-connect/auto-config'
 
 type AccessMethod = 'guide' | 'ccswitch' | 'script' | 'cn-oai'
 type QuickConnectKey = Pick<ApiKey, 'id' | 'name' | 'key' | 'status' | 'group' | 'group_id'>
@@ -216,8 +225,12 @@ const props = withDefaults(defineProps<{
   initialKeyId?: number | null
   loading?: boolean
   loadError?: boolean
-}>(), { show: true, loading: false, loadError: false })
-const emit = defineEmits<{ (event: 'protocol-failed'): void; (event: 'manage-keys'): void; (event: 'retry'): void }>()
+  creationBusy?: boolean
+}>(), { show: true, loading: false, loadError: false, creationBusy: false })
+const emit = defineEmits<{ (event: 'protocol-failed'): void; (event: 'manage-keys'): void; (event: 'retry'): void; (event: 'key-ready', ready: boolean): void }>()
+const slots = useSlots()
+const createKeyOpen = ref(false)
+function closeCreateKey() { if (!props.creationBusy) createKeyOpen.value = false }
 const { t } = useI18n()
 const { copyToClipboard: clipboardCopy } = useClipboard()
 const selectedKeyId = ref<number | null>(props.initialKeyId ?? null)
@@ -259,6 +272,10 @@ const CC_SWITCH_CLIENT_INSTALL_URLS: Record<CcSwitchAppType, string> = {
 const operatingSystems: Array<{ id: CodexOperatingSystem; label: string }> = [{ id: 'macos', label: 'macOS' }, { id: 'windows', label: 'Windows' }, { id: 'linux', label: 'Linux' }]
 const ccSwitchArchitectures: Array<{ id: CCSwitchArchitecture; label: string }> = [{ id: 'amd64', label: 'x64' }, { id: 'arm64', label: 'ARM64' }]
 const selectableKeys = computed(() => (props.availableKeys || []).filter(isCodexOneClickEligible))
+const showCreateKey = computed(() => !!slots['create-key'] && !props.loading && !props.loadError && (createKeyOpen.value || !selectableKeys.value.length))
+// Creating from an application's guide is an explicit choice of that app.
+// Do not change it implicitly when the new key's group arrives.
+watch(showCreateKey, open => { if (open) appChosenByUser.value = true }, { immediate: true })
 // A supplied list is authoritative, including an empty or newly filtered list.
 // Legacy standalone callers must provide an explicit platform to use raw props.
 const fallbackKey = computed<QuickConnectKey | null>(() => props.availableKeys === undefined && props.apiKey.trim() && props.platform
@@ -273,7 +290,9 @@ const primaryApps = computed(() => ['codex', 'claude', 'opencode'].map((id) => c
 const moreApps = computed(() => ccSwitchApps.value.filter((app) => !['codex', 'claude', 'opencode'].includes(app.id)))
 const isMoreAppSelected = computed(() => !['codex', 'claude', 'opencode'].includes(selectedApp.value))
 const appLabel = computed(() => CC_SWITCH_APP_CATALOG.find((app) => app.id === selectedApp.value)?.label || selectedApp.value)
-const canUseKey = computed(() => props.show && !props.loading && !props.loadError && !!currentKey.value)
+const canUseKey = computed(() => props.show && !props.loading && !props.loadError && !showCreateKey.value && !!currentKey.value)
+watch(canUseKey, ready => emit('key-ready', ready), { immediate: true })
+watch(() => props.initialKeyId, () => { createKeyOpen.value = false })
 const currentKeyCompatible = computed(() => !!currentKey.value && isKeyCompatible(currentKey.value, selectedApp.value))
 const canImport = computed(() => canUseKey.value && currentKeyCompatible.value && !!selectedImportConfig.value?.importable)
 const isCnOaiSetup = computed(() => selectedApp.value === 'codex' && isCnOaiGroup(currentKey.value?.group))
@@ -302,6 +321,7 @@ function resetImport(): void {
   showManualConfig.value = false
 }
 function selectApp(app: CcSwitchAppType): void {
+  if (props.creationBusy) return
   if (ccSwitchApps.value.find((item) => item.id === app)?.importable) {
     appChosenByUser.value = true
     selectedApp.value = app
@@ -312,17 +332,7 @@ function selectApp(app: CcSwitchAppType): void {
 // Only offer configurations that the unchanged import generator can represent.
 // Broader routed Codex and provider-specific OpenCode setups remain in manual setup.
 function isKeyCompatible(key: QuickConnectKey, app: CcSwitchAppType): boolean {
-  const platform = key.group?.platform
-  switch (app) {
-    case 'codex': return platform === 'openai'
-    case 'claude': return platform === 'anthropic' || platform === 'antigravity' || (platform === 'openai' && key.group?.allow_messages_dispatch === true)
-    case 'gemini': return platform === 'gemini' || platform === 'antigravity'
-    case 'grokbuild': return platform === 'grok'
-    case 'opencode':
-    case 'openclaw':
-    case 'hermes': return platform === 'openai' || platform === 'grok'
-    default: return false
-  }
+  return supportsAutomaticConfig(key.group, app)
 }
 
 watch(() => props.show, (show) => {

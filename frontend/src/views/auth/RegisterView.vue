@@ -387,6 +387,7 @@ import {
   validateInvitationCode
 } from '@/api/auth'
 import { buildAuthErrorMessage } from '@/utils/authError'
+import { getRegistrationDestination, safeRegistrationRedirect } from '@/custom/vote-ai/quick-connect/entry-routing'
 import { extractApiErrorCode, extractI18nErrorMessage } from '@/utils/apiError'
 import {
   formatRegistrationEmailSuffixWhitelistForMessage,
@@ -407,6 +408,7 @@ const LOGIN_AGREEMENT_STORAGE_KEY = 'sub2api_login_agreement_consent'
 
 const router = useRouter()
 const route = useRoute()
+const registrationRedirect = computed(() => safeRegistrationRedirect(route.query.redirect))
 const authStore = useAuthStore()
 const appStore = useAppStore()
 
@@ -1066,6 +1068,7 @@ async function handleRegister(): Promise<void> {
           tencent_captcha_randstr: tencentCaptchaEnabled.value ? tencentCaptchaRandstr.value : undefined,
           promo_code: formData.promo_code || undefined,
           invitation_code: formData.invitation_code || undefined,
+          ...(registrationRedirect.value ? { pending_redirect: registrationRedirect.value } : {}),
           ...(affCode ? { aff_code: affCode } : {})
         })
       )
@@ -1092,8 +1095,8 @@ async function handleRegister(): Promise<void> {
     // Show success toast
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
-    // Redirect to dashboard
-    await router.push('/dashboard')
+    // New accounts start with guided setup unless they requested a specific destination.
+    await router.push(getRegistrationDestination(registrationRedirect.value, { isAdmin: authStore.isAdmin }))
   } catch (error: unknown) {
     // Handle registration error
     errorMessage.value = buildRegistrationErrorMessage(error, t('auth.registrationFailed'))
