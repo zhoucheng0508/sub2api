@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createCanvasKeyBridge, supportsCanvasKind, unavailableReason, trustedCanvasUrl } from './canvas-key-bridge'
 import type { ApiKey } from '@/types'
 const origin = 'https://canvas.vote520.com'
-const key = (id: number, image = true) => ({ id, user_id: 7, name: `Key ${id}`, key: `sk-private-fixture-${id}`, status: 'active', quota: 0, quota_used: 0, expires_at: null,
+const key = (id: number, image = true) => ({ id, user_id: 7, group_id: image ? 34 : 6, name: `Key ${id}`, key: `sk-private-fixture-${id}`, status: 'active', quota: 0, quota_used: 0, expires_at: null,
   group: { name: image ? 'Images' : 'Text', status: 'active', platform: 'openai', allow_image_generation: image, image_only: image } } as ApiKey)
 function setup() {
   const target = { postMessage: vi.fn() }
@@ -31,7 +31,7 @@ describe('canvas credential bridge', () => {
   })
   it('only returns the chosen key after a fresh ownership check', async () => {
     const s = setup(); await s.send({ action: 'list' }); await s.send({ action: 'select', keyId: 1 })
-    expect(s.get).toHaveBeenCalledWith(1); expect(s.target.postMessage.mock.lastCall![0].key).toBe(key(1).key)
+    expect(s.get).toHaveBeenCalledWith(1); expect(s.target.postMessage.mock.lastCall![0].groupId).toBe(34); expect(s.target.postMessage.mock.lastCall![0].key).toBe(key(1).key)
     s.get.mockResolvedValue({ ...key(1), user_id: 99 }); await s.send({ action: 'select', keyId: 1 }); expect(s.target.postMessage.mock.lastCall![0]).not.toHaveProperty('key')
   })
   it('refuses a key revoked after listing', async () => {
