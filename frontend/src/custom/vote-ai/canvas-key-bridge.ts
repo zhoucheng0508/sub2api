@@ -80,7 +80,7 @@ export function createCanvasKeyBridge(deps: {
         if (!Number.isSafeInteger(request.keyId) || !offered.has(`${identity}:${kind}:${request.keyId}`)) throw new Error('not_offered')
         const key = await deps.get(request.keyId)
         if (key.user_id !== userId || !supportsCanvasKind(key, kind) || unavailableReason(key)) throw new Error('unavailable')
-        reply({ ok: true, key: key.key, keyId: key.id })
+        reply({ ok: true, key: key.key, keyId: key.id, groupId: key.group_id })
       }
     } catch { reply({ ok: false, error: '读取失败，请刷新密钥列表；确认登录、分组权限和密钥状态。' }) }
   }
