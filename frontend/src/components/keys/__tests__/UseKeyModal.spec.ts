@@ -40,6 +40,19 @@ describe('UseKeyModal', () => {
     saveAsMock.mockClear()
   })
 
+  it('retains manual client configuration without exposing RikkaHub', () => {
+    const wrapper = mount(UseKeyModal, {
+      props: { show: true, apiKey: 'sk-openai-test', baseUrl: 'https://example.com', platform: 'openai' },
+      global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }
+    })
+    expect(wrapper.text()).not.toContain('RikkaHub')
+    expect(wrapper.find('[data-testid="rikkahub-import"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(wrapper.text()).toContain('keys.useKeyModal.cliTabs.opencode')
+    expect(wrapper.findAll('pre').length).toBeGreaterThan(0)
+    wrapper.unmount()
+  })
+
   it('omits the attribution override from every standard Claude Code setup form', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {

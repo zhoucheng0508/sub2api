@@ -10,11 +10,42 @@ export interface CodexConfigFile {
   content: string
 }
 
-export function isCodexOneClickEligible(key: {
+export type QuickConnectIneligibilityReason =
+  | 'expired'
+  | 'quotaExhausted'
+  | 'inactive'
+  | 'emptyKey'
+  | 'noGroup'
+  | 'inactiveGroup'
+  | 'imageOnly'
+
+export interface QuickConnectKey {
   status: string
   key?: string | null
-}): boolean {
-  return key.status === 'active' && typeof key.key === 'string' && key.key.trim().length > 0
+  group_id?: number | null
+  group?: { platform?: string; status?: string; image_only?: boolean } | null
+  expires_at?: string | null
+  quota?: number
+  quota_used?: number
+}
+
+export function getQuickConnectIneligibilityReason(
+  key: QuickConnectKey,
+  scene: 'text' | 'image' = 'text'
+): QuickConnectIneligibilityReason | null {
+  if (key.status === 'expired' || (key.expires_at && Date.parse(key.expires_at) <= Date.now())) return 'expired'
+  if (key.status === 'quota_exhausted' || ((key.quota ?? 0) > 0 && (key.quota_used ?? 0) >= key.quota!)) return 'quotaExhausted'
+  if (key.status !== 'active') return 'inactive'
+  if (typeof key.key !== 'string' || !key.key.trim()) return 'emptyKey'
+  if (!key.group_id || !key.group?.platform) return 'noGroup'
+  // Public group summaries may omit status; honor an explicit inactive status.
+  if (key.group.status && key.group.status !== 'active') return 'inactiveGroup'
+  if (scene === 'text' && key.group.image_only) return 'imageOnly'
+  return null
+}
+
+export function isCodexOneClickEligible(key: QuickConnectKey): boolean {
+  return getQuickConnectIneligibilityReason(key) === null
 }
 
 function escapeTomlString(value: string): string {

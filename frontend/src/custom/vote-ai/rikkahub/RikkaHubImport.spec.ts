@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
 const { fetchModels, qr } = vi.hoisted(() => ({ fetchModels: vi.fn(), qr: vi.fn() }))
 vi.mock('@/api/codex', () => ({ fetchCodexModelsManifest: fetchModels }))
 vi.mock('qrcode', () => ({ default: { toDataURL: qr } }))
@@ -55,7 +54,7 @@ describe('RikkaHub import privacy and integration', () => {
     expect(wrapper.find('[data-testid="rikka-generate"]').exists()).toBe(false)
   })
 
-  it('mounts only in the OpenAI RikkaHub tab and destroys private state on close', async () => {
+  it('keeps the historical module disconnected from manual configuration', async () => {
     fetchModels.mockResolvedValue(catalog)
     const wrapper = mount(UseKeyModal, {
       props: { show: true, platform: 'openai', apiKey: 'test-key-a', baseUrl: 'https://example.com' },
@@ -63,12 +62,8 @@ describe('RikkaHub import privacy and integration', () => {
     })
     wrappers.push(wrapper)
     expect(fetchModels).not.toHaveBeenCalled()
-    await wrapper.findAll('button').find(button => button.text().trim() === 'RikkaHub')!.trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="rikkahub-import"]').exists()).toBe(true)
-    expect(wrapper.findAll('pre')).toHaveLength(0)
-    await wrapper.setProps({ show: false })
-    await nextTick()
+    expect(wrapper.text()).not.toContain('RikkaHub')
     expect(wrapper.find('[data-testid="rikkahub-import"]').exists()).toBe(false)
+    expect(wrapper.findAll('pre').length).toBeGreaterThan(0)
   })
 })

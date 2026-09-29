@@ -24,7 +24,7 @@
       <!-- Platform-specific content -->
       <template v-else>
         <!-- Description -->
-        <p v-if="activeClientTab !== 'rikkahub'" class="text-sm text-gray-600 dark:text-gray-400">
+        <p class="text-sm text-gray-600 dark:text-gray-400">
           {{ platformDescription }}
         </p>
 
@@ -50,13 +50,6 @@
             </button>
           </nav>
         </div>
-
-        <!-- CUSTOM(VOTE-AI-RIKKAHUB): independent Responses import module. -->
-        <RikkaHubImport
-          v-if="show && platform === 'openai' && activeClientTab === 'rikkahub'"
-          :api-key="apiKey"
-          :base-url="baseUrl"
-        />
 
         <!-- Codex Authentication Mode -->
         <div
@@ -271,7 +264,6 @@ import { useClipboard } from '@/composables/useClipboard'
 import { fetchCodexModelsManifest } from '@/api/codex'
 import type { GroupPlatform } from '@/types'
 // CUSTOM(VOTE-AI-RIKKAHUB)
-import RikkaHubImport from '@/custom/vote-ai/rikkahub/RikkaHubImport.vue'
 import {
   findCodexCatalogModel,
   formatCodexReasoningEffortTomlLine,
@@ -459,8 +451,6 @@ const clientTabs = computed((): TabConfig[] => {
         tabs.push({ id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon })
       }
       tabs.push({ id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon })
-      // CUSTOM(VOTE-AI-RIKKAHUB): only groups with the OpenAI Responses route.
-      tabs.push({ id: 'rikkahub', label: 'RikkaHub', icon: TerminalIcon })
       return tabs
     }
     case 'gemini':
@@ -513,7 +503,7 @@ const openaiTabs: TabConfig[] = [
   { id: 'windows', label: 'Windows', icon: WindowsIcon }
 ]
 
-const showShellTabs = computed(() => !['opencode', 'rikkahub'].includes(activeClientTab.value))
+const showShellTabs = computed(() => activeClientTab.value !== 'opencode')
 
 const showCodexAuthMode = computed(() =>
   props.platform === 'openai' &&
@@ -629,7 +619,7 @@ const platformNote = computed(() => {
   }
 })
 
-const showPlatformNote = computed(() => !['opencode', 'rikkahub'].includes(activeClientTab.value))
+const showPlatformNote = computed(() => activeClientTab.value !== 'opencode')
 
 function resetCodexModelManifest() {
   codexModelManifestController?.abort()
@@ -710,7 +700,6 @@ const comment = (value: string) => wrapToken('text-slate-500', value)
 // Syntax highlighting helpers
 // Generate file configs based on platform and active tab
 const currentFiles = computed((): FileConfig[] => {
-  if (activeClientTab.value === 'rikkahub') return []
   const baseUrl = props.baseUrl || window.location.origin
   const apiKey = props.apiKey
   const baseRoot = baseUrl.replace(/\/v1\/?$/, '').replace(/\/+$/, '')

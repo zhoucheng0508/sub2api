@@ -1,5 +1,5 @@
-// CUSTOM(VOTE-AI-RIKKAHUB): messages remain owned by the extension.
-import rikkaHubMessages from '@/custom/vote-ai/rikkahub/messages'
+import { en as quickConnectMessages } from '@/custom/vote-ai/quick-connect/messages'
+import { startPageMessages } from '@/custom/vote-ai/quick-connect/page-messages'
 import landing from './landing'
 import common from './common'
 import dashboard from './dashboard'
@@ -10,6 +10,7 @@ import misc from './misc'
 
 export default {
   rikkaHub: rikkaHubMessages.en,
+  quickConnect: { ...quickConnectMessages, startPage: startPageMessages.en },
   ...landing,
   ...common,
   ...dashboard,
@@ -18,3 +19,4 @@ export default {
   admin,
   ...misc,
 }
+import rikkaHubMessages from '@/custom/vote-ai/rikkahub/messages'
