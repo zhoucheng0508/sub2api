@@ -105,14 +105,14 @@
           </div>
           <button
             type="button"
-            class="btn btn-secondary shrink-0"
+            class="btn btn-primary shrink-0"
             data-testid="quick-connect-action"
             @click="router.push('/get-started')"
           >
             <Icon name="bolt" size="sm" />
-            {{ t('quickConnect.entry') }}
+            {{ t('quickConnect.startPage.title') }}
           </button>
-          <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
+          <button @click="showCreateModal = true" class="btn btn-secondary" data-tour="keys-create-btn">
             <Icon name="plus" size="md" class="mr-2" />
             {{ t('keys.createKey') }}
           </button>
@@ -414,23 +414,28 @@
           </template>
 
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
-              <div class="max-w-40">
+            <div class="flex flex-col items-stretch gap-3 md:flex-row md:items-center md:gap-4">
+              <div class="min-w-0 md:max-w-60">
                 <button
                   type="button"
                   @click="openQuickConnect(row)"
                   :disabled="Boolean(getRowConnectReason(row))"
-                  :aria-describedby="getRowConnectReason(row) ? `connect-reason-${row.id}` : undefined"
-                  class="flex items-center gap-1 rounded-lg bg-primary-50 px-2 py-2 text-xs font-medium text-primary-700 transition-colors hover:bg-primary-100 disabled:cursor-not-allowed disabled:text-gray-400 dark:bg-primary-900/20 dark:text-primary-300 dark:disabled:text-dark-500"
+                  :aria-describedby="getRowConnectReason(row) ? `connect-reason-${row.id}` : `connect-hint-${row.id}`"
+                  class="btn btn-primary min-h-11 w-full justify-center gap-2 px-5 text-sm font-semibold md:w-auto"
                   data-testid="quick-connect-row"
                 >
-                  <Icon name="bolt" size="sm" />
+                  <Icon name="bolt" size="md" />
                   {{ t('quickConnect.connectApp') }}
+                  <Icon name="arrowRight" size="sm" />
                 </button>
-                <p v-if="getRowConnectReason(row)" :id="`connect-reason-${row.id}`" class="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="quick-connect-reason">
+                <p v-if="getRowConnectReason(row)" :id="`connect-reason-${row.id}`" class="mt-1 whitespace-normal text-xs text-gray-500 dark:text-gray-400" data-testid="quick-connect-reason">
                   {{ t(`quickConnect.reasons.${getRowConnectReason(row)}`) }}
                 </p>
+                <p v-else :id="`connect-hint-${row.id}`" class="mt-2 whitespace-normal text-xs leading-5 text-gray-600 dark:text-gray-400">
+                  {{ t(row.group?.image_only ? 'quickConnect.imageRowHint' : 'quickConnect.rowHint') }}
+                </p>
               </div>
+              <div class="flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2 md:border-0 md:pt-0 dark:border-dark-700">
               <button
                 v-if="!row.group?.image_only"
                 type="button"
@@ -471,6 +476,7 @@
                 <Icon name="trash" size="sm" />
                 <span class="text-xs">{{ t('common.delete') }}</span>
               </button>
+              </div>
             </div>
           </template>
 

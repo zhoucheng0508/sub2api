@@ -1,5 +1,7 @@
 export const zh = {
   entry: '接入应用', connectApp: '接入应用', manualConfig: '手动配置',
+  rowHint: '用这个密钥，按引导连接你的 AI 工具。',
+  imageRowHint: '用这个密钥，进入图片工作站开始创作。',
   createdReady: '密钥已创建，接下来选择应用并完成配置。', connectNow: '立即接入', dismiss: '关闭提示',
   title: '把密钥接入你的应用',
   chooseApp: '选择应用和电脑系统', chooseAppHint: '配置会通过 CC Switch 导入所选应用。先选择你想使用的应用。',
@@ -60,6 +62,8 @@ export const zh = {
 
 export const en: typeof zh = {
   entry: 'Connect an app', connectApp: 'Connect an app', manualConfig: 'Manual configuration',
+  rowHint: 'Use this key and follow the guide to connect your AI tools.',
+  imageRowHint: 'Use this key to start creating in the image workspace.',
   createdReady: 'Your key is ready. Choose an app and complete its setup.', connectNow: 'Connect now', dismiss: 'Dismiss',
   title: 'Connect your key to an app',
   chooseApp: 'Choose your app and computer system', chooseAppHint: 'CC Switch imports the configuration into your chosen app. Start with the app you want to use.',
