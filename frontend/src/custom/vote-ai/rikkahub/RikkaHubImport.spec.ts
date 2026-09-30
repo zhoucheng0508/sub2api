@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 const { fetchModels, qr } = vi.hoisted(() => ({ fetchModels: vi.fn(), qr: vi.fn() }))
-vi.mock('@/api/codex', () => ({ fetchCodexModelsManifest: fetchModels }))
+vi.mock('@/api/codex', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/codex')>(),
+  fetchCodexModelsManifest: fetchModels
+}))
 vi.mock('qrcode', () => ({ default: { toDataURL: qr } }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/composables/useClipboard', () => ({ useClipboard: () => ({ copyToClipboard: vi.fn() }) }))
@@ -61,7 +64,9 @@ describe('RikkaHub import privacy and integration', () => {
       global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }
     })
     wrappers.push(wrapper)
+    await flushPromises()
     expect(fetchModels).not.toHaveBeenCalled()
+    expect(qr).not.toHaveBeenCalled()
     expect(wrapper.text()).not.toContain('RikkaHub')
     expect(wrapper.find('[data-testid="rikkahub-import"]').exists()).toBe(false)
     expect(wrapper.findAll('pre').length).toBeGreaterThan(0)
