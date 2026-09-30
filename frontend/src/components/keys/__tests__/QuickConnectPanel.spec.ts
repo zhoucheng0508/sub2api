@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import QuickConnectPanel from '../QuickConnectPanel.vue'
+import Select from '@/components/common/Select.vue'
 import type { ApiKey } from '@/types'
 import { buildCnOaiSetupScript } from '@/utils/cnOaiSetup'
 import { buildCodexSetupScript } from '@/utils/codexOneClick'
@@ -33,6 +34,14 @@ function mountPanel(overrides: Record<string, unknown> = {}, slots: Record<strin
   mounted.push(wrapper)
   return wrapper
 }
+async function chooseKey(wrapper: ReturnType<typeof mountPanel>, id: number) {
+  await wrapper.getComponent(Select).get('button').trigger('click')
+  await flushPromises()
+  const option = document.querySelector(`[data-testid="connect-key-option-${id}"]`)
+  expect(option).not.toBeNull()
+  await new DOMWrapper(option!).trigger('click')
+  await flushPromises()
+}
 
 beforeEach(() => {
   openSpy.mockReset()
@@ -50,6 +59,19 @@ afterEach(() => {
 })
 
 describe('QuickConnectPanel guided connection', () => {
+  it('keeps full keys out of the custom menu and rejects disabled options', async () => {
+    const manualKey = { ...otherKey, group: { ...otherKey.group!, platform: 'anthropic' } } as ApiKey
+    const wrapper = mountPanel({ availableKeys: [normalKey, manualKey] })
+    await wrapper.getComponent(Select).get('button').trigger('click')
+    await flushPromises()
+    expect(document.body.innerHTML).not.toContain(normalKey.key)
+    expect(document.body.innerHTML).not.toContain(manualKey.key)
+    const option = document.querySelector(`[data-testid="connect-key-option-${manualKey.id}"]`)!
+    expect(option.closest('[role="option"]')?.getAttribute('aria-disabled')).toBe('true')
+    await new DOMWrapper(option).trigger('click')
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe(normalKey.id)
+    expect(openSpy).not.toHaveBeenCalled()
+  })
   it('shows inline creation for no usable keys and keeps import disabled', async () => {
     const wrapper = mountPanel({ availableKeys: [], apiKey: '', initialKeyId: null }, { 'create-key': '<div data-testid="inline-form">Create here</div>' })
     await flushPromises()
@@ -72,7 +94,7 @@ describe('QuickConnectPanel guided connection', () => {
     expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
     await wrapper.setProps({ availableKeys: [normalKey, otherKey], initialKeyId: otherKey.id, apiKey: otherKey.key })
     expect(wrapper.find('[data-testid="inline-form"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="ccswitch-key-select"]').element.value).toBe(String(otherKey.id))
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe(otherKey.id)
     expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeUndefined()
     expect(openSpy).not.toHaveBeenCalled()
   })
@@ -93,7 +115,9 @@ describe('QuickConnectPanel guided connection', () => {
     expect(wrapper.get('[data-testid="ccswitch-app-selector"]').findAll('button')).toHaveLength(3)
     expect(wrapper.get('[data-testid="connect-more-apps"]').attributes('open')).toBeUndefined()
     expect(wrapper.text()).not.toContain(normalKey.key)
-    expect(wrapper.get('[data-testid="ccswitch-key-select"]').text()).toContain('Normal group')
+    expect(wrapper.findComponent(Select).exists()).toBe(false)
+    expect(wrapper.get('[data-testid="connect-selected-key"]').text()).toContain('Normal group')
+    expect(wrapper.find('[data-testid="connect-key-summary"]').exists()).toBe(false)
     expect(openSpy).not.toHaveBeenCalled()
     expect(startDownloadSpy).not.toHaveBeenCalled()
     await wrapper.get('[data-testid="connect-toggle-install"]').trigger('click')
@@ -189,7 +213,7 @@ describe('QuickConnectPanel guided connection', () => {
     expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-testid="connect-import-status"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('quickConnect.selectedUnavailable')
-    await wrapper.get('[data-testid="ccswitch-key-select"]').setValue(otherKey.id)
+    await chooseKey(wrapper, otherKey.id)
     await wrapper.get('[data-testid="guide-open-ccswitch"]').trigger('click')
     const params = new URLSearchParams(openSpy.mock.calls[1][0].split('?')[1])
     expect(params.get('apiKey')).toBe(otherKey.key)
@@ -218,7 +242,7 @@ describe('QuickConnectPanel guided connection', () => {
     const wrapper = mountPanel({ availableKeys: [], initialKeyId: cnKey.id, loading: true })
     expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
     await wrapper.setProps({ availableKeys: [normalKey, cnKey], loading: false })
-    expect((wrapper.get('[data-testid="ccswitch-key-select"]').element as HTMLSelectElement).value).toBe(String(cnKey.id))
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe(cnKey.id)
     expect(wrapper.find('[data-testid="cn-oai-setup"]').exists()).toBe(true)
   })
 
@@ -226,7 +250,7 @@ describe('QuickConnectPanel guided connection', () => {
     const wrapper = mountPanel({ availableKeys: [normalKey, otherKey] })
     await wrapper.get('[data-testid="connect-model"]').setValue('custom-model')
     await wrapper.get('[data-testid="guide-open-ccswitch"]').trigger('click')
-    await wrapper.get('[data-testid="ccswitch-key-select"]').setValue(otherKey.id)
+    await chooseKey(wrapper, otherKey.id)
     expect((wrapper.get('[data-testid="connect-model"]').element as HTMLInputElement).value).toBe('')
     expect(wrapper.find('[data-testid="connect-import-status"]').exists()).toBe(false)
     await wrapper.get('[data-testid="guide-open-ccswitch"]').trigger('click')
@@ -316,7 +340,7 @@ describe('QuickConnectPanel guided connection', () => {
   it('promotes dedicated setup immediately when a CN OAI key is selected', async () => {
     const wrapper = mountPanel({ availableKeys: [normalKey, cnKey] })
     await wrapper.get('[data-testid="guide-open-ccswitch"]').trigger('click')
-    await wrapper.get('[data-testid="ccswitch-key-select"]').setValue(cnKey.id)
+    await chooseKey(wrapper, cnKey.id)
     expect(wrapper.get('[data-testid="download-cn-oai-script"]').element.closest('details')).toBeNull()
     expect(wrapper.find('[data-testid="guide-open-ccswitch"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="connect-import-status"]').exists()).toBe(false)

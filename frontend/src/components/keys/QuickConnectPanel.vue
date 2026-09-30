@@ -61,7 +61,7 @@
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100 text-sm font-semibold text-primary-700 dark:bg-primary-900/40 dark:text-primary-300" aria-hidden="true">2</span>
         <div class="min-w-0 flex-1">
           <h2 id="quick-connect-key-title" class="text-base font-semibold text-gray-900 dark:text-white">{{ t(showCreateKey ? 'quickConnect.startPage.createInPlace' : 'quickConnect.chooseKey') }}</h2>
-          <p v-if="!showCreateKey" class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.chooseKeyHint') }}</p>
+          <p v-if="!showCreateKey" class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.chooseKeyHint', { app: appLabel }) }}</p>
         </div>
       </div>
       <p v-if="loading" class="mt-5 text-sm text-gray-600 dark:text-gray-300" role="status" data-testid="connect-keys-loading">{{ t('quickConnect.loading') }}</p>
@@ -75,16 +75,37 @@
       </div>
       <template v-else-if="selectableKeys.length || currentKey">
         <p v-if="selectedUnavailable" class="mt-4 text-sm text-amber-700 dark:text-amber-300" role="status">{{ t('quickConnect.selectedUnavailable') }}</p>
-        <label v-if="selectableKeys.length" class="mt-5 block">
-          <span class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('quickConnect.key') }}</span>
-          <select v-model.number="selectedKeyId" class="input w-full min-w-0 text-sm" data-testid="ccswitch-key-select" :aria-label="t('quickConnect.selectKey')">
-            <option v-if="!currentKey" :value="null" disabled>{{ t('quickConnect.selectKey') }}</option>
-            <option v-for="key in selectableKeys" :key="key.id" :value="key.id" :disabled="!isKeyCompatible(key, selectedApp)">{{ key.name || `#${key.id}` }} · {{ key.group?.name }} · {{ maskApiKey(key.key) }}{{ isKeyCompatible(key, selectedApp) ? '' : ` · ${t('quickConnect.incompatibleOption')}` }}</option>
-          </select>
-        </label>
-        <div v-if="currentKey" class="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-gray-600 dark:text-gray-300" data-testid="connect-key-summary">
-          <span class="min-w-0 break-words">{{ currentKey.name }} · {{ currentKey.group?.name || effectivePlatform }}</span>
-          <code class="rounded-md bg-gray-100 px-2 py-1 text-xs dark:bg-dark-700">{{ maskApiKey(currentKey.key) }}</code>
+        <div class="mt-5 space-y-2">
+          <div class="flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
+            <span>{{ t(singleSelectedKey ? 'quickConnect.selectedKeyLabel' : 'quickConnect.selectKey') }}</span>
+            <span v-if="selectableKeys.length">{{ t('quickConnect.keyCount', { count: selectableKeys.length }) }}</span>
+          </div>
+          <div v-if="singleSelectedKey && currentKey" class="flex min-w-0 items-center gap-3 rounded-xl border border-primary-200 bg-primary-50/50 p-4 dark:border-primary-800 dark:bg-primary-950/20" data-testid="connect-selected-key">
+            <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300"><Icon name="key" size="md" /></span>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ currentKey.name || `#${currentKey.id}` }}</p>
+              <p class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{{ t('quickConnect.keyGroup') }} · {{ currentKey.group?.name || effectivePlatform }}</p>
+            </div>
+            <span class="shrink-0 rounded-md bg-white px-2 py-1 font-mono text-xs text-gray-600 dark:bg-dark-800 dark:text-gray-300">{{ t('quickConnect.keySuffix', { suffix: keySuffix(currentKey.key) }) }}</span>
+            <Icon name="checkCircle" size="sm" class="shrink-0 text-primary-600 dark:text-primary-400" />
+          </div>
+          <Select v-else :model-value="selectedKeyId" :options="keyOptions" :aria-label="t('quickConnect.selectKey')" :placeholder="t('quickConnect.selectKey')" :search-placeholder="t('quickConnect.searchKeys')" :empty-text="t('quickConnect.noMatchingKey')" class="connect-key-picker" data-testid="ccswitch-key-select" @update:model-value="chooseExistingKey">
+            <template #selected="{ option }">
+              <span v-if="option" class="flex min-w-0 items-center gap-3 py-1">
+                <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300"><Icon name="key" size="md" /></span>
+                <span class="min-w-0 flex-1"><span class="block truncate text-sm font-semibold text-gray-900 dark:text-white">{{ option.name }}</span><span class="mt-1 block truncate text-xs text-gray-500 dark:text-gray-400">{{ t('quickConnect.keyGroup') }} · {{ option.group }}</span></span>
+                <span class="shrink-0 rounded-md bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-dark-900 dark:text-gray-300">{{ t('quickConnect.keySuffix', { suffix: option.suffix }) }}</span>
+              </span>
+              <span v-else class="text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.selectKey') }}</span>
+            </template>
+            <template #option="{ option, selected }">
+              <span class="flex w-full min-w-0 items-center gap-3 py-1" :data-testid="`connect-key-option-${option.value}`">
+                <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{{ option.name }}</span><span class="mt-1 block truncate text-xs text-gray-500 dark:text-gray-400">{{ t('quickConnect.keyGroup') }} · {{ option.group }}</span><span v-if="option.disabled" class="mt-1 block whitespace-normal text-xs text-amber-700 dark:text-amber-300">{{ t('quickConnect.incompatibleOption') }}</span></span>
+                <span class="shrink-0 font-mono text-xs text-gray-500 dark:text-gray-400">{{ t('quickConnect.keySuffix', { suffix: option.suffix }) }}</span>
+                <Icon v-if="selected" name="check" size="sm" class="shrink-0 text-primary-600 dark:text-primary-400" />
+              </span>
+            </template>
+          </Select>
         </div>
         <p v-if="currentKey && !currentKeyCompatible" class="mt-3 text-sm text-amber-700 dark:text-amber-300" role="status" data-testid="connect-incompatible-key">{{ t('quickConnect.incompatibleKey', { app: appLabel }) }}</p>
       </template>
@@ -92,9 +113,9 @@
         <p class="font-medium text-gray-900 dark:text-white">{{ t('quickConnect.noKeys') }}</p>
         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('quickConnect.noKeysHint') }}</p>
       </div>
-      <div v-if="!showCreateKey" class="mt-4 flex flex-wrap gap-4">
-        <button v-if="$slots['create-key']" type="button" class="btn btn-secondary" data-testid="connect-create-key" @click="createKeyOpen = true">{{ t('quickConnect.startPage.createAnother') }}</button>
-        <button type="button" class="text-sm font-medium text-gray-500 hover:underline dark:text-gray-400" data-testid="connect-manage-keys" @click="emit('manage-keys')">{{ t('quickConnect.startPage.manageLater') }}</button>
+      <div v-if="!showCreateKey" class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4 dark:border-dark-700">
+        <button v-if="$slots['create-key']" type="button" class="btn btn-secondary" data-testid="connect-create-key" @click="createKeyOpen = true"><Icon name="plus" size="sm" />{{ t('quickConnect.createKeyShort') }}</button>
+        <button type="button" class="inline-flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-primary-600 dark:text-gray-400 dark:hover:text-primary-300" data-testid="connect-manage-keys" @click="emit('manage-keys')">{{ t('quickConnect.startPage.manageLater') }}<Icon name="arrowRight" size="sm" /></button>
       </div>
     </section>
 
@@ -201,7 +222,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import CcSwitchAppIcon from './CcSwitchAppIcon.vue'
 import UseKeyModal from './UseKeyModal.vue'
-import { maskApiKey } from '@/utils/maskApiKey'
+import Select from '@/components/common/Select.vue'
 import { buildCnOaiSetupScript, CN_OAI_SETUP_FILENAME, isCnOaiGroup } from '@/utils/cnOaiSetup'
 import { CC_SWITCH_APP_CATALOG, buildCcSwitchImportDeeplink, CC_SWITCH_USAGE_SCRIPT, resolveCcSwitchImportConfig, type CcSwitchAppType } from '@/utils/ccswitchImport'
 import type { ApiKey, GroupPlatform } from '@/types'
@@ -282,6 +303,20 @@ const fallbackKey = computed<QuickConnectKey | null>(() => props.availableKeys =
   ? { id: props.initialKeyId ?? -1, name: props.keyName, key: props.apiKey, status: 'active', group_id: -1, group: { platform: props.platform } as ApiKey['group'] }
   : null)
 const currentKey = computed<QuickConnectKey | null>(() => selectableKeys.value.find((key) => key.id === selectedKeyId.value) || fallbackKey.value)
+const singleSelectedKey = computed(() => !!currentKey.value && (props.availableKeys === undefined || (selectableKeys.value.length === 1 && selectableKeys.value[0].id === currentKey.value.id)))
+function keySuffix(key: string): string { return key.length > 4 ? key.slice(-4) : '••••' }
+const keyOptions = computed(() => selectableKeys.value.map(key => ({
+  value: key.id,
+  name: key.name || `#${key.id}`,
+  group: key.group?.name || key.group?.platform || '',
+  suffix: keySuffix(key.key),
+  label: `${key.name || `#${key.id}`} · ${key.group?.name || ''} · ${keySuffix(key.key)}`,
+  disabled: !isKeyCompatible(key, selectedApp.value),
+})))
+function chooseExistingKey(value: string | number | boolean | null): void {
+  if (typeof value !== 'number' || props.creationBusy) return
+  if (keyOptions.value.some(option => option.value === value && !option.disabled)) selectedKeyId.value = value
+}
 const selectedUnavailable = computed(() => !currentKey.value && selectedKeyId.value !== null)
 const effectivePlatform = computed(() => currentKey.value?.group?.platform || null)
 const selectedImportConfig = computed(() => effectivePlatform.value ? resolveCcSwitchImportConfig(effectivePlatform.value, 'claude', props.baseUrl, selectedApp.value) : null)
@@ -491,3 +526,12 @@ async function copyScript(): Promise<void> {
 }
 onUnmounted(() => { clearProtocolCheck(); cancelCcSwitchDownload(); cancelCCSwitchVersionLoad() })
 </script>
+
+<style scoped>
+.connect-key-picker :deep(.select-trigger) {
+  min-height: 72px;
+  padding: 12px;
+  border-radius: 12px;
+}
+.connect-key-picker :deep(.select-value) { min-width: 0; }
+</style>
