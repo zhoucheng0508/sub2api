@@ -150,6 +150,24 @@ describe('CreateConnectKey', () => {
     expect(create).toHaveBeenCalledTimes(1)
   })
 
+  it('does not advertise automatic Codex setup for Claude Code-only groups', async () => {
+    getAvailable.mockResolvedValue([
+      group({ claude_code_only: true, allow_messages_dispatch: true }),
+      group({ id: 11, name: '国模 OAI', claude_code_only: true, allow_messages_dispatch: true }),
+    ])
+    const wrapper = mountCreator()
+    await flushPromises()
+    for (const id of [10, 11]) {
+      expect(wrapper.get(`[data-testid="create-key-group-${id}"]`).text()).toContain('manual setup guide for Codex')
+      expect(wrapper.get(`[data-testid="create-key-group-${id}"]`).text()).not.toContain(en.cnOai)
+    }
+    await wrapper.setProps({ app: 'claude' })
+    for (const id of [10, 11]) {
+      expect(wrapper.get(`[data-testid="create-key-group-${id}"]`).text()).toContain('Automatic configuration for Claude Code')
+    }
+    expect(create).not.toHaveBeenCalled()
+  })
+
   it('uses an optional trimmed name and the active subscription returned by the availability API', async () => {
     getAvailable.mockResolvedValue([group({ subscription_type: 'subscription' })])
     const wrapper = mountCreator()

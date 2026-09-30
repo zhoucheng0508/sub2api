@@ -546,6 +546,18 @@ describe('user KeysView column settings', () => {
   })
 
   it.each([
+    ['国模 OAI', 'openai', true], ['Ordinary', 'openai', false], ['国模 OAI', 'anthropic', false]
+  ])('passes the manual CN OAI catalog flag only for the named OpenAI group (%s / %s)', async (name, platform, catalog) => {
+    const group = { id: 1, name, platform, status: 'active', claude_code_only: true } as ApiKey['group']
+    const key = { ...createApiKey(), group_id: 1, group }
+    listKeys.mockResolvedValueOnce({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = await mountView()
+    await wrapper.get('[data-testid="manual-config-row"]').trigger('click')
+    expect(wrapper.findComponent({ name: 'UseKeyModal' }).props()).toMatchObject({ cnOaiCatalog: catalog, claudeCodeOnly: true })
+    wrapper.unmount()
+  })
+
+  it.each([
     [{ status: 'inactive' }, 'inactive'],
     [{ key: ' ' }, 'emptyKey'],
     [{ group_id: null }, 'noGroup'],

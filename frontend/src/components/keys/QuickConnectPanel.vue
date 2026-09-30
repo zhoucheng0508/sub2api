@@ -212,7 +212,7 @@
         <p v-if="setupError && !isCnOaiSetup" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ setupError }}</p>
       </div>
     </details>
-    <UseKeyModal v-if="currentKey && showManualConfig" :show="showManualConfig" :api-key="currentKey.key" :base-url="baseUrl" :platform="effectivePlatform" :allow-messages-dispatch="currentKey.group?.allow_messages_dispatch" @close="showManualConfig = false" />
+    <UseKeyModal v-if="currentKey && showManualConfig" :show="showManualConfig" :api-key="currentKey.key" :base-url="baseUrl" :platform="effectivePlatform" :claude-code-only="currentKey.group?.claude_code_only" :cn-oai-catalog="isCnOaiGroup(currentKey.group)" :allow-messages-dispatch="currentKey.group?.allow_messages_dispatch" @close="showManualConfig = false" />
   </div>
 </template>
 
@@ -389,7 +389,7 @@ watch(currentKey, () => {
   selectedModel.value = ''
   cnOaiModel.value = ''
   if (!effectivePlatform.value || appChosenByUser.value) return
-  const preferred = props.defaultApp || resolveCcSwitchImportConfig(effectivePlatform.value, 'claude', props.baseUrl).requestedApp
+  const preferred = currentKey.value?.group?.claude_code_only ? 'claude' : props.defaultApp || resolveCcSwitchImportConfig(effectivePlatform.value, 'claude', props.baseUrl).requestedApp
   if (preferred && ccSwitchApps.value.find((app) => app.id === preferred)?.importable) selectedApp.value = preferred
 }, { immediate: true })
 watch(selectedApp, () => { resetImport(); selectedModel.value = ''; cnOaiModel.value = '' })

@@ -117,7 +117,7 @@ const defaultName = computed(() => props.scene === 'image' ? t('quickCreateKey.d
 // Other groups stay selectable for their existing manual guides; never switch
 // billing groups to match an app.
 function compatibilityLabel(group: Group): string {
-  if (props.app === 'codex' && isCnOaiGroup(group)) return t('quickCreateKey.cnOai')
+  if (props.app === 'codex' && isCnOaiGroup(group) && supportsAutomaticConfig(group, props.app)) return t('quickCreateKey.cnOai')
   const direct = props.app ? supportsAutomaticConfig(group, props.app) : false
   return t(direct ? 'quickCreateKey.direct' : 'quickCreateKey.manual', { app: appLabel.value })
 }

@@ -103,6 +103,7 @@ func contentModerationRequestVerdictCacheKey(
 		fmt.Sprintf("target=%s", targetHash),
 		fmt.Sprintf("conversation=%s", conversationDigest),
 		fmt.Sprintf("epoch=%d", input.ModerationEpoch),
+		fmt.Sprintf("risk_control_log_only=%t", input.riskControlLogOnly),
 		fmt.Sprintf("session_source=%s", normalizeContentModerationSessionSource(input.SessionSource, input.SessionID)),
 		fmt.Sprintf("group=%d", groupID),
 		fmt.Sprintf("endpoint=%s", strings.TrimSpace(input.Endpoint)),

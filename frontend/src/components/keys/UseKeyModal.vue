@@ -276,6 +276,8 @@ interface Props {
   apiKey: string
   baseUrl: string
   platform: GroupPlatform | null
+  claudeCodeOnly?: boolean
+  cnOaiCatalog?: boolean
   allowMessagesDispatch?: boolean
 }
 
@@ -314,10 +316,11 @@ const codexModelManifestModelCount = ref(0)
 let codexModelManifestController: AbortController | null = null
 let codexModelManifestRequestID = 0
 
+const useCnOaiCatalog = computed(() => props.platform === 'openai' && props.cnOaiCatalog === true)
 const showCodexModelCatalog = computed(() =>
   props.show &&
-  (activeClientTab.value === 'codex' ||
-    (props.platform === 'openai' && activeClientTab.value === 'codex-ws'))
+  ((activeClientTab.value === 'codex' && (props.platform !== 'openai' || useCnOaiCatalog.value)) ||
+    (activeClientTab.value === 'codex-ws' && useCnOaiCatalog.value))
 )
 
 const codexModelCatalogPath = computed(() => {
@@ -337,6 +340,7 @@ const codexManifestContext = computed(() => {
 
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
+  if (props.claudeCodeOnly) return 'claude'
   switch (props.platform) {
     case 'openai':
       return 'codex'
@@ -351,7 +355,7 @@ const defaultClientTab = computed(() => {
   }
 })
 
-watch(() => props.platform, () => {
+watch(() => [props.platform, props.claudeCodeOnly], () => {
   activeTab.value = 'unix'
   activeClientTab.value = defaultClientTab.value
   codexAuthMode.value = 'legacy'
@@ -441,6 +445,9 @@ const SparkleIcon = {
 
 const clientTabs = computed((): TabConfig[] => {
   if (!props.platform) return []
+  if (props.claudeCodeOnly) {
+    return [{ id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon }]
+  }
   switch (props.platform) {
     case 'openai': {
       const tabs: TabConfig[] = [
@@ -642,6 +649,9 @@ async function loadCodexModelManifest() {
   try {
     const result = await fetchCodexModelsManifest(props.baseUrl, props.apiKey, controller.signal)
     if (requestID !== codexModelManifestRequestID) return
+    if (useCnOaiCatalog.value && parseCodexCatalogModels(result.content).length === 0) {
+      throw new Error('The CN OAI catalog has no usable models')
+    }
     codexModelManifestContent.value = result.content
     codexModelManifestModelCount.value = result.modelCount
     codexModelManifestState.value = 'ready'
@@ -700,6 +710,9 @@ const comment = (value: string) => wrapToken('text-slate-500', value)
 // Syntax highlighting helpers
 // Generate file configs based on platform and active tab
 const currentFiles = computed((): FileConfig[] => {
+  // CN OAI model IDs come from this key's catalog; never guess an OpenAI model.
+  if (useCnOaiCatalog.value && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws') &&
+    (codexModelManifestState.value !== 'ready' || codexCatalogModelSlugs.value.length === 0)) return []
   const baseUrl = props.baseUrl || window.location.origin
   const apiKey = props.apiKey
   const baseRoot = baseUrl.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
@@ -948,16 +961,16 @@ ${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model
 function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-  const model = selectCodexCatalogModel('gpt-5.6')
+  const model = selectCodexCatalogModel(useCnOaiCatalog.value ? '' : 'gpt-5.6')
   const reasoningEffortLine = codexReasoningEffortTomlLine(model)
+  const catalogLine = useCnOaiCatalog.value ? `model_catalog_json = "${CODEX_MODEL_CATALOG_CONFIG_PATH}"\n` : ''
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
 model = "${model}"
 review_model = "${model}"
 ${reasoningEffortLine}disable_response_storage = true
-model_catalog_json = "${CODEX_MODEL_CATALOG_CONFIG_PATH}"
-network_access = "enabled"
+${catalogLine}network_access = "enabled"
 windows_wsl_setup_acknowledged = true
 
 [model_providers.OpenAI]
@@ -1299,16 +1312,16 @@ supports_websockets = false`
 function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-  const model = selectCodexCatalogModel('gpt-5.6')
+  const model = selectCodexCatalogModel(useCnOaiCatalog.value ? '' : 'gpt-5.6')
   const reasoningEffortLine = codexReasoningEffortTomlLine(model)
+  const catalogLine = useCnOaiCatalog.value ? `model_catalog_json = "${CODEX_MODEL_CATALOG_CONFIG_PATH}"\n` : ''
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
 model = "${model}"
 review_model = "${model}"
 ${reasoningEffortLine}disable_response_storage = true
-model_catalog_json = "${CODEX_MODEL_CATALOG_CONFIG_PATH}"
-network_access = "enabled"
+${catalogLine}network_access = "enabled"
 windows_wsl_setup_acknowledged = true
 
 [model_providers.OpenAI]
@@ -1909,6 +1922,19 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         limit: { context: 1000000, output: 128000 },
         modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
         options: { thinking: { type: 'adaptive' }, effort: 'medium' },
+        variants: {
+          low: { effort: 'low' },
+          medium: { effort: 'medium' },
+          high: { effort: 'high' },
+          xhigh: { effort: 'xhigh' },
+          max: { effort: 'max' }
+        }
+      },
+      'claude-sonnet-5-5': {
+        name: 'Claude Sonnet 5.5',
+        limit: { context: 1000000, output: 128000 },
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+        options: { thinking: { type: 'adaptive' }, effort: 'high' },
         variants: {
           low: { effort: 'low' },
           medium: { effort: 'medium' },

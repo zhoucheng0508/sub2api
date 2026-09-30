@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import QuickConnectPanel from '../QuickConnectPanel.vue'
+import UseKeyModal from '../UseKeyModal.vue'
 import Select from '@/components/common/Select.vue'
 import type { ApiKey } from '@/types'
 import { buildCnOaiSetupScript } from '@/utils/cnOaiSetup'
@@ -161,6 +162,59 @@ describe('QuickConnectPanel guided connection', () => {
     expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="guide-open-ccswitch"]').trigger('click')
     expect(new URLSearchParams(openSpy.mock.calls[0][0].split('?')[1]).get('app')).toBe('claude')
+  })
+
+  it.each([
+    ['anthropic', false, true], ['antigravity', false, true],
+    ['openai', true, true], ['openai', false, false]
+  ])('defaults a Claude Code-only %s group to Claude while retaining dispatch eligibility', async (platform, allowMessagesDispatch, eligible) => {
+    const key = { ...normalKey, group: { ...normalKey.group, platform, claude_code_only: true, allow_messages_dispatch: allowMessagesDispatch } } as ApiKey
+    const wrapper = mountPanel({ availableKeys: [key], defaultApp: 'codex' })
+    expect(wrapper.get('[data-testid="connect-app-claude"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled') === undefined).toBe(eligible)
+    await wrapper.get('[data-testid="connect-manual-config"]').trigger('click')
+    expect(wrapper.getComponent(UseKeyModal).props('claudeCodeOnly')).toBe(true)
+  })
+
+  it.each([
+    ['openai', 'codex'], ['openai', 'opencode'], ['openai', 'openclaw'],
+    ['openai', 'hermes'], ['antigravity', 'gemini']
+  ])('blocks automatic %s / %s configuration for Claude Code-only keys', async (platform, app) => {
+    const key = { ...normalKey, group: { ...normalKey.group, platform, claude_code_only: true, allow_messages_dispatch: true } } as ApiKey
+    const wrapper = mountPanel({ availableKeys: [key] })
+    await wrapper.get(`[data-testid="connect-app-${app}"]`).trigger('click')
+    expect(wrapper.get(`[data-testid="connect-app-${app}"]`).attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="connect-incompatible-key"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="guide-open-ccswitch"]').trigger('click')
+    if (app === 'codex') {
+      expect(wrapper.find('[data-testid="download-codex-script"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="copy-codex-script"]').exists()).toBe(false)
+    }
+    expect(openSpy).not.toHaveBeenCalled()
+  })
+
+  it('preserves an explicitly chosen app when a Claude Code-only key arrives', async () => {
+    const wrapper = mountPanel()
+    await wrapper.get('[data-testid="connect-app-codex"]').trigger('click')
+    const restricted = { ...normalKey, group: { ...normalKey.group, claude_code_only: true } } as ApiKey
+    await wrapper.setProps({ availableKeys: [restricted] })
+    expect(wrapper.get('[data-testid="connect-app-codex"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="connect-incompatible-key"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="guide-open-ccswitch"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="connect-manual-config"]').trigger('click')
+    expect(wrapper.getComponent(UseKeyModal).props('claudeCodeOnly')).toBe(true)
+  })
+
+  it('blocks the dedicated CN OAI script for a Claude Code-only key', async () => {
+    const key = { ...cnKey, group: { ...cnKey.group, claude_code_only: true } } as ApiKey
+    const wrapper = mountPanel({ availableKeys: [key], initialKeyId: key.id, apiKey: key.key })
+    await wrapper.get('[data-testid="connect-app-codex"]').trigger('click')
+    expect(wrapper.get('[data-testid="download-cn-oai-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="connect-incompatible-key"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="connect-manual-config"]').trigger('click')
+    expect(wrapper.getComponent(UseKeyModal).props('claudeCodeOnly')).toBe(true)
+    expect(openSpy).not.toHaveBeenCalled()
   })
 
   it('honors a supported default client and resolves its existing model and endpoint', async () => {
@@ -347,6 +401,15 @@ describe('QuickConnectPanel guided connection', () => {
     expect(wrapper.get('[data-testid="connect-verify"]').text()).toContain('quickConnect.cnOaiVerify')
     await wrapper.get('[data-testid="connect-toggle-install"]').trigger('click')
     expect(wrapper.find('[data-testid="download-cn-oai-script"]').exists()).toBe(true)
+  })
+
+  it.each([
+    ['国模 OAI', 'openai', true], ['Ordinary', 'openai', false], ['国模 OAI', 'anthropic', false]
+  ])('enables the manual CN OAI catalog only for the named OpenAI group (%s / %s)', async (name, platform, catalog) => {
+    const key = { ...normalKey, group: { ...normalKey.group, name, platform } } as ApiKey
+    const wrapper = mountPanel({ availableKeys: [key] })
+    await wrapper.get('[data-testid="connect-manual-config"]').trigger('click')
+    expect(wrapper.getComponent(UseKeyModal).props('cnOaiCatalog')).toBe(catalog)
   })
 
   it('preserves generated Codex script content', async () => {

@@ -3,7 +3,8 @@ import type { CcSwitchAppType } from '@/utils/ccswitchImport'
 
 // Automatic import support of the existing generators, not upstream capability.
 // Provider-specific/routed combinations retain manual configuration.
-export function supportsAutomaticConfig(group: Pick<Group, 'platform' | 'allow_messages_dispatch'> | undefined, app: CcSwitchAppType): boolean {
+export function supportsAutomaticConfig(group: Pick<Group, 'platform' | 'allow_messages_dispatch' | 'claude_code_only'> | undefined, app: CcSwitchAppType): boolean {
+  if (group?.claude_code_only && app !== 'claude') return false
   const platform = group?.platform
   switch (app) {
     case 'codex': return platform === 'openai'
