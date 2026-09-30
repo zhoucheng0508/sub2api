@@ -83,6 +83,9 @@ function Read-CodexToml($content, $catalogContent = $null) {
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    # Codex emits UTF-8 JSON; Windows PowerShell otherwise uses the system code page.
+    $info.StandardOutputEncoding = $utf8
+    $info.StandardErrorEncoding = $utf8
     $info.EnvironmentVariables['CODEX_HOME'] = $validationDir
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $info

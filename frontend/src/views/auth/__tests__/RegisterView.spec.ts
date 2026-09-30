@@ -8,6 +8,8 @@ const {
   showErrorMock,
   pushMock,
   verifyActionMock,
+  routeState,
+  authStoreState,
   appStoreMock
 } = vi.hoisted(() => ({
   getPublicSettingsMock: vi.fn(),
@@ -15,6 +17,8 @@ const {
   showErrorMock: vi.fn(),
   pushMock: vi.fn(),
   verifyActionMock: vi.fn(),
+  routeState: { query: {} as Record<string, unknown> },
+  authStoreState: { isAdmin: false },
   appStoreMock: {
     cachedPublicSettings: null as { promo_code_enabled?: boolean } | null,
     showError: (...args: unknown[]) => showErrorMock(...args),
@@ -42,7 +46,7 @@ const publicSettings = {
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
-  useRoute: () => ({ query: {} })
+  useRoute: () => routeState
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -61,7 +65,10 @@ vi.mock('vue-i18n', () => ({
 }))
 
 vi.mock('@/stores', () => ({
-  useAuthStore: () => ({ register: (...args: unknown[]) => registerMock(...args) }),
+  useAuthStore: () => ({
+    get isAdmin() { return authStoreState.isAdmin },
+    register: (...args: unknown[]) => registerMock(...args)
+  }),
   useAppStore: () => appStoreMock
 }))
 
@@ -102,6 +109,8 @@ describe('RegisterView', () => {
     showErrorMock.mockReset()
     pushMock.mockReset()
     verifyActionMock.mockReset()
+    routeState.query = {}
+    authStoreState.isAdmin = false
     appStoreMock.cachedPublicSettings = null
     sessionStorage.removeItem('register_data')
     verifyActionMock.mockResolvedValue({ token: 'ticket', randstr: 'randstr' })
@@ -176,7 +185,46 @@ describe('RegisterView', () => {
       promo_code: undefined,
       invitation_code: undefined
     })
-    expect(pushMock).toHaveBeenCalledWith('/dashboard')
+    expect(pushMock).toHaveBeenCalledWith('/get-started')
+  })
+
+  it.each([
+    ['/purchase?plan=2', false, '/purchase?plan=2'],
+    ['/profile/security', false, '/profile/security'],
+    ['//example.com', false, '/get-started'],
+    [undefined, true, '/admin/dashboard'],
+  ])('preserves a safe registration destination %j', async (redirect, isAdmin, destination) => {
+    routeState.query = { redirect }
+    authStoreState.isAdmin = isAdmin
+    getPublicSettingsMock.mockResolvedValueOnce({ ...publicSettings, turnstile_enabled: false })
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#email').setValue('user@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(pushMock).toHaveBeenCalledWith(destination)
+    wrapper.unmount()
+  })
+
+  it('carries a requested destination through email verification', async () => {
+    routeState.query = { redirect: '/get-started?scene=image' }
+    getPublicSettingsMock.mockResolvedValueOnce({ ...publicSettings, turnstile_enabled: false, email_verify_enabled: true })
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#email').setValue('user@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(JSON.parse(sessionStorage.getItem('register_data')!)).toEqual({
+      email: 'user@example.com', password: 'secret-123', pending_redirect: '/get-started?scene=image',
+    })
+    expect(pushMock).toHaveBeenCalledWith('/email-verify')
+    wrapper.unmount()
   })
 
   it('requires matching confirmation before storing only the registration fields for email verification', async () => {

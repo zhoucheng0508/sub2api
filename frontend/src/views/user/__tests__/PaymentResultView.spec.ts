@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+
+enableAutoUnmount(afterEach)
 
 const routeState = vi.hoisted(() => ({
   query: {} as Record<string, unknown>,
@@ -11,6 +13,13 @@ const verifyOrder = vi.hoisted(() => vi.fn())
 const verifyOrderPublic = vi.hoisted(() => vi.fn())
 const resolveOrderPublicByResumeToken = vi.hoisted(() => vi.fn())
 const refreshUser = vi.hoisted(() => vi.fn())
+const fetchActiveSubscriptions = vi.hoisted(() => vi.fn())
+const authState = vi.hoisted(() => ({
+  isAuthenticated: true,
+  token: 'session-a' as string | null,
+  user: { id: 9, balance: 88 } as { id: number; balance: number } | null,
+  setState: (_updates: { token?: string | null; isAuthenticated?: boolean; user?: { id: number; balance: number } | null }) => {},
+}))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -37,10 +46,20 @@ vi.mock('@/stores/payment', () => ({
   }),
 }))
 
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({
+vi.mock('@/stores/auth', async () => {
+  const { reactive } = await import('vue')
+  const state = reactive(authState)
+  authState.setState = (updates) => { Object.assign(state, updates) }
+  return { useAuthStore: () => ({
     refreshUser,
-  }),
+    get isAuthenticated() { return state.isAuthenticated },
+    get token() { return state.token },
+    get user() { return state.user },
+  }) }
+})
+
+vi.mock('@/stores/subscriptions', () => ({
+  useSubscriptionStore: () => ({ fetchActiveSubscriptions }),
 }))
 
 vi.mock('@/api/payment', () => ({
@@ -90,6 +109,12 @@ const recoverySnapshotFactory = (resumeToken: string) => ({
   createdAt: Date.UTC(2099, 0, 1, 0, 0, 0),
 })
 
+const usableSubscription = () => ({
+  id: 71, user_id: 9, group_id: 3, status: 'active',
+  starts_at: '2026-01-01T00:00:00Z', expires_at: '2099-01-01T00:00:00Z',
+  group: { id: 3, status: 'active' },
+})
+
 describe('PaymentResultView', () => {
   beforeEach(() => {
     routeState.query = {}
@@ -99,7 +124,9 @@ describe('PaymentResultView', () => {
     verifyOrderPublic.mockReset()
     resolveOrderPublicByResumeToken.mockReset()
     refreshUser.mockReset()
-    refreshUser.mockResolvedValue({})
+    refreshUser.mockResolvedValue({ id: 9, balance: 88 })
+    fetchActiveSubscriptions.mockReset().mockResolvedValue([usableSubscription()])
+    authState.setState({ isAuthenticated: true, token: 'session-a', user: { id: 9, balance: 88 } })
     window.localStorage.clear()
   })
 
@@ -245,6 +272,7 @@ describe('PaymentResultView', () => {
     expect(refreshUser).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.text()).not.toContain('payment.result.failed')
+    expect(wrapper.text()).toContain('firstUseJourney.balanceCreditedBody')
     expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).toBeNull()
   })
 
@@ -270,6 +298,8 @@ describe('PaymentResultView', () => {
     expect(refreshUser).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.text()).not.toContain('payment.result.failed')
+    expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+    expect(wrapper.text()).not.toContain('firstUseJourney.balanceCreditedBody')
   })
 
   it('falls back to order_id polling when resume-token recovery fails', async () => {
@@ -303,8 +333,10 @@ describe('PaymentResultView', () => {
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledWith('resume-fail')
     expect(pollOrderStatus).toHaveBeenCalledWith(77)
     expect(verifyOrderPublic).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('payment.result.success')
-    expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).toBeNull()
+    expect(wrapper.text()).toContain('payment.result.processing')
+    expect(wrapper.text()).toContain('firstUseJourney.settlementPendingBody')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
+    expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).not.toBeNull()
   })
 
   it('falls back to public out_trade_no verification when resume_token recovery fails in legacy return flows', async () => {
@@ -334,7 +366,8 @@ describe('PaymentResultView', () => {
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledWith('resume-fail')
     expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-should-not-run')
     expect(pollOrderStatus).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.text()).toContain('payment.result.processing')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
   })
 
   it('ignores a stale global recovery snapshot when legacy return markers do not identify the order', async () => {
@@ -386,7 +419,8 @@ describe('PaymentResultView', () => {
     expect(verifyOrder).toHaveBeenCalledWith('legacy-123')
     expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-123')
     expect(pollOrderStatus).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.text()).toContain('payment.result.processing')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
   })
 
   it('renders the minimal public out_trade_no verification result without payment_type', async () => {
@@ -415,9 +449,10 @@ describe('PaymentResultView', () => {
 
     await flushPromises()
 
-    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.text()).toContain('payment.result.processing')
     expect(wrapper.text()).toContain('legacy-minimal')
     expect(wrapper.text()).not.toContain('payment.orders.paymentMethod')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
   })
 
   it('prefers authenticated order verification before falling back to public lookup', async () => {
@@ -481,7 +516,8 @@ describe('PaymentResultView', () => {
     await flushPromises()
 
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledWith('resume-77')
-    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.text()).toContain('payment.result.processing')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
   })
 
   it('uses the currency returned by the order API when rendering amounts', async () => {
@@ -534,5 +570,217 @@ describe('PaymentResultView', () => {
 
     expect(wrapper.text()).toContain('payment.methods.alipay')
     expect(wrapper.text()).not.toContain('payment.methods.alipay_direct')
+  })
+
+  it.each(['PENDING', 'PAID', 'RECHARGING', 'FAILED', 'EXPIRED', 'CANCELLED', 'UNKNOWN'])(
+    'does not offer completed setup for %s, even when query parameters claim success', async (status) => {
+      routeState.query = { resume_token: 'resume-unsettled', trade_status: 'TRADE_SUCCESS', status: 'COMPLETED' }
+      resolveOrderPublicByResumeToken.mockResolvedValue({ data: orderFactory(status) })
+      const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="funding-completed"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
+      expect(refreshUser).not.toHaveBeenCalled()
+      expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+      expect(routerPush).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('payment.result.viewOrders')
+    },
+  )
+
+  it('keeps paid fulfillment pending and polls until COMPLETED before refreshing or continuing', async () => {
+    vi.useFakeTimers()
+    routeState.query = { resume_token: 'resume-settling', scene: 'image' }
+    resolveOrderPublicByResumeToken
+      .mockResolvedValueOnce({ data: orderFactory('PAID') })
+      .mockResolvedValueOnce({ data: orderFactory('RECHARGING') })
+      .mockResolvedValueOnce({ data: orderFactory('COMPLETED') })
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('firstUseJourney.settlementPendingBody')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
+    expect(refreshUser).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
+    expect(refreshUser).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('firstUseJourney.balanceCreditedBody')
+    expect(refreshUser).toHaveBeenCalledOnce()
+    expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="continue-setup"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { scene: 'image' } })
+  })
+
+  it('refreshes a completed subscription only for the matching signed-in owner', async () => {
+    routeState.query = { resume_token: 'resume-subscription', scene: 'code' }
+    resolveOrderPublicByResumeToken.mockResolvedValue({ data: { ...orderFactory('COMPLETED'), order_type: 'subscription' } })
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+
+    expect(refreshUser).toHaveBeenCalledOnce()
+    expect(fetchActiveSubscriptions).toHaveBeenCalledWith(true)
+    expect(wrapper.text()).toContain('firstUseJourney.subscriptionCreditedBody')
+    expect(wrapper.text()).not.toContain('firstUseJourney.balanceCreditedBody')
+    await wrapper.get('[data-test="continue-setup"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { scene: 'code' } })
+  })
+
+  it('keeps COMPLETED success while showing that subscription information could not be refreshed', async () => {
+    routeState.query = { resume_token: 'resume-subscription-failure' }
+    resolveOrderPublicByResumeToken.mockResolvedValue({ data: { ...orderFactory('COMPLETED'), order_type: 'subscription' } })
+    fetchActiveSubscriptions.mockRejectedValueOnce(new Error('offline'))
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+    expect(wrapper.text()).not.toContain('firstUseJourney.subscriptionCreditedBody')
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(true)
+  })
+
+  it.each(['different-owner', 'unknown-owner', 'anonymous'])(
+    'does not refresh an unverified current account for %s', async (scenario) => {
+      routeState.query = { resume_token: 'resume-other', scene: 'image' }
+      if (scenario === 'different-owner') authState.setState({ user: { id: 8, balance: 1 } })
+      if (scenario === 'anonymous') {
+        authState.setState({ user: null, token: null, isAuthenticated: false })
+      }
+      const resolvedOrder = scenario === 'unknown-owner'
+        ? { status: 'COMPLETED', out_trade_no: 'other', paid: true, created_at: '', expires_at: '' }
+        : orderFactory('COMPLETED')
+      resolveOrderPublicByResumeToken.mockResolvedValue({ data: resolvedOrder })
+      const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('payment.result.success')
+      expect(wrapper.text()).toContain('firstUseJourney.completedOrderBody')
+      expect(wrapper.text()).not.toContain('firstUseJourney.balanceCreditedBody')
+      expect(refreshUser).not.toHaveBeenCalled()
+      expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+      expect(window.localStorage.length).toBe(0)
+      await wrapper.get('[data-test="continue-setup"]').trigger('click')
+      if (scenario === 'anonymous') {
+        expect(wrapper.text()).toContain('firstUseJourney.loginToContinue')
+        expect(routerPush).toHaveBeenCalledWith({ path: '/login', query: { redirect: '/get-started?scene=image' } })
+      }
+    },
+  )
+
+  it('does not forward arbitrary scene or payment credentials into the guide', async () => {
+    routeState.query = { resume_token: 'resume-secret', scene: 'https://evil.example', api_key: 'secret', token: 'secret' }
+    resolveOrderPublicByResumeToken.mockResolvedValue({ data: orderFactory('COMPLETED') })
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="continue-setup"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: {} })
+    expect(window.localStorage.length).toBe(0)
+  })
+
+  it('does not infer COMPLETED or a next step from query trade_status when the API cannot verify the order', async () => {
+    routeState.query = { out_trade_no: 'unverified', trade_status: 'TRADE_SUCCESS', status: 'COMPLETED' }
+    verifyOrder.mockRejectedValueOnce(new Error('offline'))
+    verifyOrderPublic.mockRejectedValueOnce(new Error('offline'))
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="funding-completed"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(false)
+    expect(refreshUser).not.toHaveBeenCalled()
+    expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('payment.result.success')
+  })
+
+  it.each(['empty', 'expired', 'future', 'other-user'])(
+    'keeps the completed order but does not label %s subscriptions as usable', async (scenario) => {
+      routeState.query = { resume_token: 'resume-subscription-unusable' }
+      resolveOrderPublicByResumeToken.mockResolvedValue({ data: { ...orderFactory('COMPLETED'), order_type: 'subscription' } })
+      const subscription = usableSubscription()
+      if (scenario === 'expired') subscription.expires_at = '2000-01-01T00:00:00Z'
+      if (scenario === 'future') subscription.starts_at = '2098-01-01T00:00:00Z'
+      if (scenario === 'other-user') subscription.user_id = 8
+      fetchActiveSubscriptions.mockResolvedValueOnce(scenario === 'empty' ? [] : [subscription])
+      const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('payment.result.success')
+      expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+      expect(wrapper.text()).not.toContain('firstUseJourney.subscriptionCreditedBody')
+      expect(wrapper.find('[data-test="continue-setup"]').exists()).toBe(true)
+    },
+  )
+
+  it.each(['switch-back', 'logout-login'])(
+    'does not promote a late profile response after %s into a ready entitlement', async (scenario) => {
+      routeState.query = { resume_token: 'resume-deferred-profile' }
+      resolveOrderPublicByResumeToken.mockResolvedValue({ data: orderFactory('COMPLETED') })
+      let resolveProfile!: (profile: { id: number; balance: number }) => void
+      refreshUser.mockImplementationOnce(() => new Promise((resolve) => { resolveProfile = resolve }))
+      const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+      await flushPromises()
+      expect(refreshUser).toHaveBeenCalledOnce()
+      if (scenario === 'switch-back') {
+        authState.setState({ user: { id: 8, balance: 0 }, token: 'session-b' })
+      } else {
+        authState.setState({ user: null, token: null, isAuthenticated: false })
+      }
+      await flushPromises()
+      expect(wrapper.text()).not.toContain('firstUseJourney.balanceCreditedBody')
+      authState.setState({ user: { id: 9, balance: 0 }, token: 'session-new-a', isAuthenticated: true })
+      resolveProfile({ id: 9, balance: 88 })
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('payment.result.success')
+      expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+      expect(wrapper.text()).not.toContain('firstUseJourney.balanceCreditedBody')
+      expect(refreshUser).toHaveBeenCalledOnce()
+      expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+    },
+  )
+
+  it('does not promote a late subscription response after switching away and back to the paying account', async () => {
+    routeState.query = { resume_token: 'resume-deferred-subscription' }
+    resolveOrderPublicByResumeToken.mockResolvedValue({ data: { ...orderFactory('COMPLETED'), order_type: 'subscription' } })
+    let resolveSubscriptions!: (subscriptions: ReturnType<typeof usableSubscription>[]) => void
+    fetchActiveSubscriptions.mockImplementationOnce(() => new Promise((resolve) => { resolveSubscriptions = resolve }))
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+    authState.setState({ user: { id: 8, balance: 0 }, token: 'session-b' })
+    await flushPromises()
+    authState.setState({ user: { id: 9, balance: 0 }, token: 'session-new-a' })
+    resolveSubscriptions([usableSubscription()])
+    await flushPromises()
+    expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+    expect(wrapper.text()).not.toContain('firstUseJourney.subscriptionCreditedBody')
+    expect(fetchActiveSubscriptions).toHaveBeenCalledOnce()
+  })
+
+  it('accepts a valid profile response across token rotation while the same account stays signed in', async () => {
+    routeState.query = { resume_token: 'resume-token-rotation' }
+    resolveOrderPublicByResumeToken.mockResolvedValue({ data: orderFactory('COMPLETED') })
+    let resolveProfile!: (profile: { id: number; balance: number }) => void
+    refreshUser.mockImplementationOnce(() => new Promise((resolve) => { resolveProfile = resolve }))
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+    authState.setState({ token: 'rotated-token-a' })
+    resolveProfile({ id: 9, balance: 88 })
+    await flushPromises()
+    expect(wrapper.text()).toContain('firstUseJourney.balanceCreditedBody')
+    expect(wrapper.text()).not.toContain('firstUseJourney.accountRefreshPendingBody')
+    expect(refreshUser).toHaveBeenCalledOnce()
+  })
+
+  it('does not begin entitlement reads after the result page unmounts during order verification', async () => {
+    routeState.query = { resume_token: 'resume-after-unmount' }
+    let resolveOrder!: (result: { data: ReturnType<typeof orderFactory> }) => void
+    resolveOrderPublicByResumeToken.mockImplementationOnce(() => new Promise((resolve) => { resolveOrder = resolve }))
+    const wrapper = mount(PaymentResultView, { global: { stubs: { OrderStatusBadge: true } } })
+    await flushPromises()
+    wrapper.unmount()
+    resolveOrder({ data: orderFactory('COMPLETED') })
+    await flushPromises()
+    expect(refreshUser).not.toHaveBeenCalled()
+    expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
   })
 })

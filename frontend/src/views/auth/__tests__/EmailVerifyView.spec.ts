@@ -35,6 +35,7 @@ const {
   createTurnstileResetMock: vi.fn(),
   verifyActionMock: vi.fn(),
   authStoreState: {
+    isAdmin: false,
     pendingAuthSession: null as null | {
       token: string
       token_field: 'pending_auth_token' | 'pending_oauth_token'
@@ -75,6 +76,7 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('@/stores', () => ({
   useAuthStore: () => ({
+    get isAdmin() { return authStoreState.isAdmin },
     pendingAuthSession: authStoreState.pendingAuthSession,
     register: (...args: any[]) => registerMock(...args),
     setToken: (...args: any[]) => setTokenMock(...args),
@@ -121,6 +123,7 @@ describe('EmailVerifyView', () => {
     createTurnstileResetMock.mockReset()
     verifyActionMock.mockReset()
     authStoreState.pendingAuthSession = null
+    authStoreState.isAdmin = false
     sessionStorage.clear()
     localStorage.clear()
 
@@ -133,6 +136,60 @@ describe('EmailVerifyView', () => {
     sendVerifyCodeMock.mockResolvedValue({ countdown: 60 })
     sendPendingOAuthVerifyCodeMock.mockResolvedValue({ countdown: 60 })
     setTokenMock.mockResolvedValue({})
+  })
+
+  it.each([
+    [undefined, false, '/get-started'],
+    ['/purchase?plan=2', false, '/purchase?plan=2'],
+    ['/profile/security', false, '/profile/security'],
+    ['//example.com', false, '/get-started'],
+    [undefined, true, '/admin/dashboard'],
+  ])('finishes plain verified registration at the intended destination %j', async (redirect, isAdmin, destination) => {
+    authStoreState.isAdmin = isAdmin
+    registerMock.mockResolvedValue({})
+    sessionStorage.setItem('register_data', JSON.stringify({
+      email: 'fresh@example.com', password: 'secret-123', pending_redirect: redirect,
+    }))
+    const wrapper = mount(EmailVerifyView, {
+      global: {
+        stubs: {
+          AuthLayout: { template: '<div><slot /><slot name="footer" /></div>' },
+          Icon: true, TurnstileWidget: true, transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('#code').setValue('123456')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(registerMock).toHaveBeenCalled()
+    expect(pushMock).toHaveBeenCalledWith(destination)
+    expect(sessionStorage.getItem('register_data')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('keeps the dashboard default for a pending OAuth completion without a return target', async () => {
+    authStoreState.pendingAuthSession = { token: 'pending-token', token_field: 'pending_auth_token', provider: 'oidc' }
+    sessionStorage.setItem('register_data', JSON.stringify({ email: 'fresh@example.com', password: 'secret-123' }))
+    apiClientPostMock.mockResolvedValue({ data: { access_token: 'oauth-access-token' } })
+    const wrapper = mount(EmailVerifyView, {
+      global: {
+        stubs: {
+          AuthLayout: { template: '<div><slot /><slot name="footer" /></div>' },
+          Icon: true, TurnstileWidget: true, transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.get('#code').setValue('123456')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(registerMock).not.toHaveBeenCalled()
+    expect(setTokenMock).toHaveBeenCalledWith('oauth-access-token')
+    expect(pushMock).toHaveBeenCalledWith('/dashboard')
+    wrapper.unmount()
   })
 
   it('acquires a fresh Tencent proof for each resend action', async () => {
@@ -800,7 +857,7 @@ describe('EmailVerifyView', () => {
     expect(showSuccessMock).not.toHaveBeenCalled()
   })
 
-  it('keeps the normal email registration flow unchanged', async () => {
+  it('completes normal email registration before starting guided setup', async () => {
     sessionStorage.setItem(
       'register_data',
       JSON.stringify({
@@ -839,7 +896,7 @@ describe('EmailVerifyView', () => {
       invitation_code: 'INVITE',
     })
     expect(apiClientPostMock).not.toHaveBeenCalled()
-    expect(pushMock).toHaveBeenCalledWith('/dashboard')
+    expect(pushMock).toHaveBeenCalledWith('/get-started')
   })
 
   it('does not require another Tencent proof for final email registration', async () => {

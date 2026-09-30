@@ -31,6 +31,7 @@ const translate = vi.hoisted(() => vi.fn((key: string) => key))
 const appStoreState = vi.hoisted(() => ({
   setPublicSettings: (_value: Record<string, unknown> | undefined) => {},
 }))
+const authState = vi.hoisted(() => ({ isSimpleMode: false }))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -57,6 +58,7 @@ vi.mock('vue-i18n', async () => {
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
+    get isSimpleMode() { return authState.isSimpleMode },
     user: {
       username: 'demo-user',
       balance: 0,
@@ -580,6 +582,84 @@ describe('PaymentView payment recovery', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="method-selector"]').text()).toBe('ldc')
+  })
+
+  it('guides top-ups directly to balance and preserves only image/code when returning to the guide', async () => {
+    routeState.query = { scene: 'image', token: 'private', api_key: 'private' }
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
+    const wrapper = shallowMount(PaymentView, {
+      global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, Teleport: true, Transition: false } },
+    })
+    await flushPromises()
+    const guidance = wrapper.get('[data-test="funding-guidance"]')
+    expect(guidance.text()).toContain('firstUseJourney.paymentIntroBody')
+    expect(guidance.text()).not.toContain('firstUseJourney.subscriptionPurchaseBody')
+    await guidance.findAll('button')[0].trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/redeem', query: { scene: 'image' } })
+    await guidance.findAll('button')[1].trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { scene: 'image' } })
+    expect(createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('explains subscription fulfillment instead of promising account balance credit', async () => {
+    routeState.query = { tab: 'subscription', scene: 'code' }
+    getCheckoutInfo.mockResolvedValue(checkoutInfoWithPlansFixture())
+    const wrapper = shallowMount(PaymentView, {
+      global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, Teleport: true, Transition: false } },
+    })
+    await flushPromises()
+    const guidance = wrapper.get('[data-test="funding-guidance"]')
+    expect(guidance.text()).toContain('firstUseJourney.subscriptionPurchaseBody')
+    expect(guidance.text()).not.toContain('firstUseJourney.paymentIntroBody')
+    expect(createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('verifies fulfillment on the result page without refreshing an account when the panel reports payment success', async () => {
+    routeState.query = { scene: 'code', token: 'private' }
+    getCheckoutInfo.mockResolvedValue(checkoutInfoWithPlansFixture())
+    window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify({
+      orderId: 888, amount: 66, qrCode: 'qr', expiresAt: '2099-01-01T00:10:00.000Z', paymentType: 'wxpay',
+      payUrl: '', outTradeNo: 'sub2_888', clientSecret: '', intentId: '', currency: '', countryCode: '',
+      paymentEnv: '', payAmount: 66, orderType: 'subscription', paymentMode: 'popup', resumeToken: 'resume-888', createdAt: Date.now(),
+    }))
+    const wrapper = shallowMount(PaymentView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' },
+        PaymentStatusPanel: { template: '<button data-test="panel-success" @click="$emit(\'success\')" />' },
+        Teleport: true, Transition: false,
+      } },
+    })
+    await flushPromises()
+    fetchActiveSubscriptions.mockClear()
+    expect(wrapper.find('[data-test="funding-guidance"]').exists()).toBe(false)
+    await wrapper.get('[data-test="panel-success"]').trigger('click')
+    await flushPromises()
+    expect(refreshUser).not.toHaveBeenCalled()
+    expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith({ path: '/payment/result', query: {
+      order_id: '888', out_trade_no: 'sub2_888', resume_token: 'resume-888', scene: 'code',
+    } })
+    expect(createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not offer the inaccessible redemption route as a simple-mode funding step', async () => {
+    authState.isSimpleMode = true
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
+    const wrapper = shallowMount(PaymentView, {
+      global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, Teleport: true, Transition: false } },
+    })
+    try {
+      await flushPromises()
+      expect(wrapper.find('[data-test="funding-guidance"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('redeem.redeemCodeLabel')
+      expect(createOrder).not.toHaveBeenCalled()
+    } finally {
+      authState.isSimpleMode = false
+      wrapper.unmount()
+    }
   })
 })
 

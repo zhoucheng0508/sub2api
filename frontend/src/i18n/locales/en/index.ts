@@ -1,5 +1,8 @@
-// CUSTOM(VOTE-AI-RIKKAHUB): messages remain owned by the extension.
-import rikkaHubMessages from '@/custom/vote-ai/rikkahub/messages'
+import { en as quickConnectMessages } from '@/custom/vote-ai/quick-connect/messages'
+import { startPageMessages } from '@/custom/vote-ai/quick-connect/page-messages'
+import { en as quickCreateKey } from '@/custom/vote-ai/quick-connect/create-key-messages'
+import { entryMessages } from '@/custom/vote-ai/quick-connect/entry-messages'
+import { journeyMessages } from '@/custom/vote-ai/quick-connect/journey-messages'
 import landing from './landing'
 import common from './common'
 import dashboard from './dashboard'
@@ -9,7 +12,10 @@ import admin from './admin'
 import misc from './misc'
 
 export default {
+  firstUseJourney: journeyMessages.en,
   rikkaHub: rikkaHubMessages.en,
+  quickConnect: { ...quickConnectMessages, startPage: startPageMessages.en, entryFlow: entryMessages.en },
+  quickCreateKey,
   ...landing,
   ...common,
   ...dashboard,
@@ -18,3 +24,4 @@ export default {
   admin,
   ...misc,
 }
+import rikkaHubMessages from '@/custom/vote-ai/rikkahub/messages'

@@ -3,6 +3,20 @@
     <TablePageLayout>
       <template #filters>
         <div class="flex flex-col gap-3">
+          <div
+            v-if="createdKey"
+            class="flex flex-wrap items-center gap-3 rounded-xl border border-primary-200 bg-primary-50 p-3 dark:border-primary-800 dark:bg-primary-900/20"
+            role="status"
+            data-testid="created-key-connect"
+          >
+            <p class="min-w-0 flex-1 text-sm text-primary-900 dark:text-primary-100">{{ t('quickConnect.createdReady') }}</p>
+            <button type="button" class="btn btn-primary btn-sm" data-testid="created-key-connect-now" @click="openQuickConnect(createdKey)">
+              {{ t('quickConnect.connectNow') }}
+            </button>
+            <button type="button" class="rounded-lg p-1 text-gray-500 hover:text-gray-900 dark:hover:text-white" :aria-label="t('quickConnect.dismiss')" @click="createdKey = null">
+              <Icon name="x" size="sm" />
+            </button>
+          </div>
           <div class="flex flex-wrap items-center gap-3">
             <SearchInput
               v-model="filterSearch"
@@ -91,16 +105,14 @@
           </div>
           <button
             type="button"
-            class="btn btn-secondary shrink-0"
-            :disabled="!eligibleCodexKey"
-            :title="eligibleCodexKey ? t('keys.oneClick.action') : t('keys.oneClick.ineligibleHint')"
-            data-testid="codex-one-click-action"
-            @click="openCodexOneClick(eligibleCodexKey)"
+            class="btn btn-primary shrink-0"
+            data-testid="quick-connect-action"
+            @click="router.push('/get-started')"
           >
             <Icon name="bolt" size="sm" />
-            {{ t('keys.oneClick.action') }}
+            {{ t('quickConnect.startPage.title') }}
           </button>
-          <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
+          <button @click="showCreateModal = true" class="btn btn-secondary" data-tour="keys-create-btn">
             <Icon name="plus" size="md" class="mr-2" />
             {{ t('keys.createKey') }}
           </button>
@@ -402,39 +414,37 @@
           </template>
 
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
-              <!-- Use Key Button -->
+            <div class="flex flex-col items-stretch gap-3 md:flex-row md:items-center md:gap-4">
+              <div class="min-w-0 md:max-w-60">
+                <button
+                  type="button"
+                  @click="openQuickConnect(row)"
+                  :disabled="Boolean(getRowConnectReason(row))"
+                  :aria-describedby="getRowConnectReason(row) ? `connect-reason-${row.id}` : `connect-hint-${row.id}`"
+                  class="btn btn-primary min-h-11 w-full justify-center gap-2 px-5 text-sm font-semibold md:w-auto"
+                  data-testid="quick-connect-row"
+                >
+                  <Icon name="bolt" size="md" />
+                  {{ t('quickConnect.connectApp') }}
+                  <Icon name="arrowRight" size="sm" />
+                </button>
+                <p v-if="getRowConnectReason(row)" :id="`connect-reason-${row.id}`" class="mt-1 whitespace-normal text-xs text-gray-500 dark:text-gray-400" data-testid="quick-connect-reason">
+                  {{ t(`quickConnect.reasons.${getRowConnectReason(row)}`) }}
+                </p>
+                <p v-else :id="`connect-hint-${row.id}`" class="mt-2 whitespace-normal text-xs leading-5 text-gray-600 dark:text-gray-400">
+                  {{ t(row.group?.image_only ? 'quickConnect.imageRowHint' : 'quickConnect.rowHint') }}
+                </p>
+              </div>
+              <div class="flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2 md:border-0 md:pt-0 dark:border-dark-700">
               <button
+                v-if="!row.group?.image_only"
+                type="button"
                 @click="openUseKeyModal(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-700 dark:hover:text-gray-300"
+                data-testid="manual-config-row"
               >
                 <Icon name="terminal" size="sm" />
-                <span class="text-xs">{{ t('keys.useKey') }}</span>
-              </button>
-              <button
-                @click="openCodexOneClick(row)"
-                :disabled="!isCodexOneClickEligible(row)"
-                :class="[
-                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors',
-                  isCodexOneClickEligible(row)
-                    ? 'text-gray-500 hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20 dark:hover:text-primary-400'
-                    : 'cursor-not-allowed text-gray-300 dark:text-dark-600'
-                ]"
-                :title="isCodexOneClickEligible(row) ? t('keys.oneClick.action') : t('keys.oneClick.ineligibleHint')"
-                data-testid="codex-one-click-row"
-              >
-                <Icon name="bolt" size="sm" />
-                <span class="text-xs">{{ t('keys.oneClick.action') }}</span>
-              </button>
-              <!-- Import to CC Switch Button -->
-              <button
-                v-if="!publicSettings?.hide_ccs_import_button"
-                @click="openCodexOneClick(row, 'ccswitch')"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
-                data-testid="ccswitch-import-row"
-              >
-                <Icon name="upload" size="sm" />
-                <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
+                <span class="text-xs">{{ t('quickConnect.manualConfig') }}</span>
               </button>
               <!-- Toggle Status Button -->
               <button
@@ -466,6 +476,7 @@
                 <Icon name="trash" size="sm" />
                 <span class="text-xs">{{ t('common.delete') }}</span>
               </button>
+              </div>
             </div>
           </template>
 
@@ -1102,23 +1113,10 @@
       :api-key="selectedKey?.key || ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
+      :claude-code-only="selectedKey?.group?.claude_code_only || false"
+      :cn-oai-catalog="isCnOaiGroup(selectedKey?.group)"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
-    />
-
-    <CodexOneClickModal
-      :show="showCodexOneClick"
-      :api-key="codexOneClickKey?.key || ''"
-      :key-name="codexOneClickKey?.name || ''"
-      :base-url="codexBaseUrl"
-      :provider-name="(publicSettings?.site_name || 'sub2api').trim() || 'sub2api'"
-      :platform="codexOneClickKey?.group?.platform || null"
-      :initial-method="codexOneClickInitialMethod"
-      :available-keys="quickConnectKeys"
-      :initial-key-id="codexOneClickKey?.id || null"
-      @close="closeCodexOneClick"
-      @manage-keys="closeCodexOneClick"
-      @protocol-failed="appStore.showError(t('keys.ccSwitchNotInstalled'))"
     />
 
     <!-- Group Selector Dropdown (Teleported to body to avoid overflow clipping) -->
@@ -1195,12 +1193,14 @@
 <script setup lang="ts">
 	import { ref, reactive, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 	import { useAppStore } from '@/stores/app'
 	import { useOnboardingStore } from '@/stores/onboarding'
 	import { useClipboard } from '@/composables/useClipboard'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
+const router = useRouter()
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -1214,7 +1214,6 @@ import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import SearchInput from '@/components/common/SearchInput.vue'
 	import Icon from '@/components/icons/Icon.vue'
 	import UseKeyModal from '@/components/keys/UseKeyModal.vue'
-	import CodexOneClickModal from '@/components/keys/CodexOneClickModal.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
@@ -1223,7 +1222,8 @@ import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
-import { isCodexOneClickEligible } from '@/utils/codexOneClick'
+import { getQuickConnectIneligibilityReason } from '@/utils/codexOneClick'
+import { isCnOaiGroup } from '@/utils/cnOaiSetup'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import { platformBadgeLightClass } from '@/utils/platformColors'
 import { KEY_GROUP_PROVIDERS, KEY_GROUP_PROVIDER_ICONS, getKeyGroupProvider, type KeyGroupProvider } from '@/utils/keyGroupProviders'
@@ -1393,19 +1393,12 @@ const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
-const showCodexOneClick = ref(false)
 const showColumnDropdown = ref(false)
 const selectedKey = ref<ApiKey | null>(null)
-const codexOneClickKey = ref<ApiKey | null>(null)
-const codexOneClickInitialMethod = ref<'guide' | 'ccswitch' | 'script'>('guide')
-const quickConnectKeys = ref<ApiKey[]>([])
+const createdKey = ref<ApiKey | null>(null)
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
-const eligibleCodexKey = computed(() =>
-  apiKeys.value.find(isCodexOneClickEligible) || null
-)
-const codexBaseUrl = computed(() => publicSettings.value?.api_base_url || window.location.origin)
 const dropdownRef = ref<HTMLElement | null>(null)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
@@ -1669,38 +1662,19 @@ const closeUseKeyModal = () => {
   selectedKey.value = null
 }
 
-const loadQuickConnectKeys = async (): Promise<void> => {
-  const hasTableFilter = Boolean(
-    filterSearch.value.trim() ||
-    filterStatus.value ||
-    filterGroupId.value !== ''
-  )
-  if (!hasTableFilter && pagination.value.total <= apiKeys.value.length) return
-  try {
-    const response = await keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' })
-    if (!showCodexOneClick.value) return
-    const merged = new Map<number, ApiKey>()
-    apiKeys.value.forEach((item) => merged.set(item.id, item))
-    response.items.forEach((item) => merged.set(item.id, item))
-    quickConnectKeys.value = Array.from(merged.values()).filter((item) => isCodexOneClickEligible(item))
-  } catch (error) {
-    console.warn('Failed to load additional API keys for quick connect:', error)
+const getRowConnectReason = (key: ApiKey) =>
+  getQuickConnectIneligibilityReason(key, key.group?.image_only ? 'image' : 'text')
+
+const openQuickConnect = (key: ApiKey) => {
+  const reason = getRowConnectReason(key)
+  if (reason) {
+    appStore.showError(t(`quickConnect.reasons.${reason}`))
+    return
   }
-}
-
-const openCodexOneClick = (key: ApiKey | null, initialMethod: 'guide' | 'ccswitch' | 'script' = 'guide') => {
-  if (!key || !isCodexOneClickEligible(key)) return
-  codexOneClickKey.value = key
-  codexOneClickInitialMethod.value = initialMethod
-  quickConnectKeys.value = apiKeys.value.filter((item) => isCodexOneClickEligible(item))
-  showCodexOneClick.value = true
-  void loadQuickConnectKeys()
-}
-
-const closeCodexOneClick = () => {
-  showCodexOneClick.value = false
-  codexOneClickKey.value = null
-  codexOneClickInitialMethod.value = 'guide'
+  void router.push({
+    path: '/get-started',
+    query: key.group?.image_only ? { key: String(key.id), scene: 'image' } : { key: String(key.id) }
+  })
 }
 
 const handlePageChange = (page: number) => {
@@ -1903,7 +1877,7 @@ const handleSubmit = async () => {
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
-      await keysAPI.create(
+      const newKey = await keysAPI.create(
         formData.value.name,
         formData.value.group_id,
         customKey,
@@ -1913,6 +1887,11 @@ const handleSubmit = async () => {
         expiresInDays,
         rateLimitData
       )
+      // Create responses may omit the group summary; reuse the group selected in the form.
+      createdKey.value = {
+        ...newKey,
+        group: newKey.group ?? groups.value.find((group) => group.id === newKey.group_id)
+      }
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
       if (onboardingStore.isCurrentStep('[data-tour="key-form-submit"]')) {

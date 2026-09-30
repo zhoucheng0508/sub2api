@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import RedeemView from '../RedeemView.vue'
+
+enableAutoUnmount(afterEach)
 
 const { redeem, getHistory, refreshUser, fetchActiveSubscriptions, showError, showWarning, showSuccess } = vi.hoisted(() => ({
   redeem: vi.fn(),
@@ -12,13 +14,34 @@ const { redeem, getHistory, refreshUser, fetchActiveSubscriptions, showError, sh
   showSuccess: vi.fn(),
 }))
 
+const routeState = vi.hoisted(() => ({ query: {} as Record<string, unknown> }))
+const routerPush = vi.hoisted(() => vi.fn())
+const authState = vi.hoisted(() => ({
+  isAuthenticated: true,
+  token: 'session-a' as string | null,
+  user: { id: 9, balance: 10, concurrency: 2 } as { id: number; balance: number; concurrency: number } | null,
+  setState: (_updates: { token?: string | null; isAuthenticated?: boolean; user?: { id: number; balance: number; concurrency: number } | null }) => {},
+}))
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return { ...actual, useRoute: () => routeState, useRouter: () => ({ push: routerPush }) }
+})
+
 vi.mock('@/api', () => ({
   redeemAPI: { redeem, getHistory },
   authAPI: { getPublicSettings: vi.fn().mockResolvedValue({}) },
 }))
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ user: { balance: 10, concurrency: 2 }, refreshUser }),
-}))
+vi.mock('@/stores/auth', async () => {
+  const { reactive } = await import('vue')
+  const state = reactive(authState)
+  authState.setState = (updates) => { Object.assign(state, updates) }
+  return { useAuthStore: () => ({
+    refreshUser,
+    get isAuthenticated() { return state.isAuthenticated },
+    get token() { return state.token },
+    get user() { return state.user },
+  }) }
+})
 vi.mock('@/stores/subscriptions', () => ({
   useSubscriptionStore: () => ({ fetchActiveSubscriptions }),
 }))
@@ -41,13 +64,21 @@ async function submitCode() {
   return wrapper
 }
 
+const usableSubscription = () => ({
+  id: 71, user_id: 9, group_id: 3, status: 'active',
+  starts_at: '2026-01-01T00:00:00Z', expires_at: '2099-01-01T00:00:00Z',
+  group: { id: 3, status: 'active' },
+})
+
 describe('RedeemView refresh after redemption', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    routeState.query = {}
+    authState.setState({ isAuthenticated: true, token: 'session-a', user: { id: 9, balance: 10, concurrency: 2 } })
     redeem.mockResolvedValue({ type: 'balance', value: 20, message: 'Code applied' })
     getHistory.mockResolvedValue({ items: [], total: 0 })
-    refreshUser.mockResolvedValue({ balance: 30, concurrency: 2 })
-    fetchActiveSubscriptions.mockResolvedValue([])
+    refreshUser.mockResolvedValue({ id: 9, balance: 30, concurrency: 2 })
+    fetchActiveSubscriptions.mockResolvedValue([usableSubscription()])
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
@@ -236,6 +267,191 @@ describe('RedeemView refresh after redemption', () => {
     expect(getHistory).toHaveBeenCalledOnce()
     expect(showSuccess).not.toHaveBeenCalled()
     expect(showWarning).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['balance', 'subscription', 'concurrency'])(
+    'offers a truthful next step after %s redemption without starting another transaction', async (type) => {
+      routeState.query = { scene: 'image', token: 'do-not-copy', api_key: 'do-not-copy' }
+      redeem.mockResolvedValue({ type, value: 20, message: 'Code applied' })
+      const wrapper = await submitCode()
+      const next = wrapper.get('[data-test="redemption-next-step"]')
+      const expectedKey = type === 'balance' ? 'balanceCreditedBody' : type === 'subscription' ? 'subscriptionCreditedBody' : 'concurrencyNextBody'
+      expect(next.text()).toContain(`firstUseJourney.${expectedKey}`)
+      if (type === 'concurrency') {
+        expect(next.text()).not.toContain('firstUseJourney.balanceCreditedBody')
+        expect(next.text()).not.toContain('firstUseJourney.subscriptionCreditedBody')
+      }
+      await next.get('button').trigger('click')
+      expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { scene: 'image' } })
+      expect(redeem).toHaveBeenCalledOnce()
+      expect(redeem).toHaveBeenCalledWith('REDEEM-CODE')
+      wrapper.unmount()
+    },
+  )
+
+  it('retains success but does not imply a verified balance when profile refresh fails', async () => {
+    refreshUser.mockRejectedValueOnce(new Error('offline'))
+    const wrapper = await submitCode()
+    expect(wrapper.text()).toContain('redeem.redeemSuccess')
+    expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+    expect(wrapper.text()).not.toContain('firstUseJourney.balanceCreditedBody')
+    expect(wrapper.find('[data-test="redemption-next-step"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('does not offer a funding completion for an unknown redemption type', async () => {
+    redeem.mockResolvedValue({ type: 'unknown', value: 20, message: 'Code applied' })
+    const wrapper = await submitCode()
+    expect(wrapper.find('[data-test="redemption-next-step"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('can return to the guide before redeeming, preserving only a known scene', async () => {
+    routeState.query = { scene: 'code', token: 'do-not-copy' }
+    const wrapper = mount(RedeemView, {
+      global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, Icon: true } },
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-test="redeem-guidance"]').text()).toContain('firstUseJourney.redeemIntroBody')
+    await wrapper.get('[data-test="redeem-guidance"] button').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { scene: 'code' } })
+    expect(redeem).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['empty', 'expired', 'future', 'other-user'])(
+    'preserves redemption success but treats %s subscriptions as unverified', async (scenario) => {
+      redeem.mockResolvedValue({ type: 'subscription', value: 20, message: 'Code applied' })
+      const subscription = usableSubscription()
+      if (scenario === 'expired') subscription.expires_at = '2000-01-01T00:00:00Z'
+      if (scenario === 'future') subscription.starts_at = '2098-01-01T00:00:00Z'
+      if (scenario === 'other-user') subscription.user_id = 8
+      fetchActiveSubscriptions.mockResolvedValueOnce(scenario === 'empty' ? [] : [subscription])
+      const wrapper = await submitCode()
+      expect(wrapper.text()).toContain('redeem.redeemSuccess')
+      expect(wrapper.text()).toContain('firstUseJourney.accountRefreshPendingBody')
+      expect(wrapper.text()).not.toContain('firstUseJourney.subscriptionCreditedBody')
+      expect(showSuccess).toHaveBeenCalledWith('redeem.codeRedeemSuccess')
+      wrapper.unmount()
+    },
+  )
+
+  it.each([
+    ['switch-account', 'resolve'], ['logout', 'resolve'], ['unmount', 'resolve'],
+    ['switch-account', 'reject'], ['logout', 'reject'], ['unmount', 'reject'],
+  ])(
+    'ignores a late redemption %s / %s without reading or notifying another account', async (scenario, outcome) => {
+      let resolveRedemption!: (result: { type: string; value: number; message: string }) => void
+      let rejectRedemption!: (error: Error) => void
+      redeem.mockImplementationOnce(() => new Promise((resolve, reject) => { resolveRedemption = resolve; rejectRedemption = reject }))
+      const wrapper = await submitCode()
+      expect(redeem).toHaveBeenCalledOnce()
+      if (scenario === 'switch-account') {
+        authState.setState({ user: { id: 8, balance: 0, concurrency: 1 }, token: 'session-b' })
+      } else if (scenario === 'logout') {
+        authState.setState({ user: null, token: null, isAuthenticated: false })
+      } else {
+        wrapper.unmount()
+      }
+      if (outcome === 'resolve') resolveRedemption({ type: 'balance', value: 20, message: 'Old account credited' })
+      else rejectRedemption(new Error('Old account request failed'))
+      await flushPromises()
+      expect(refreshUser).not.toHaveBeenCalled()
+      expect(fetchActiveSubscriptions).not.toHaveBeenCalled()
+      expect(getHistory).toHaveBeenCalledOnce()
+      expect(showSuccess).not.toHaveBeenCalled()
+      expect(showWarning).not.toHaveBeenCalled()
+      expect(showError).not.toHaveBeenCalled()
+      if (scenario !== 'unmount') {
+        expect(wrapper.text()).not.toContain('Old account credited')
+        expect(wrapper.find('[data-test="redemption-next-step"]').exists()).toBe(false)
+        wrapper.unmount()
+      }
+    },
+  )
+
+  it('discards profile completion from an older session even when the account signs back in', async () => {
+    let resolveProfile!: (profile: { id: number; balance: number }) => void
+    refreshUser.mockImplementationOnce(() => new Promise((resolve) => { resolveProfile = resolve }))
+    const wrapper = await submitCode()
+    expect(wrapper.text()).toContain('Code applied')
+    authState.setState({ user: { id: 8, balance: 0, concurrency: 1 }, token: 'session-b' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Code applied')
+    authState.setState({ user: { id: 9, balance: 0, concurrency: 1 }, token: 'new-session-a' })
+    resolveProfile({ id: 9, balance: 30 })
+    await flushPromises()
+    expect(wrapper.find('[data-test="redemption-next-step"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Code applied')
+    expect(getHistory).toHaveBeenCalledOnce()
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(showWarning).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('discards a late subscription response after logging out instead of notifying success', async () => {
+    redeem.mockResolvedValue({ type: 'subscription', value: 20, message: 'Code applied' })
+    let resolveSubscriptions!: (subscriptions: ReturnType<typeof usableSubscription>[]) => void
+    fetchActiveSubscriptions.mockImplementationOnce(() => new Promise((resolve) => { resolveSubscriptions = resolve }))
+    const wrapper = await submitCode()
+    expect(fetchActiveSubscriptions).toHaveBeenCalledOnce()
+    authState.setState({ user: null, token: null, isAuthenticated: false })
+    resolveSubscriptions([usableSubscription()])
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Code applied')
+    expect(wrapper.find('[data-test="redemption-next-step"]').exists()).toBe(false)
+    expect(getHistory).toHaveBeenCalledOnce()
+    expect(showSuccess).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('removes completed redemption and history from the page when another account signs in', async () => {
+    getHistory.mockResolvedValue({ total: 1, items: [{
+      id: 1, code: 'REDEEM-CODE', type: 'balance', value: 20, used_at: '2026-03-08T00:00:00Z',
+    }] })
+    const wrapper = await submitCode()
+    expect(wrapper.text()).toContain('Code applied')
+    expect(wrapper.text()).toContain('REDEEM-C...')
+    authState.setState({ user: { id: 8, balance: 0, concurrency: 1 }, token: 'session-b' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Code applied')
+    expect(wrapper.text()).not.toContain('REDEEM-C...')
+    expect(wrapper.find('[data-test="redemption-next-step"]').exists()).toBe(false)
+    expect(redeem).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('does not discard a successful redemption when the same account rotates its token', async () => {
+    let resolveProfile!: (profile: { id: number; balance: number }) => void
+    refreshUser.mockImplementationOnce(() => new Promise((resolve) => { resolveProfile = resolve }))
+    const wrapper = await submitCode()
+    authState.setState({ token: 'rotated-session-a' })
+    resolveProfile({ id: 9, balance: 30 })
+    await flushPromises()
+    expect(wrapper.text()).toContain('firstUseJourney.balanceCreditedBody')
+    expect(showSuccess).toHaveBeenCalledWith('redeem.codeRedeemSuccess')
+    expect(getHistory).toHaveBeenCalledTimes(2)
+    expect(redeem).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('discards history rows from an old account when the history request returns after switching users', async () => {
+    let resolveHistory!: (result: { total: number; items: Record<string, unknown>[] }) => void
+    getHistory.mockImplementationOnce(() => new Promise((resolve) => { resolveHistory = resolve }))
+    const wrapper = mount(RedeemView, {
+      global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, Icon: true } },
+    })
+    await flushPromises()
+    authState.setState({ user: { id: 8, balance: 0, concurrency: 1 }, token: 'session-b' })
+    resolveHistory({ total: 1, items: [{
+      id: 1, code: 'OLD-USER-CODE', type: 'balance', value: 20, used_at: '2026-03-08T00:00:00Z',
+    }] })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('OLD-USER')
+    expect(showError).not.toHaveBeenCalled()
+    expect(getHistory).toHaveBeenCalledOnce()
+    expect(redeem).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

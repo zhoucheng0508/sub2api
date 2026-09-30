@@ -85,6 +85,8 @@ export const useAuthStore = defineStore('auth', () => {
   const pendingAuthSession = ref<PendingAuthSessionSummary | null>(null)
   let refreshIntervalId: ReturnType<typeof setInterval> | null = null
   let tokenRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+  let authSessionGeneration = 0
+  let userRefreshGeneration = 0
 
   // ==================== Computed ====================
 
@@ -212,8 +214,11 @@ export const useAuthStore = defineStore('auth', () => {
       return
     }
 
+    const sessionGeneration = authSessionGeneration
+    const requestedRefreshToken = refreshTokenValue.value
     try {
       const response = await authAPI.refreshToken()
+      if (sessionGeneration !== authSessionGeneration || requestedRefreshToken !== refreshTokenValue.value) return
 
       // Update state
       token.value = response.access_token
@@ -297,6 +302,8 @@ export const useAuthStore = defineStore('auth', () => {
    * Internal helper function
    */
   function setAuthFromResponse(response: AuthResponse): void {
+    authSessionGeneration++
+    userRefreshGeneration++
     // Store token and user
     token.value = response.access_token
 
@@ -355,6 +362,9 @@ export const useAuthStore = defineStore('auth', () => {
    * @param newToken - 后端签发的 JWT access token
    */
   async function setToken(newToken: string): Promise<User> {
+    authSessionGeneration++
+    userRefreshGeneration++
+    const sessionGeneration = authSessionGeneration
     // Clear any previous state first (avoid mixing sessions)
     // Note: Don't clear localStorage here as OAuth callback may have set refresh_token
     stopAutoRefresh()
@@ -378,6 +388,9 @@ export const useAuthStore = defineStore('auth', () => {
 
     try {
       const userData = await refreshUser()
+      if (sessionGeneration !== authSessionGeneration) {
+        throw new Error('Account session changed while completing sign-in')
+      }
       startAutoRefresh()
 
       // Start proactive token refresh if we have refresh token and expiry info
@@ -389,7 +402,9 @@ export const useAuthStore = defineStore('auth', () => {
       clearPendingAuthSession()
       return userData
     } catch (error) {
-      clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      if (sessionGeneration === authSessionGeneration) {
+        clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      }
       throw error
     }
   }
@@ -437,8 +452,17 @@ export const useAuthStore = defineStore('auth', () => {
       throw new Error('Not authenticated')
     }
 
+    const requestedUserId = user.value?.id ?? null
+    const requestedToken = token.value
+    const sessionGeneration = authSessionGeneration
+    const refreshGeneration = ++userRefreshGeneration
+    const isCurrent = () => sessionGeneration === authSessionGeneration && refreshGeneration === userRefreshGeneration
+      && Boolean(token.value) && (user.value?.id ?? null) === requestedUserId
     try {
       const response = await authAPI.getCurrentUser()
+      if (!isCurrent() || (requestedUserId !== null && response.data.id !== requestedUserId)) {
+        throw new Error('Account session changed while reading the profile')
+      }
       if (response.data.run_mode) {
         runMode.value = response.data.run_mode
       }
@@ -451,7 +475,7 @@ export const useAuthStore = defineStore('auth', () => {
       return userData
     } catch (error) {
       // If refresh fails with 401, clear auth state
-      if ((error as { status?: number }).status === 401) {
+      if (isCurrent() && token.value === requestedToken && (error as { status?: number }).status === 401) {
         clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
       }
       throw error
@@ -463,6 +487,8 @@ export const useAuthStore = defineStore('auth', () => {
    * Internal helper function
    */
   function clearAuth(options?: { preservePendingAuthSession?: boolean }): void {
+    authSessionGeneration++
+    userRefreshGeneration++
     // Stop auto-refresh
     stopAutoRefresh()
     // Stop token refresh

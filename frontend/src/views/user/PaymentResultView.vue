@@ -29,7 +29,7 @@
             {{ statusTitle }}
           </h2>
           <p v-if="isPending" class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-            {{ t('payment.result.processingHint') }}
+            {{ t(isSettling ? 'firstUseJourney.settlementPendingBody' : 'payment.result.processingHint') }}
           </p>
         </div>
         <!-- Order Info -->
@@ -86,6 +86,13 @@
             </div>
           </div>
         </div>
+        <section v-if="isCompleted" data-test="funding-completed" class="rounded-xl border border-green-200 bg-green-50 p-5 dark:border-green-800/50 dark:bg-green-900/20">
+          <h3 class="font-semibold text-green-800 dark:text-green-300">{{ t('firstUseJourney.creditedTitle') }}</h3>
+          <p class="mt-2 text-sm leading-6 text-green-700 dark:text-green-400">{{ completionBody }}</p>
+          <button data-test="continue-setup" class="btn btn-primary mt-4 w-full" @click="continueSetup">
+            {{ t(authStore.isAuthenticated ? 'firstUseJourney.continueSetup' : 'firstUseJourney.loginToContinue') }}
+          </button>
+        </section>
         <!-- Actions -->
         <div class="flex gap-3">
           <button class="btn btn-secondary flex-1" @click="router.push('/purchase')">{{ t('payment.result.backToRecharge') }}</button>
@@ -97,7 +104,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import OrderStatusBadge from '@/components/payment/OrderStatusBadge.vue'
@@ -108,11 +115,13 @@ import {
 } from '@/components/payment/paymentFlow'
 import { usePaymentStore } from '@/stores/payment'
 import { useAuthStore } from '@/stores/auth'
+import { useSubscriptionStore } from '@/stores/subscriptions'
 import { paymentAPI } from '@/api/payment'
 import type { PublicOrderVerifyResult } from '@/api/payment'
 import type { OrderStatus, PaymentOrder } from '@/types/payment'
 import { formatPaymentAmount, normalizePaymentCurrency } from '@/components/payment/currency'
 import { normalizePaymentMethodForDisplay, paymentMethodI18nKey } from './paymentUx'
+import { hasUsableSubscription } from '@/custom/vote-ai/quick-connect/funding-readiness'
 
 const i18n = useI18n()
 const { t } = i18n
@@ -120,6 +129,7 @@ const route = useRoute()
 const router = useRouter()
 const paymentStore = usePaymentStore()
 const authStore = useAuthStore()
+const subscriptionStore = useSubscriptionStore()
 
 type ResolvedOrder = PaymentOrder | PublicOrderVerifyResult
 
@@ -135,13 +145,16 @@ interface ReturnInfo {
 }
 const returnInfo = ref<ReturnInfo | null>(null)
 
-const SUCCESS_STATUSES = new Set(['COMPLETED', 'PAID', 'RECHARGING'])
-const PENDING_STATUSES = new Set(['PENDING', 'CREATED', 'WAITING', 'PROCESSING'])
+const SUCCESS_STATUSES = new Set(['COMPLETED'])
+const PENDING_STATUSES = new Set(['PENDING', 'CREATED', 'WAITING', 'PROCESSING', 'PAID', 'RECHARGING'])
 const STATUS_REFRESH_INTERVAL_MS = 2000
 const STATUS_REFRESH_MAX_ATTEMPTS = 15
 
 let statusRefreshTimer: ReturnType<typeof setTimeout> | null = null
-let userBalanceRefreshStarted = false
+let entitlementRefreshStarted = false
+let componentGeneration = 0
+let disposed = false
+const entitlementRefresh = ref<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
 const refreshAttempts = ref(0)
 
 /** 充值金额 = pay_amount / (1 + fee_rate/100)，fee_rate=0 时等于 pay_amount */
@@ -173,6 +186,35 @@ const isSuccess = computed(() => {
   return isSuccessStatus(order.value?.status)
 })
 
+const isCompleted = computed(() => normalizeOrderStatus(order.value?.status) === 'COMPLETED')
+const isSettling = computed(() => ['PAID', 'RECHARGING'].includes(normalizeOrderStatus(order.value?.status)))
+const ownsResolvedOrder = computed(() => {
+  const resolved = order.value
+  return !!authStore.isAuthenticated && !!authStore.token && !!authStore.user && !!resolved
+    && 'user_id' in resolved && resolved.user_id === authStore.user.id
+})
+
+const completionBody = computed(() => {
+  if (!ownsResolvedOrder.value || !order.value || !('order_type' in order.value)) {
+    return t('firstUseJourney.completedOrderBody')
+  }
+  if (entitlementRefresh.value !== 'ready') return t('firstUseJourney.accountRefreshPendingBody')
+  if (order.value.order_type === 'balance') return t('firstUseJourney.balanceCreditedBody')
+  if (order.value.order_type === 'subscription') return t('firstUseJourney.subscriptionCreditedBody')
+  return t('firstUseJourney.completedOrderBody')
+})
+
+function continueSetup() {
+  const scene = readRouteQueryString('scene')
+  const query = scene === 'image' || scene === 'code' ? { scene } : {}
+  if (authStore.isAuthenticated) {
+    void router.push({ path: '/get-started', query })
+  } else {
+    const redirect = scene === 'image' || scene === 'code' ? `/get-started?scene=${scene}` : '/get-started'
+    void router.push({ path: '/login', query: { redirect } })
+  }
+}
+
 const isPending = computed(() => {
   return isPendingStatus(order.value?.status)
 })
@@ -196,26 +238,52 @@ function formatGatewayAmount(value: number): string {
 }
 
 function setResolvedOrder(nextOrder: ResolvedOrder | null): void {
+  if (disposed) return
   order.value = nextOrder
   if (nextOrder && 'currency' in nextOrder && nextOrder.currency) {
     currency.value = normalizePaymentCurrency(nextOrder.currency)
   }
-  refreshUserBalanceForSuccessfulOrder(nextOrder)
+  void refreshEntitlementsForCompletedOrder(nextOrder)
 }
 
-function refreshUserBalanceForSuccessfulOrder(nextOrder: ResolvedOrder | null): void {
-  if (!nextOrder || userBalanceRefreshStarted || normalizeOrderStatus(nextOrder.status) !== 'COMPLETED') {
+async function refreshEntitlementsForCompletedOrder(nextOrder: ResolvedOrder | null): Promise<void> {
+  if (!nextOrder || entitlementRefreshStarted || normalizeOrderStatus(nextOrder.status) !== 'COMPLETED'
+    || !ownsResolvedOrder.value || !('order_type' in nextOrder)) {
     return
   }
-  if ('order_type' in nextOrder && nextOrder.order_type !== 'balance') {
+  if (nextOrder.order_type !== 'balance' && nextOrder.order_type !== 'subscription') {
     return
   }
 
-  userBalanceRefreshStarted = true
-  void authStore.refreshUser().catch(() => {
-    // The order result remains authoritative even if refreshing profile data fails.
-  })
+  entitlementRefreshStarted = true
+  entitlementRefresh.value = 'loading'
+  const ownerId = authStore.user!.id
+  const tokenPresent = Boolean(authStore.token)
+  const generation = componentGeneration
+  const current = () => !disposed && componentGeneration === generation && authStore.isAuthenticated
+    && authStore.user?.id === ownerId && Boolean(authStore.token) === tokenPresent
+  try {
+    const [profile, subscriptions] = await Promise.all([
+      authStore.refreshUser(),
+      nextOrder.order_type === 'subscription' ? subscriptionStore.fetchActiveSubscriptions(true) : Promise.resolve(null),
+    ])
+    if (!current()) return
+    const subscriptionReady = nextOrder.order_type !== 'subscription' || (Array.isArray(subscriptions)
+      && subscriptions.some((subscription) => subscription.user_id === ownerId && hasUsableSubscription(subscription)))
+    entitlementRefresh.value = profile.id === ownerId && subscriptionReady ? 'ready' : 'unavailable'
+  } catch {
+    // Keep the authoritative fulfillment result, but do not claim the profile
+    // or subscription information has been verified when its refresh failed.
+    if (current()) entitlementRefresh.value = 'unavailable'
+  }
 }
+
+watch(() => [authStore.user?.id, Boolean(authStore.token), authStore.isAuthenticated] as const, (next, previous) => {
+  if (next[0] === previous[0] && next[1] === previous[1] && next[2] === previous[2]) return
+  componentGeneration++
+  entitlementRefreshStarted = false
+  entitlementRefresh.value = 'idle'
+}, { flush: 'sync' })
 
 function hasOrderId(nextOrder: ResolvedOrder | null): nextOrder is PaymentOrder {
   return !!nextOrder && 'id' in nextOrder && typeof nextOrder.id === 'number'
@@ -337,13 +405,14 @@ function clearRecoverySnapshotForTerminalStatus(status: string | null | undefine
 
 function scheduleStatusRefresh(refreshOrder: (() => Promise<ResolvedOrder | null>) | null): void {
   clearStatusRefreshTimer()
-  if (!refreshOrder || !isPending.value || refreshAttempts.value >= STATUS_REFRESH_MAX_ATTEMPTS) {
+  if (disposed || !refreshOrder || !isPending.value || refreshAttempts.value >= STATUS_REFRESH_MAX_ATTEMPTS) {
     return
   }
 
   statusRefreshTimer = setTimeout(async () => {
     refreshAttempts.value += 1
     const refreshedOrder = await refreshOrder()
+    if (disposed) return
     if (refreshedOrder) {
       setResolvedOrder(refreshedOrder)
       clearRecoverySnapshotForTerminalStatus(refreshedOrder.status)
@@ -379,6 +448,7 @@ onMounted(async () => {
 
   if (resumeToken) {
     const resolvedOrder = await resolveOrderFromResumeToken(resumeToken)
+    if (disposed) return
     if (resolvedOrder) {
       setResolvedOrder(resolvedOrder)
       if (!orderId) {
@@ -399,7 +469,9 @@ onMounted(async () => {
 
   if (!order.value && orderId && (!resumeToken || routeOrderId > 0)) {
     try {
-      setResolvedOrder(await paymentStore.pollOrderStatus(orderId))
+      const resolved = await paymentStore.pollOrderStatus(orderId)
+      if (disposed) return
+      setResolvedOrder(resolved)
     } catch (_err: unknown) {
       // Order lookup failed, will try legacy fallback below when possible.
     }
@@ -407,6 +479,7 @@ onMounted(async () => {
 
   if (!order.value && shouldUsePublicOutTradeNo && (!resumeToken || resumeTokenLookupFailed)) {
     const legacyOrder = await resolveOrderFromOutTradeNo(outTradeNo)
+    if (disposed) return
     if (legacyOrder) {
       setResolvedOrder(legacyOrder)
       if (!orderId) {
@@ -458,6 +531,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  componentGeneration++
   clearStatusRefreshTimer()
 })
 </script>

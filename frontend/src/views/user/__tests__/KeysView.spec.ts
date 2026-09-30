@@ -18,6 +18,7 @@ const {
   copyToClipboard,
   isCurrentStep,
   nextStep,
+  routerPush,
 } = vi.hoisted(() => ({
   listKeys: vi.fn(),
   updateKey: vi.fn(),
@@ -30,6 +31,7 @@ const {
   copyToClipboard: vi.fn(),
   isCurrentStep: vi.fn(),
   nextStep: vi.fn(),
+  routerPush: vi.fn(),
 }))
 
 const messages: Record<string, string> = {
@@ -84,6 +86,8 @@ vi.mock('@/stores/app', () => ({
     showSuccess,
   }),
 }))
+
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 
 vi.mock('@/stores/onboarding', () => ({
   useOnboardingStore: () => ({
@@ -221,12 +225,6 @@ const IconStub = {
   template: '<span data-test="icon">{{ name }}</span>',
 }
 
-const CodexOneClickModalStub = {
-  name: 'CodexOneClickModal',
-  props: ['show', 'apiKey', 'keyName', 'baseUrl', 'providerName', 'platform', 'initialMethod', 'availableKeys', 'initialKeyId'],
-  template: '<div />',
-}
-
 const mountView = async () => {
   const wrapper = mount(KeysView, {
     global: {
@@ -246,7 +244,6 @@ const mountView = async () => {
         SearchInput: SearchInputStub,
         Icon: IconStub,
         UseKeyModal: true,
-        CodexOneClickModal: CodexOneClickModalStub,
         BulkEditKeysModal: true,
         EndpointPopover: true,
         GroupBadge: true,
@@ -290,6 +287,7 @@ describe('user KeysView column settings', () => {
     copyToClipboard.mockReset()
     isCurrentStep.mockReset()
     nextStep.mockReset()
+    routerPush.mockReset()
 
     listKeys.mockResolvedValue({
       items: [createApiKey()],
@@ -511,112 +509,99 @@ describe('user KeysView column settings', () => {
     expect(wrapper.get('[data-test="current-concurrency"]').text()).toBe('3')
   })
 
-  it('shows the top-level one-click action for an active usable key', async () => {
-    listKeys.mockResolvedValueOnce({
-      items: [{ ...createApiKey(), group: { platform: 'openai' } as ApiKey['group'] }],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      pages: 1,
+  it.each(['empty', 'inactive', 'filtered'])('keeps the unified entry available for a %s current page', async (state) => {
+    listKeys.mockResolvedValue({
+      items: state === 'inactive' ? [{ ...createApiKey(), status: 'inactive' }] : [],
+      total: state === 'filtered' ? 200 : state === 'inactive' ? 1 : 0,
+      page: 1, page_size: 20, pages: state === 'filtered' ? 10 : 1
     })
     const wrapper = await mountView()
-
-    expect(wrapper.find('[data-testid="codex-one-click-banner"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="codex-one-click-action"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[data-testid="codex-one-click-row"]').attributes('disabled')).toBeUndefined()
-    await wrapper.get('[data-testid="codex-one-click-action"]').trigger('click')
-    expect(wrapper.findComponent({ name: 'CodexOneClickModal' }).props('show')).toBe(true)
-  })
-
-  it('passes the available active keys to the one-click selector', async () => {
-    const first = { ...createApiKey(), id: 1, name: 'first' }
-    const second = { ...createApiKey(), id: 2, name: 'second', key: 'sk-second' }
-    listKeys.mockResolvedValueOnce({
-      items: [first, second],
-      total: 2,
-      page: 1,
-      page_size: 20,
-      pages: 1,
-    })
-    const wrapper = await mountView()
-    await wrapper.get('[data-testid="codex-one-click-action"]').trigger('click')
-
-    const modal = wrapper.findComponent({ name: 'CodexOneClickModal' })
-    expect(modal.props('initialKeyId')).toBe(1)
-    expect(modal.props('availableKeys')).toEqual([first, second])
-  })
-
-  it('keeps the one-click action visible but disabled for an inactive OpenAI key', async () => {
-    listKeys.mockResolvedValueOnce({
-      items: [{ ...createApiKey(), status: 'inactive', group: { platform: 'openai' } as ApiKey['group'] }],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      pages: 1,
-    })
-    const wrapper = await mountView()
-
-    expect(wrapper.find('[data-testid="codex-one-click-banner"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="codex-one-click-action"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="codex-one-click-row"]').attributes('disabled')).toBeDefined()
-  })
-
-  it('opens one-click setup with the exact row that was clicked', async () => {
-    const first = {
-      ...createApiKey(),
-      id: 1,
-      key: 'sk-first-row',
-      name: 'first-row',
-      group: { platform: 'openai' } as ApiKey['group'],
+    if (state === 'filtered') {
+      wrapper.findComponent({ name: 'SearchInput' }).vm.$emit('update:modelValue', 'unmatched')
+      wrapper.findComponent({ name: 'SearchInput' }).vm.$emit('search')
+      await flushPromises()
     }
-    const second = {
-      ...createApiKey(),
-      id: 2,
-      key: 'sk-second-row',
-      name: 'second-row',
-      group_id: null,
-      group: undefined,
-    }
-    listKeys.mockResolvedValueOnce({
-      items: [first, second],
-      total: 2,
-      page: 1,
-      page_size: 20,
-      pages: 1,
-    })
-    const wrapper = await mountView()
-    const rowActions = wrapper.findAll('[data-testid="codex-one-click-row"]')
-
-    expect(rowActions).toHaveLength(2)
-    expect(rowActions[1].attributes('disabled')).toBeUndefined()
-    await rowActions[1].trigger('click')
-
-    const modal = wrapper.findComponent({ name: 'CodexOneClickModal' })
-    expect(modal.props('show')).toBe(true)
-    expect(modal.props('apiKey')).toBe('sk-second-row')
-    expect(modal.props('keyName')).toBe('second-row')
+    const listCallCount = listKeys.mock.calls.length
+    expect(wrapper.get('[data-testid="quick-connect-action"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="quick-connect-action"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith('/get-started')
+    expect(listKeys).toHaveBeenCalledTimes(listCallCount)
+    wrapper.unmount()
   })
 
-  it('opens the shared CC Switch selector for the row import action', async () => {
-    const key = {
-      ...createApiKey(),
-      group: { platform: 'grok' } as ApiKey['group'],
-    }
-    listKeys.mockResolvedValueOnce({
-      items: [key],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      pages: 1,
-    })
+  it('opens the unified page with only the selected row ID and retains secondary manual configuration', async () => {
+    const group = { id: 1, platform: 'openai', status: 'active' } as ApiKey['group']
+    const first = { ...createApiKey(), group_id: 1, group }
+    const second = { ...first, id: 2, key: 'sk-second-row', name: 'second-row' }
+    listKeys.mockResolvedValueOnce({ items: [first, second], total: 2, page: 1, page_size: 20, pages: 1 })
     const wrapper = await mountView()
+    await wrapper.findAll('[data-testid="quick-connect-row"]')[1].trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { key: '2' } })
+    expect(JSON.stringify(routerPush.mock.calls)).not.toContain('sk-second-row')
+    expect(wrapper.find('[data-testid="ccswitch-import-row"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'CodexOneClickModal' }).exists()).toBe(false)
+    await wrapper.findAll('[data-testid="manual-config-row"]')[1].trigger('click')
+    expect(wrapper.findComponent({ name: 'UseKeyModal' }).props()).toMatchObject({ show: true, apiKey: 'sk-second-row' })
+    wrapper.unmount()
+  })
 
-    await wrapper.get('[data-testid="ccswitch-import-row"]').trigger('click')
+  it.each([
+    ['国模 OAI', 'openai', true], ['Ordinary', 'openai', false], ['国模 OAI', 'anthropic', false]
+  ])('passes the manual CN OAI catalog flag only for the named OpenAI group (%s / %s)', async (name, platform, catalog) => {
+    const group = { id: 1, name, platform, status: 'active', claude_code_only: true } as ApiKey['group']
+    const key = { ...createApiKey(), group_id: 1, group }
+    listKeys.mockResolvedValueOnce({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = await mountView()
+    await wrapper.get('[data-testid="manual-config-row"]').trigger('click')
+    expect(wrapper.findComponent({ name: 'UseKeyModal' }).props()).toMatchObject({ cnOaiCatalog: catalog, claudeCodeOnly: true })
+    wrapper.unmount()
+  })
 
-    const modal = wrapper.findComponent({ name: 'CodexOneClickModal' })
-    expect(modal.props('show')).toBe(true)
-    expect(modal.props('platform')).toBe('grok')
-    expect(modal.props('initialMethod')).toBe('ccswitch')
+  it.each([
+    [{ status: 'inactive' }, 'inactive'],
+    [{ key: ' ' }, 'emptyKey'],
+    [{ group_id: null }, 'noGroup'],
+    [{ group: undefined }, 'noGroup'],
+    [{ group: { platform: 'openai', status: 'inactive' } }, 'inactiveGroup'],
+    [{ expires_at: '2000-01-01T00:00:00Z' }, 'expired'],
+    [{ quota: 10, quota_used: 10 }, 'quotaExhausted']
+  ])('explains unavailable row setup for %j', async (overrides, reason) => {
+    const key = { ...createApiKey(), group_id: 1, group: { platform: 'openai', status: 'active' }, ...overrides }
+    listKeys.mockResolvedValueOnce({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = await mountView()
+    expect(wrapper.get('[data-testid="quick-connect-row"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="quick-connect-reason"]').text()).toBe(`quickConnect.reasons.${reason}`)
+    await wrapper.get('[data-testid="quick-connect-row"]').trigger('click')
+    expect(routerPush).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('sends image-only rows to the image scene without text configuration actions', async () => {
+    const key = { ...createApiKey(), group_id: 1, group: { platform: 'openai', status: 'active', image_only: true } }
+    listKeys.mockResolvedValueOnce({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = await mountView()
+    expect(wrapper.get('[data-testid="quick-connect-row"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="quick-connect-row"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { key: '1', scene: 'image' } })
+    expect(wrapper.find('[data-testid="manual-config-row"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('offers setup for the newly created key without opening it automatically', async () => {
+    const group = { id: 1, name: 'OpenAI', platform: 'openai', status: 'active', rate_multiplier: 1, subscription_type: 'standard' }
+    getAvailableGroups.mockResolvedValue([group])
+    vi.mocked(keysAPI.create).mockResolvedValue({ ...createApiKey(), id: 77, group_id: 1 })
+    const wrapper = await mountView()
+    await wrapper.get('[data-tour="keys-create-btn"]').trigger('click')
+    await wrapper.get('[data-tour="key-form-name"]').setValue('Created key')
+    wrapper.findComponent('[data-tour="key-form-group"]').vm.$emit('update:modelValue', 1)
+    await wrapper.get('#key-form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="created-key-connect"]').text()).toContain('quickConnect.createdReady')
+    expect(routerPush).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="created-key-connect-now"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/get-started', query: { key: '77' } })
+    wrapper.unmount()
   })
 
   it('marks current concurrency as sortable', async () => {

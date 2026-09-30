@@ -40,6 +40,57 @@ describe('UseKeyModal', () => {
     saveAsMock.mockClear()
   })
 
+  it('retains manual client configuration without exposing RikkaHub', () => {
+    const wrapper = mount(UseKeyModal, {
+      props: { show: true, apiKey: 'sk-openai-test', baseUrl: 'https://example.com', platform: 'openai' },
+      global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true } }
+    })
+    expect(wrapper.text()).not.toContain('RikkaHub')
+    expect(wrapper.find('[data-testid="rikkahub-import"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(wrapper.text()).toContain('keys.useKeyModal.cliTabs.opencode')
+    expect(wrapper.findAll('pre').length).toBeGreaterThan(0)
+    wrapper.unmount()
+  })
+
+  it('shows only Claude Code for Claude Code-only groups', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'sk-anthropic-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'anthropic'
+      },
+      global: {
+        stubs: {
+          BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+          Icon: { template: '<span />' }
+        }
+      }
+    })
+
+    const clientTabs = () => wrapper.find('nav[aria-label="Client"]').text()
+    expect(clientTabs()).toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(clientTabs()).toContain('keys.useKeyModal.cliTabs.opencode')
+
+    const codexTab = wrapper.find('nav[aria-label="Client"]').findAll('button').find(
+      (button) => button.text().includes('keys.useKeyModal.cliTabs.codexCli')
+    )
+    await codexTab!.trigger('click')
+    await wrapper.setProps({ claudeCodeOnly: true })
+
+    expect(clientTabs()).toContain('keys.useKeyModal.cliTabs.claudeCode')
+    expect(clientTabs()).not.toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(clientTabs()).not.toContain('keys.useKeyModal.cliTabs.opencode')
+    expect(wrapper.find('pre code').text()).toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')
+
+    await wrapper.setProps({ platform: 'openai' })
+    expect(clientTabs()).toContain('keys.useKeyModal.cliTabs.claudeCode')
+    expect(clientTabs()).not.toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(clientTabs()).not.toContain('keys.useKeyModal.cliTabs.opencode')
+    expect(wrapper.find('pre code').text()).toContain('ANTHROPIC_BASE_URL')
+  })
+
   it('omits the attribution override from every standard Claude Code setup form', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {
@@ -455,6 +506,8 @@ describe('UseKeyModal', () => {
     expect(configToml).toContain('requires_openai_auth = false')
     expect(configToml).toContain('experimental_bearer_token = "sk-test"')
     expect(configToml).toContain('http_headers = { "x-openai-actor-authorization" = "local-image-extension" }')
+    expect(configToml).toContain('model_catalog_url = "https://example.com/v1/models"')
+    expect(configToml).not.toContain('model_catalog_json')
     expect(configToml).not.toContain('env_key')
     expect(configToml).not.toContain('image_generation')
     expect(codeBlocks).not.toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
@@ -554,6 +607,8 @@ describe('UseKeyModal', () => {
 
     const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
     const configToml = codeBlocks.find((content) => content.includes('supports_websockets = true'))
+    expect(configToml).toContain('model_catalog_url = "https://example.com/v1/models"')
+    expect(configToml).not.toContain('model_catalog_json')
 
     expect(wrapper.get('[data-testid="codex-auth-mode-api-key"]').attributes('aria-checked')).toBe('true')
     expect(configToml).toBeDefined()
@@ -668,12 +723,13 @@ describe('UseKeyModal', () => {
 
     const parsed = JSON.parse(wrapper.find('pre code').text())
     const models = parsed.provider.openai.models
-    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'gpt-6-luna']) {
+    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']) {
       expect(models[model]).toBeDefined()
       expect(models[model].variants).toHaveProperty('max')
       expect(models[model].variants).toHaveProperty('xhigh')
     }
     expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
+    expect(models['gpt-6.1-sol'].variants).not.toHaveProperty('none')
     expect(models['gpt-6-sol'].variants).toHaveProperty('none')
     expect(models['gpt-6-luna'].limit).toEqual({ context: 1050000, output: 128000 })
     expect(models['gpt-6']).toEqual({
@@ -690,7 +746,7 @@ describe('UseKeyModal', () => {
     })
   })
 
-  it('exports Opus 5.5 only on the Anthropic provider with adaptive defaults', async () => {
+  it('exports Claude 5.5 models on the Anthropic provider with adaptive defaults', async () => {
     const wrapper = mount(UseKeyModal, {
       props: { show: true, apiKey: 'sk-test', baseUrl: 'https://example.com/v1', platform: 'anthropic' },
       global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: { template: '<span />' } } }
@@ -699,11 +755,15 @@ describe('UseKeyModal', () => {
     expect(tab).toBeDefined()
     await tab!.trigger('click')
     await nextTick()
-    const model = JSON.parse(wrapper.find('pre code').text()).provider.anthropic.models['claude-opus-5-5']
-    expect(model.limit).toEqual({ context: 1000000, output: 128000 })
-    expect(model.options).toEqual({ thinking: { type: 'adaptive' }, effort: 'medium' })
-    expect(model.variants.xhigh.effort).toBe('xhigh')
-    expect(model.variants).not.toHaveProperty('none')
+    const models = JSON.parse(wrapper.find('pre code').text()).provider.anthropic.models
+    expect(models['claude-opus-5-5'].limit).toEqual({ context: 1000000, output: 128000 })
+    expect(models['claude-opus-5-5'].options).toEqual({ thinking: { type: 'adaptive' }, effort: 'medium' })
+    expect(models['claude-opus-5-5'].variants.xhigh.effort).toBe('xhigh')
+    expect(models['claude-opus-5-5'].variants).not.toHaveProperty('none')
+    expect(models['claude-sonnet-5-5'].limit).toEqual({ context: 1000000, output: 128000 })
+    expect(models['claude-sonnet-5-5'].options).toEqual({ thinking: { type: 'adaptive' }, effort: 'high' })
+    expect(models['claude-sonnet-5-5'].variants.xhigh.effort).toBe('xhigh')
+    expect(models['claude-sonnet-5-5'].variants).not.toHaveProperty('none')
   })
 
   it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {
@@ -753,8 +813,8 @@ describe('UseKeyModal', () => {
     expect(fable.options.thinking).not.toHaveProperty('budgetTokens')
   })
 
-  // Scenario: API Key users can fetch a routed group catalog and reference it from config.toml.
-  it('offers a downloadable Codex catalog for Composite API keys', async () => {
+  // Scenario: API Key users can load a routed catalog remotely or download it for older clients.
+  it('offers remote and downloadable Codex catalogs for Composite API keys', async () => {
     const manifest = {
       models: [
         {
@@ -776,7 +836,7 @@ describe('UseKeyModal', () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => manifest
+      text: async () => JSON.stringify(manifest)
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -809,14 +869,18 @@ describe('UseKeyModal', () => {
     const unixConfig = wrapper.findAll('pre code')
       .map((code) => code.text())
       .find((content) => content.includes('[model_providers.sub2api]'))
-    expect(unixConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+    expect(unixConfig).toContain('[model_providers.sub2api]\nname = "Sub2API Composite"\nbase_url = "https://example.com/v1"\nmodel_catalog_url = "https://example.com/v1/models"')
+    expect(unixConfig).not.toContain('model_catalog_json')
     expect(unixConfig).toContain('env_key = "SUB2API_API_KEY"')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('file')
 
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://example.com/v1/models?client_version=0.147.0',
+      'https://example.com/v1/models?client_version=0.158.0',
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer sk-composite-test' })
       })
@@ -830,6 +894,8 @@ describe('UseKeyModal', () => {
     expect(loadedUnixConfig).toContain('model = "claude-opus-4-8"')
     expect(loadedUnixConfig).toContain('review_model = "claude-opus-4-8"')
     expect(loadedUnixConfig).not.toContain('model = "gpt-5.5"')
+    expect(loadedUnixConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+    expect(loadedUnixConfig).not.toContain('model_catalog_url')
 
     const downloadButton = wrapper.findAll('button').find((button) =>
       button.text().includes('keys.useKeyModal.codexModelCatalog.download')
@@ -855,7 +921,7 @@ describe('UseKeyModal', () => {
       .toContain('%userprofile%\\.codex\\codex-models.json')
   })
 
-  it.each(['anthropic', 'gemini', 'antigravity', 'kimi', 'zhipu', 'minimax'] as const)(
+  it.each(['anthropic', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'] as const)(
     'offers Codex catalog configuration for the %s routed group',
     async (platform) => {
       const wrapper = mount(UseKeyModal, {
@@ -888,7 +954,8 @@ describe('UseKeyModal', () => {
       const config = wrapper.findAll('pre code')
         .map((code) => code.text())
         .find((content) => content.includes('[model_providers.sub2api]'))
-      expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+      expect(config).toContain('model_catalog_url = "https://example.com/v1/models"')
+      expect(config).not.toContain('model_catalog_json')
       expect(config).toContain('base_url = "https://example.com/v1"')
       expect(config).toContain('wire_api = "responses"')
     }
@@ -899,7 +966,7 @@ describe('UseKeyModal', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         models: [
           { slug: 'claude-opus-4-8' },
           { slug: 'gpt-5.5' }
@@ -941,21 +1008,9 @@ describe('UseKeyModal', () => {
     expect(config).toContain('review_model = "gpt-5.5"')
   })
 
-  it('derives OpenAI Codex reasoning effort from the selected catalog descriptor', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        models: [
-          {
-            slug: 'glm-5.3',
-            default_reasoning_level: 'none',
-            supported_reasoning_levels: [{ effort: 'none' }]
-          }
-        ]
-      })
-    }))
-
+  it('offers remote and optional file catalogs for OpenAI in both transport modes and on both platforms', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
     const wrapper = mount(UseKeyModal, {
       props: {
         show: true,
@@ -975,13 +1030,234 @@ describe('UseKeyModal', () => {
       }
     })
 
+    for (const transport of ['keys.useKeyModal.cliTabs.codexCli', 'keys.useKeyModal.cliTabs.codexCliWs']) {
+      await wrapper.findAll('button').find((button) => button.text().trim() === transport)!.trigger('click')
+      for (const os of ['macOS / Linux', 'Windows']) {
+        await wrapper.findAll('button').find((button) => button.text().trim() === os)!.trigger('click')
+        const configToml = wrapper.findAll('pre code')
+          .map((code) => code.text())
+          .find((content) => content.includes('model_provider = "OpenAI"'))
+        expect(configToml).toContain('model = "gpt-5.6"')
+        expect(configToml).toContain('[model_providers.OpenAI]\nname = "OpenAI"\nbase_url = "https://example.com/v1"\nmodel_catalog_url = "https://example.com/v1/models"')
+        expect(configToml).not.toContain('model_catalog_json')
+        expect(configToml).toContain('requires_openai_auth = true')
+        expect(configToml).not.toContain('client_version')
+        expect(wrapper.find('[data-testid="codex-model-catalog"]').exists()).toBe(true)
+
+        await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('file')
+        const fileConfig = wrapper.findAll('pre code')
+          .map((code) => code.text())
+          .find((content) => content.includes('model_provider = "OpenAI"'))!
+        expect(fileConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+        expect(fileConfig).not.toContain('model_catalog_url')
+        expect(fileConfig.indexOf('model_catalog_json')).toBeLessThan(fileConfig.indexOf('[model_providers.OpenAI]'))
+        await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('remote')
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('uses only the fetched CN OAI models for manual Codex configuration in both transports', async () => {
+    const manifest = { models: [{ slug: 'glm-5.3', default_reasoning_level: 'medium', supported_reasoning_levels: [{ effort: 'medium' }] }] }
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify(manifest) })
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mount(UseKeyModal, {
+      props: { show: true, apiKey: 'sk-cn-test', baseUrl: 'https://example.com/v1', platform: 'openai', cnOaiCatalog: true },
+      global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true } }
+    })
+    expect(wrapper.findAll('pre code')).toHaveLength(0)
+    expect(fetchMock).not.toHaveBeenCalled()
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
-
-    const configToml = wrapper.findAll('pre code')
-      .map((code) => code.text())
-      .find((content) => content.includes('model_provider = "OpenAI"'))
-    expect(configToml).toContain('model = "glm-5.3"')
-    expect(configToml).not.toContain('model_reasoning_effort')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/v1/models?client_version=0.158.0',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer sk-cn-test' }) })
+    )
+    for (const transport of ['keys.useKeyModal.cliTabs.codexCli', 'keys.useKeyModal.cliTabs.codexCliWs']) {
+      await wrapper.findAll('button').find(button => button.text().trim() === transport)!.trigger('click')
+      for (const os of ['macOS / Linux', 'Windows']) {
+        await wrapper.findAll('button').find(button => button.text().trim() === os)!.trigger('click')
+        for (const catalogMode of ['remote', 'file']) {
+          await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue(catalogMode)
+          const config = wrapper.findAll('pre code').map(code => code.text()).find(content => content.includes('model_provider = "OpenAI"'))!
+          expect(config).toContain('model = "glm-5.3"')
+          expect(config).toContain('review_model = "glm-5.3"')
+          expect(config).toContain('model_reasoning_effort = "medium"')
+          expect(config).not.toContain('gpt-5.6')
+          if (catalogMode === 'file') {
+            expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+            expect(config).not.toContain('model_catalog_url')
+            expect(config.indexOf('model_catalog_json')).toBeLessThan(config.indexOf('[model_providers.OpenAI]'))
+          } else {
+            expect(config).toContain('model_catalog_url = "https://example.com/v1/models"')
+            expect(config).not.toContain('model_catalog_json')
+          }
+        }
+      }
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const download = wrapper.findAll('button').find(button => button.text().includes('keys.useKeyModal.codexModelCatalog.download'))!
+    await download.trigger('click')
+    expect(saveAsMock).toHaveBeenCalledWith(expect.any(Blob), 'codex-models.json')
+    expect(JSON.parse(await readBlobAsText(saveAsMock.mock.calls[0][0]))).toEqual(manifest)
+    await wrapper.setProps({ apiKey: 'sk-another-cn-key' })
+    expect(wrapper.findAll('pre code')).toHaveLength(0)
+    await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('remote')
+    await wrapper.setProps({ cnOaiCatalog: false })
+    const ordinary = wrapper.findAll('pre code').map(code => code.text()).join('\n')
+    expect(ordinary).toContain('model = "gpt-5.6"')
+    expect(ordinary).not.toContain('model_catalog_json')
+    wrapper.unmount()
   })
+
+  it.each(['request error', 'empty catalog'])('keeps CN OAI setup unavailable after %s and permits retry', async failure => {
+    const fetchMock = vi.fn()
+    if (failure === 'request error') fetchMock.mockRejectedValueOnce(new Error('fixture failure'))
+    else fetchMock.mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ models: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ models: [{ slug: 'text-model', default_reasoning_level: 'none', supported_reasoning_levels: [{ effort: 'none' }] }] }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mount(UseKeyModal, {
+      props: { show: true, apiKey: 'sk-cn-test', baseUrl: 'https://example.com/v1', platform: 'openai', cnOaiCatalog: true },
+      global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true } }
+    })
+    await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('pre code')).toHaveLength(0)
+    expect(wrapper.get('[data-testid="codex-model-catalog-fetch"]').text()).toContain('keys.useKeyModal.codexModelCatalog.retry')
+    await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+    await flushPromises()
+    const config = wrapper.findAll('pre code').map(code => code.text()).join('\n')
+    expect(config).toContain('model = "text-model"')
+    expect(config).not.toContain('model_reasoning_effort')
+    await wrapper.setProps({ claudeCodeOnly: true })
+    expect(wrapper.find('[data-testid="codex-model-catalog"]').exists()).toBe(false)
+    expect(wrapper.find('nav[aria-label="Client"]').text()).not.toContain('keys.useKeyModal.cliTabs.codexCli')
+    wrapper.unmount()
+  })
+
+  it.each(['key', 'base URL', 'CN catalog mode', 'close', 'unmount'] as const)(
+    'cancels the previous catalog request and ignores its response after a %s change',
+    async (contextChange) => {
+      let resolvePrevious!: (response: { ok: boolean, text: () => Promise<string> }) => void
+      const fetchMock = vi.fn().mockImplementationOnce(() => new Promise(resolve => { resolvePrevious = resolve }))
+        .mockResolvedValue({ ok: true, text: async () => JSON.stringify({ models: [{ slug: 'current-model' }] }) })
+      vi.stubGlobal('fetch', fetchMock)
+      const wrapper = mount(UseKeyModal, {
+        props: { show: true, apiKey: 'sk-old-key', baseUrl: 'https://example.com/v1', platform: 'openai', cnOaiCatalog: true },
+        global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true } }
+      })
+      await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+      const previousSignal = fetchMock.mock.calls[0]![1].signal as AbortSignal
+      expect(previousSignal.aborted).toBe(false)
+      if (contextChange === 'key') await wrapper.setProps({ apiKey: 'sk-current-key' })
+      else if (contextChange === 'base URL') await wrapper.setProps({ baseUrl: 'https://current.example/v1' })
+      else if (contextChange === 'CN catalog mode') await wrapper.setProps({ cnOaiCatalog: false })
+      else if (contextChange === 'close') await wrapper.setProps({ show: false })
+      else wrapper.unmount()
+      expect(previousSignal.aborted).toBe(true)
+
+      // Some fetch mocks/transports still resolve after abort; the request ID must isolate them too.
+      resolvePrevious({ ok: true, text: async () => JSON.stringify({ models: [{ slug: 'previous-model' }] }) })
+      await flushPromises()
+      if (contextChange === 'unmount') return
+      expect(wrapper.findAll('pre code').map(code => code.text()).join('\n')).not.toContain('previous-model')
+      if (contextChange === 'close') await wrapper.setProps({ show: true })
+      if (contextChange !== 'CN catalog mode') expect(wrapper.findAll('pre code')).toHaveLength(0)
+
+      await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.findAll('pre code').map(code => code.text()).join('\n')).toContain('model = "current-model"')
+      expect(fetchMock.mock.calls[1]![1].headers.Authorization)
+        .toBe(contextChange === 'key' ? 'Bearer sk-current-key' : 'Bearer sk-old-key')
+      wrapper.unmount()
+    }
+  )
+
+  it.each(['legacy', 'api-key'] as const)(
+    'keeps catalog URLs credential-free and authenticates OpenAI catalog fetches in %s mode',
+    async authMode => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify({ models: [{ slug: 'gpt-5.6' }] }) })
+      vi.stubGlobal('fetch', fetchMock)
+      const wrapper = mount(UseKeyModal, {
+        props: { show: true, apiKey: 'sk-openai-test', baseUrl: 'https://example.com/v1', platform: 'openai' },
+        global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true } }
+      })
+      await wrapper.get(`[data-testid="codex-auth-mode-${authMode}"]`).trigger('click')
+      for (const transport of ['keys.useKeyModal.cliTabs.codexCli', 'keys.useKeyModal.cliTabs.codexCliWs']) {
+        await wrapper.findAll('button').find(button => button.text().trim() === transport)!.trigger('click')
+        const config = wrapper.findAll('pre code').map(code => code.text()).find(content => content.includes('model_provider = "OpenAI"'))!
+        expect(config).toContain('model_catalog_url = "https://example.com/v1/models"')
+        expect(config).not.toContain('model_catalog_url = "https://example.com/v1/models?')
+        if (authMode === 'api-key') {
+          expect(config).toContain('requires_openai_auth = false')
+          expect(config).toContain('experimental_bearer_token = "sk-openai-test"')
+        } else {
+          expect(config).toContain('requires_openai_auth = true')
+          expect(wrapper.findAll('pre code').map(code => code.text()).join('\n')).toContain('"OPENAI_API_KEY": "sk-openai-test"')
+        }
+      }
+      await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+      await flushPromises()
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://example.com/v1/models?client_version=0.158.0',
+        expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer sk-openai-test' }) })
+      )
+      wrapper.unmount()
+    }
+  )
+
+  it.each([1024 * 1024 - 1, 1024 * 1024, 1024 * 1024 + 1])(
+    'uses file mode only when the manifest exceeds the remote byte limit (%s bytes)',
+    async (responseBytes) => {
+      const manifest = { models: [{ slug: 'gpt-5.5', description: '' }] }
+      manifest.models[0]!.description = 'x'.repeat(responseBytes - JSON.stringify(manifest).length)
+      const responseText = JSON.stringify(manifest)
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => responseText
+      }))
+      const wrapper = mount(UseKeyModal, {
+        props: {
+          show: true,
+          apiKey: 'sk-test',
+          baseUrl: 'https://example.com/v1',
+          platform: 'openai'
+        },
+        global: {
+          stubs: {
+            BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
+            Icon: { template: '<span />' }
+          }
+        }
+      })
+
+      await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+      await flushPromises()
+
+      const oversized = responseBytes > 1024 * 1024
+      const mode = wrapper.get('[data-testid="codex-model-catalog-mode"]')
+      expect((mode.element as HTMLSelectElement).value).toBe(oversized ? 'file' : 'remote')
+      expect((mode.get('option[value="remote"]').element as HTMLOptionElement).disabled).toBe(oversized)
+      const config = wrapper.findAll('pre code').map((code) => code.text())
+        .find((content) => content.includes('model_provider = "OpenAI"'))!
+      if (oversized) {
+        expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+        expect(config).not.toContain('model_catalog_url')
+        expect(wrapper.text()).toContain('keys.useKeyModal.codexModelCatalog.oversized')
+        await wrapper.findAll('button').find((button) =>
+          button.text().includes('keys.useKeyModal.codexModelCatalog.download')
+        )!.trigger('click')
+        const downloaded = saveAsMock.mock.calls[0]?.[0] as Blob
+        expect(JSON.parse(await readBlobAsText(downloaded))).toEqual(manifest)
+
+        await wrapper.setProps({ apiKey: 'sk-new-group' })
+        expect((mode.get('option[value="remote"]').element as HTMLOptionElement).disabled).toBe(false)
+        expect(wrapper.text()).not.toContain('keys.useKeyModal.codexModelCatalog.oversized')
+      } else {
+        expect(config).toContain('model_catalog_url = "https://example.com/v1/models"')
+        expect(config).not.toContain('model_catalog_json')
+      }
+    }
+  )
 })

@@ -5,6 +5,16 @@
         <div class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"></div>
       </div>
       <template v-else>
+        <section v-if="paymentPhase === 'select' && !authStore.isSimpleMode" data-test="funding-guidance" class="card border-primary-200 bg-primary-50 p-5 dark:border-primary-800/50 dark:bg-primary-900/20">
+          <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('firstUseJourney.paymentIntroTitle') }}</h2>
+          <p class="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
+            {{ t(activeTab === 'subscription' ? 'firstUseJourney.subscriptionPurchaseBody' : 'firstUseJourney.paymentIntroBody') }}
+          </p>
+          <div class="mt-3 flex flex-wrap gap-3">
+            <button class="btn btn-secondary" @click="router.push(journeyRoute('/redeem'))">{{ t('redeem.redeemCodeLabel') }}</button>
+            <button class="btn btn-secondary" @click="router.push(journeyRoute('/get-started'))">{{ t('firstUseJourney.backToGuide') }}</button>
+          </div>
+        </section>
         <!-- Tab Switcher (hide during payment and subscription confirm) -->
         <div v-if="tabs.length > 1 && paymentPhase === 'select' && !selectedPlan" class="flex space-x-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800">
           <button v-for="tab in tabs" :key="tab.key"
@@ -414,6 +424,11 @@ async function invokeWechatJsapiPayment(payload: Record<string, unknown>): Promi
 
 const paymentState = ref<PaymentRecoverySnapshot>(emptyPaymentState())
 
+function journeyRoute(path: string) {
+  const scene = route.query.scene
+  return scene === 'image' || scene === 'code' ? { path, query: { scene } } : { path }
+}
+
 function persistRecoverySnapshot(snapshot: PaymentRecoverySnapshot) {
   if (typeof window === 'undefined' || !snapshot.orderId) return
   writePaymentRecoverySnapshot(window.localStorage, snapshot, PAYMENT_RECOVERY_STORAGE_KEY)
@@ -432,6 +447,8 @@ function resetPayment() {
 
 async function redirectToPaymentResult(state: PaymentRecoverySnapshot): Promise<void> {
   const query: Record<string, string | undefined> = {}
+  const scene = route.query.scene
+  if (scene === 'image' || scene === 'code') query.scene = scene
   if (state.orderId > 0) {
     query.order_id = String(state.orderId)
   }
@@ -496,10 +513,8 @@ function onPaymentDone() {
 async function onPaymentSuccess() {
   const completedPayment = { ...paymentState.value }
   removeRecoverySnapshot()
-  authStore.refreshUser()
-  if (paymentState.value.orderType === 'subscription') {
-    subscriptionStore.fetchActiveSubscriptions(true).catch(() => {})
-  }
+  // The payment panel may emit success for PAID/RECHARGING. The result page
+  // verifies COMPLETED fulfillment before refreshing credited entitlements.
   await redirectToPaymentResult(completedPayment)
 }
 

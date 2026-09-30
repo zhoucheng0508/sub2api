@@ -3,17 +3,41 @@ import {
   buildCodexConfigFiles,
   buildCodexSetupScript,
   getCodexSetupFilename,
+  getQuickConnectIneligibilityReason,
   isCodexOneClickEligible
 } from '@/utils/codexOneClick'
 
 describe('codexOneClick', () => {
-  it('enables one-click setup for every active row with a usable key', () => {
-    expect(isCodexOneClickEligible({ status: 'active', key: 'sk-openai' })).toBe(true)
-    expect(isCodexOneClickEligible({ status: 'active', key: 'sk-any-group' })).toBe(true)
-    expect(isCodexOneClickEligible({ status: 'inactive', key: 'sk-inactive' })).toBe(false)
-    expect(isCodexOneClickEligible({ status: 'active', key: '' })).toBe(false)
-    expect(isCodexOneClickEligible({ status: 'active', key: '   ' })).toBe(false)
-    expect(isCodexOneClickEligible({ status: 'active', key: null })).toBe(false)
+  const usableKey = { status: 'active', key: 'sk-openai', group_id: 1, group: { platform: 'openai', status: 'active' } }
+
+  it('requires a usable active key and assigned group', () => {
+    expect(isCodexOneClickEligible(usableKey)).toBe(true)
+    expect(isCodexOneClickEligible({ ...usableKey, group: { platform: 'anthropic' } })).toBe(true)
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, status: 'inactive' })).toBe('inactive')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, key: '' })).toBe('emptyKey')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, key: '   ' })).toBe('emptyKey')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, key: null })).toBe('emptyKey')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, group_id: null })).toBe('noGroup')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, group: undefined })).toBe('noGroup')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, group: { platform: 'openai', status: 'inactive' } })).toBe('inactiveGroup')
+  })
+
+  it('rejects expired or exhausted keys even when their stored status is still active', () => {
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, status: 'expired' })).toBe('expired')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, expires_at: new Date(Date.now() - 1_000).toISOString() })).toBe('expired')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, expires_at: new Date(Date.now() + 60_000).toISOString() })).toBeNull()
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, status: 'quota_exhausted' })).toBe('quotaExhausted')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, quota: 10, quota_used: 10 })).toBe('quotaExhausted')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, quota: 10, quota_used: 12 })).toBe('quotaExhausted')
+    expect(getQuickConnectIneligibilityReason({ ...usableKey, quota: 0, quota_used: 12 })).toBeNull()
+  })
+
+  it('reserves image-only keys for the image scene', () => {
+    const imageKey = { ...usableKey, group: { ...usableKey.group, image_only: true } }
+    expect(isCodexOneClickEligible(imageKey)).toBe(false)
+    expect(getQuickConnectIneligibilityReason(imageKey)).toBe('imageOnly')
+    expect(getQuickConnectIneligibilityReason(imageKey, 'image')).toBeNull()
+    expect(getQuickConnectIneligibilityReason({ ...imageKey, status: 'inactive' }, 'image')).toBe('inactive')
   })
 
   it('shares the established Codex configuration and supports API Key mode', () => {

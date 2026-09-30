@@ -26,7 +26,7 @@ describe('CN OAI setup', () => {
     expect(script).not.toContain(input.apiKey)
     const payload = JSON.parse(Buffer.from(script.match(/\$setupPayload = '([^']+)'/)![1], 'base64').toString('utf8'))
     expect(payload.apiKey).toBe(input.apiKey)
-    expect(payload.manifestUrl).toBe('https://example.com/v1/models?client_version=0.147.0')
+    expect(payload.manifestUrl).toBe('https://example.com/v1/models?client_version=0.158.0')
     expect(payload.providerName).toContain(input.providerName)
     expect(() => buildCnOaiSetupScript({ ...input, baseUrl: 'file:///tmp' })).toThrow()
   })
