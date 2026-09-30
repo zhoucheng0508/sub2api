@@ -4,17 +4,23 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import subscriptionsAPI from '@/api/subscriptions'
+import { useAuthStore } from '@/stores/auth'
 import type { UserSubscription } from '@/types'
 
 // Cache TTL: 60 seconds
 const CACHE_TTL_MS = 60_000
 
-// Request generation counter to invalidate stale in-flight responses
-let requestGeneration = 0
-
 export const useSubscriptionStore = defineStore('subscriptions', () => {
+  const authStore = useAuthStore()
+  // Each store instance and identity owns its own requests and cache.
+  let requestGeneration = 0
+
+  function identity(): string {
+    return `${authStore.user?.id ?? ''}:${Boolean(authStore.token)}`
+  }
+
   // State
   const activeSubscriptions = ref<UserSubscription[]>([])
   const loading = ref(false)
@@ -37,36 +43,40 @@ export const useSubscriptionStore = defineStore('subscriptions', () => {
   async function fetchActiveSubscriptions(force = false): Promise<UserSubscription[]> {
     const now = Date.now()
 
+    // A caller arriving during a forced refresh must share that request, not stale cache.
+    if (activePromise && !force) {
+      return activePromise
+    }
+
     // Return cached data if valid
     if (
       !force &&
       loaded.value &&
-      lastFetchedAt.value &&
+      lastFetchedAt.value !== null &&
       now - lastFetchedAt.value < CACHE_TTL_MS
     ) {
       return activeSubscriptions.value
     }
 
-    // Return in-flight request if exists (deduplication)
-    if (activePromise && !force) {
-      return activePromise
-    }
-
     const currentGeneration = ++requestGeneration
+    const requestIdentity = identity()
+    const isCurrent = () => currentGeneration === requestGeneration && requestIdentity === identity()
 
     // Start new request
     loading.value = true
     const requestPromise = subscriptionsAPI
       .getActiveSubscriptions()
       .then((data) => {
-        if (currentGeneration === requestGeneration) {
-          activeSubscriptions.value = data
-          loaded.value = true
-          lastFetchedAt.value = Date.now()
-        }
+        // Empty stale results are not cached and cannot leak a previous user's data
+        // through the promise returned to a component.
+        if (!isCurrent()) return []
+        activeSubscriptions.value = data
+        loaded.value = true
+        lastFetchedAt.value = Date.now()
         return data
       })
       .catch((error) => {
+        if (!isCurrent()) return []
         console.error('Failed to fetch active subscriptions:', error)
         throw error
       })
@@ -124,6 +134,11 @@ export const useSubscriptionStore = defineStore('subscriptions', () => {
   function invalidateCache() {
     lastFetchedAt.value = null
   }
+
+  watch(() => [authStore.user?.id, Boolean(authStore.token)] as const, (next, previous) => {
+    if (next[0] !== previous[0] || next[1] !== previous[1]) clear()
+  }, { flush: 'sync' })
+  onScopeDispose(clear)
 
   return {
     // State

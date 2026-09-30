@@ -3,15 +3,15 @@
     <div class="mx-auto max-w-5xl space-y-6" data-testid="get-started-page">
       <header class="space-y-2">
         <h1 class="text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">{{ t('quickConnect.startPage.heading') }}</h1>
-        <p class="max-w-3xl text-sm leading-6 text-gray-600 dark:text-gray-300">{{ t('quickConnect.startPage.description') }}</p>
+        <p class="max-w-3xl text-sm leading-6 text-gray-600 dark:text-gray-300">{{ t(authStore.isSimpleMode ? 'firstUseJourney.simpleReadyBody' : 'quickConnect.startPage.description') }}</p>
       </header>
-      <ol class="grid gap-2 sm:grid-cols-3" :aria-label="t('quickConnect.startPage.progressLabel')" data-testid="connection-progress">
-        <li class="flex items-center gap-2 rounded-lg bg-primary-50 px-4 py-3 text-sm text-primary-800 dark:bg-primary-950/30 dark:text-primary-200"><Icon name="checkCircle" size="sm" />{{ t('quickConnect.startPage.accountReady') }}</li>
-        <li class="flex items-center gap-2 rounded-lg border px-4 py-3 text-sm" :class="keyReady ? 'border-gray-200 text-gray-600 dark:border-dark-700 dark:text-gray-300' : 'border-primary-400 font-medium text-primary-800 dark:text-primary-200'" :aria-current="!keyReady ? 'step' : undefined"><Icon v-if="keyReady" name="checkCircle" size="sm" /><span v-else aria-hidden="true">2</span>{{ t('quickConnect.startPage.prepareKey') }}</li>
-        <li class="flex items-center gap-2 rounded-lg border px-4 py-3 text-sm" :class="keyReady ? 'border-primary-400 font-medium text-primary-800 dark:text-primary-200' : 'border-gray-200 text-gray-600 dark:border-dark-700 dark:text-gray-300'" :aria-current="keyReady ? 'step' : undefined"><span aria-hidden="true">3</span>{{ t('quickConnect.startPage.connectApp') }}</li>
-      </ol>
+      <FirstUseJourney v-if="!authStore.isAdmin" :phase="fundingPhase" :balance="availableBalance" :loading="fundingLoading"
+        :simple-mode="authStore.isSimpleMode"
+        :online-available="onlineAvailable" :can-redeem="canRedeem" :subscription-only="subscriptionOnly"
+        :key-ready="keyReady" :request-count="journeyRequestCount" :scene="scene" :busy="createPending" :contact-info="appStore.cachedPublicSettings?.contact_info"
+        @refresh="refreshJourney" @continue="focusSetup" />
 
-      <section class="space-y-3" :aria-label="t('quickConnect.startPage.purpose')">
+      <section id="connection-setup" class="space-y-3 scroll-mt-6" :aria-label="t('quickConnect.startPage.purpose')">
         <h2 class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('quickConnect.startPage.purpose') }}</h2>
         <div class="grid gap-3 sm:grid-cols-2">
           <button v-for="purpose in purposes" :key="purpose.id" type="button" :data-testid="`scene-${purpose.id}`"
@@ -89,6 +89,9 @@ import Icon from '@/components/icons/Icon.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import QuickConnectPanel from '@/components/keys/QuickConnectPanel.vue'
 import CreateConnectKey from '@/custom/vote-ai/quick-connect/CreateConnectKey.vue'
+import FirstUseJourney from '@/custom/vote-ai/quick-connect/FirstUseJourney.vue'
+import { useFundingReadiness } from '@/custom/vote-ai/quick-connect/useFundingReadiness'
+import { usageAPI } from '@/api/usage'
 import { keysAPI } from '@/api/keys'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -99,6 +102,10 @@ import type { ApiKey } from '@/types'
 const { t } = useI18n()
 const route = useRoute(), router = useRouter()
 const appStore = useAppStore(), authStore = useAuthStore()
+const { phase: fundingPhase, balance: availableBalance, loading: fundingLoading, onlineAvailable, canRedeem, subscriptionOnly, refresh: refreshFunding } = useFundingReadiness()
+const journeyRequestCount = ref<number | null>(null)
+let journeyRequestVersion = 0
+let disposed = false
 const purposes = [{ id: 'code', icon: 'terminal' }, { id: 'image', icon: 'sparkles' }] as const
 const scene = ref<'code' | 'image'>(route.query.scene === 'image' ? 'image' : 'code')
 const keys = ref<ApiKey[]>([]), loading = ref(true), loadError = ref(false)
@@ -146,6 +153,22 @@ async function focusConnection() {
   await nextTick()
   document.getElementById(scene.value === 'image' ? 'image-connect-title' : 'quick-connect-install-title')?.scrollIntoView?.({ behavior: 'auto', block: 'start' })
 }
+async function focusSetup() {
+  if (keyReady.value) return focusConnection()
+  await nextTick()
+  document.getElementById('connection-setup')?.scrollIntoView?.({ behavior: 'auto', block: 'start' })
+}
+async function loadJourneyUsage() {
+  const version = ++journeyRequestVersion
+  const userId = authStore.user?.id
+  journeyRequestCount.value = null
+  if (!authStore.token || !userId || authStore.isAdmin) return
+  try {
+    const stats = await usageAPI.getDashboardStats()
+    if (!disposed && version === journeyRequestVersion && authStore.user?.id === userId && authStore.token) journeyRequestCount.value = stats.total_requests
+  } catch { /* Unread usage is unknown; clicking an import button is never treated as completion. */ }
+}
+function refreshJourney() { void refreshFunding(); void loadJourneyUsage() }
 async function handleCreatedKey(key: ApiKey) {
   // The creation component returns a user-owned key only after an explicit submit.
   // Keep the key in memory; routes carry IDs only.
@@ -173,10 +196,11 @@ watch([imageKeys, requestedKeyId], () => {
 watch([() => authStore.user?.id, () => Boolean(authStore.token)], () => {
   controller?.abort(); ++requestVersion; keys.value = []
   justCreatedKeyId.value = null; selectedImageKeyId.value = null; createdKeyNotice.value = false; createImageKeyOpen.value = false; createPending.value = false
-  if (authStore.token) void loadKeys()
+  journeyRequestCount.value = null; ++journeyRequestVersion
+  if (authStore.token) { void loadKeys(); void loadJourneyUsage() }
 })
-onMounted(() => { void appStore.fetchPublicSettings(); void loadKeys() })
-onBeforeUnmount(() => { ++requestVersion; controller?.abort(); keys.value = [] })
+onMounted(() => { void appStore.fetchPublicSettings(); void loadKeys(); void loadJourneyUsage() })
+onBeforeUnmount(() => { disposed = true; ++journeyRequestVersion; ++requestVersion; controller?.abort(); keys.value = [] })
 </script>
 
 <style scoped>

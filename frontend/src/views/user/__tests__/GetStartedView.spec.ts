@@ -8,6 +8,11 @@ const { list, settings, route, replace, auth, app } = vi.hoisted(() => ({
   app: { siteName: 'Vote', cachedPublicSettings: { api_base_url: 'https://api.example', custom_menu_items: [] }, fetchPublicSettings: vi.fn() },
 }))
 vi.mock('@/api/keys', () => ({ keysAPI: { list } }))
+vi.mock('@/api/usage', () => ({ usageAPI: { getDashboardStats: vi.fn().mockResolvedValue({ total_requests: 0 }) } }))
+vi.mock('@/custom/vote-ai/quick-connect/useFundingReadiness', async () => {
+  const { ref } = await import('vue')
+  return { useFundingReadiness: () => ({ phase: ref('empty'), balance: ref(0), loading: ref(false), onlineAvailable: ref(true), canRedeem: ref(true), subscriptionOnly: ref(false), refresh: vi.fn() }) }
+})
 vi.mock('@/stores/app', () => ({ useAppStore: () => app }))
 vi.mock('@/stores/auth', async () => {
   const { reactive } = await import('vue')

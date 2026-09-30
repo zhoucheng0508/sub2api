@@ -2,7 +2,7 @@ export const startPageMessages = {
   zh: {
     title: '开始使用',
     heading: '把 AI 接入你的日常工具',
-    description: '选用途、在这里创建或选用密钥，再跟着步骤连接应用。整个接入过程都可以从这里完成。',
+    description: '从准备额度到创建密钥、接入应用，都有下一步引导。已有余额或有效订阅可以直接继续。',
     progressLabel: '首次接入进度', accountReady: '账户已就绪', prepareKey: '创建或选择密钥', connectApp: '连接应用',
     createInPlace: '创建你的接入密钥', keyMeaning: 'API 密钥可以理解为应用连接本站的通行证。创建后，我们会帮你填入接入配置。',
     useExisting: '使用已有密钥', createAnother: '在这里创建新密钥', manageLater: '管理全部密钥',
@@ -42,7 +42,7 @@ export const startPageMessages = {
   },
   en: {
     title: 'Get started', heading: 'Connect AI to your everyday tools',
-    description: 'Choose a purpose, create or select a key here, then connect your app. Complete the whole setup from this page.',
+    description: 'Follow the steps from credits to keys and app connection. Continue directly if you already have a balance or an active subscription.',
     progressLabel: 'First connection progress', accountReady: 'Account ready', prepareKey: 'Create or select a key', connectApp: 'Connect your app',
     createInPlace: 'Create your connection key', keyMeaning: 'An API key lets an app connect to this site. After you create one, we will include it in the connection configuration.',
     useExisting: 'Use an existing key', createAnother: 'Create a new key here', manageLater: 'Manage all keys',

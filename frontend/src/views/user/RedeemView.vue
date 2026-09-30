@@ -1,6 +1,11 @@
 <template>
   <AppLayout>
     <div class="mx-auto max-w-2xl space-y-6">
+      <section data-test="redeem-guidance" class="card border-primary-200 bg-primary-50 p-5 dark:border-primary-800/50 dark:bg-primary-900/20">
+        <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('firstUseJourney.redeemIntroTitle') }}</h2>
+        <p class="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">{{ t('firstUseJourney.redeemIntroBody') }}</p>
+        <button class="btn btn-secondary mt-3" @click="router.push(journeyRoute('/get-started'))">{{ t('firstUseJourney.backToGuide') }}</button>
+      </section>
       <!-- Current Balance Card -->
       <div class="card overflow-hidden">
         <div class="bg-gradient-to-br from-primary-500 to-primary-600 px-6 py-8 text-center">
@@ -79,9 +84,8 @@
       </div>
 
       <!-- Success Message -->
-      <transition name="fade">
+      <template v-if="redeemResult && ownsRedemptionResult">
         <div
-          v-if="redeemResult"
           class="card border-emerald-200 bg-emerald-50 dark:border-emerald-800/50 dark:bg-emerald-900/20"
         >
           <div class="p-6">
@@ -128,14 +132,17 @@
                 </div>
               </div>
             </div>
+            <div v-if="redemptionNextBody" data-test="redemption-next-step" class="mt-5 border-t border-emerald-200 pt-4 dark:border-emerald-800/50">
+              <p class="text-sm leading-6 text-emerald-700 dark:text-emerald-400">{{ redemptionNextBody }}</p>
+              <button class="btn btn-primary mt-3 w-full" @click="router.push(journeyRoute('/get-started'))">{{ t('firstUseJourney.continueSetup') }}</button>
+            </div>
           </div>
         </div>
-      </transition>
+      </template>
 
       <!-- Error Message -->
-      <transition name="fade">
+      <template v-if="errorMessage">
         <div
-          v-if="errorMessage"
           class="card border-red-200 bg-red-50 dark:border-red-800/50 dark:bg-red-900/20"
         >
           <div class="p-6">
@@ -160,7 +167,7 @@
             </div>
           </div>
         </div>
-      </transition>
+      </template>
 
       <!-- Information Card -->
       <div
@@ -366,8 +373,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useSubscriptionStore } from '@/stores/subscriptions'
@@ -375,11 +383,14 @@ import { redeemAPI, authAPI, type RedeemHistoryItem } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { formatDateTime } from '@/utils/format'
+import { hasUsableSubscription } from '@/custom/vote-ai/quick-connect/funding-readiness'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
 const appStore = useAppStore()
 const subscriptionStore = useSubscriptionStore()
+const route = useRoute()
+const router = useRouter()
 
 const user = computed(() => authStore.user)
 
@@ -395,6 +406,42 @@ const redeemResult = ref<{
   validity_days?: number
 } | null>(null)
 const errorMessage = ref('')
+const profileRefreshSucceeded = ref(false)
+const subscriptionRefreshSucceeded = ref(false)
+const resultOwnerId = ref<number | null>(null)
+let componentGeneration = 0
+let disposed = false
+
+function captureSession() {
+  const ownerId = authStore.user?.id
+  const tokenPresent = Boolean(authStore.token)
+  const generation = componentGeneration
+  return {
+    ownerId,
+    current: () => !disposed && componentGeneration === generation && !!authStore.isAuthenticated
+      && tokenPresent && Boolean(authStore.token) === tokenPresent && authStore.user?.id === ownerId,
+  }
+}
+
+const ownsRedemptionResult = computed(() => authStore.isAuthenticated && !!authStore.token
+  && resultOwnerId.value !== null && authStore.user?.id === resultOwnerId.value)
+
+function journeyRoute(path: string) {
+  const scene = route.query.scene
+  return scene === 'image' || scene === 'code' ? { path, query: { scene } } : { path }
+}
+
+const redemptionNextBody = computed(() => {
+  if (!ownsRedemptionResult.value) return ''
+  if (redeemResult.value?.type === 'concurrency') return t('firstUseJourney.concurrencyNextBody')
+  if (redeemResult.value?.type === 'balance') {
+    return t(profileRefreshSucceeded.value ? 'firstUseJourney.balanceCreditedBody' : 'firstUseJourney.accountRefreshPendingBody')
+  }
+  if (redeemResult.value?.type === 'subscription') {
+    return t(subscriptionRefreshSucceeded.value ? 'firstUseJourney.subscriptionCreditedBody' : 'firstUseJourney.accountRefreshPendingBody')
+  }
+  return ''
+})
 
 // History data
 const history = ref<RedeemHistoryItem[]>([])
@@ -450,28 +497,32 @@ const formatHistoryValue = (item: RedeemHistoryItem) => {
 }
 
 const fetchHistory = async (page = 1) => {
+  const session = captureSession()
+  if (!session.current()) return
   const request = ++historyRequest
   const pageSize = historyPageSize.value
   loadingHistory.value = true
   try {
     const result = await redeemAPI.getHistory(page, pageSize)
-    if (request !== historyRequest) return
+    if (request !== historyRequest || !session.current()) return
     history.value = result.items
     historyTotal.value = result.total
     historyPage.value = page
     historyPageSize.value = pageSize
     loadedHistoryPageSize = pageSize
   } catch (error) {
-    if (request !== historyRequest) return
+    if (request !== historyRequest || !session.current()) return
     historyPageSize.value = loadedHistoryPageSize
     appStore.showError(t('redeem.historyLoadFailed'))
     console.error('Failed to fetch history:', error)
   } finally {
-    if (request === historyRequest) loadingHistory.value = false
+    if (request === historyRequest && session.current()) loadingHistory.value = false
   }
 }
 
 const handleRedeem = async () => {
+  const session = captureSession()
+  if (!session.current() || !session.ownerId || submitting.value) return
   if (!redeemCode.value.trim()) {
     appStore.showError(t('redeem.pleaseEnterCode'))
     return
@@ -480,16 +531,23 @@ const handleRedeem = async () => {
   submitting.value = true
   errorMessage.value = ''
   redeemResult.value = null
+  resultOwnerId.value = null
+  profileRefreshSucceeded.value = false
+  subscriptionRefreshSucceeded.value = false
 
   try {
     const result = await redeemAPI.redeem(redeemCode.value.trim())
-
+    if (!session.current()) return
+    resultOwnerId.value = session.ownerId
     redeemResult.value = result
 
     // Refresh user data to get updated balance/concurrency
     try {
-      await authStore.refreshUser()
+      const profile = await authStore.refreshUser()
+      if (!session.current()) return
+      profileRefreshSucceeded.value = profile.id === session.ownerId
     } catch (error) {
+      if (!session.current()) return
       console.error('Failed to refresh user after redeem:', error)
       appStore.showWarning(t('redeem.userRefreshFailed'))
     }
@@ -497,8 +555,12 @@ const handleRedeem = async () => {
     // If subscription type, immediately refresh subscription status
     if (result.type === 'subscription') {
       try {
-        await subscriptionStore.fetchActiveSubscriptions(true) // force refresh
+        const subscriptions = await subscriptionStore.fetchActiveSubscriptions(true) // force refresh
+        if (!session.current()) return
+        subscriptionRefreshSucceeded.value = Array.isArray(subscriptions)
+          && subscriptions.some((subscription) => subscription.user_id === session.ownerId && hasUsableSubscription(subscription))
       } catch (error) {
+        if (!session.current()) return
         console.error('Failed to refresh subscriptions after redeem:', error)
         appStore.showWarning(t('redeem.subscriptionRefreshFailed'))
       }
@@ -509,38 +571,51 @@ const handleRedeem = async () => {
 
     // Refresh history
     await fetchHistory()
+    if (!session.current()) return
 
     // Show success toast
     appStore.showSuccess(t('redeem.codeRedeemSuccess'))
   } catch (error: any) {
+    if (!session.current()) return
     errorMessage.value = error.response?.data?.detail || t('redeem.failedToRedeem')
 
     appStore.showError(t('redeem.redeemFailed'))
   } finally {
-    submitting.value = false
+    if (session.current()) submitting.value = false
   }
 }
+
+watch(() => [authStore.user?.id, Boolean(authStore.token), authStore.isAuthenticated] as const, (next, previous) => {
+  if (next[0] === previous[0] && next[1] === previous[1] && next[2] === previous[2]) return
+  componentGeneration++
+  historyRequest++
+  redeemResult.value = null
+  resultOwnerId.value = null
+  errorMessage.value = ''
+  redeemCode.value = ''
+  profileRefreshSucceeded.value = false
+  subscriptionRefreshSucceeded.value = false
+  submitting.value = false
+  history.value = []
+  historyTotal.value = 0
+  historyPage.value = 1
+  loadingHistory.value = false
+}, { flush: 'sync' })
 
 onMounted(async () => {
   fetchHistory()
   try {
     const settings = await authAPI.getPublicSettings()
+    if (disposed) return
     contactInfo.value = settings.contact_info || ''
   } catch (error) {
     console.error('Failed to load contact info:', error)
   }
 })
+
+onBeforeUnmount(() => {
+  disposed = true
+  componentGeneration++
+  historyRequest++
+})
 </script>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-</style>
