@@ -1,6 +1,8 @@
 package schema
 
 import (
+	"fmt"
+
 	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 
@@ -45,6 +47,13 @@ func (CompositeModelRoute) Fields() []ent.Field {
 		field.String("target_platform").
 			MaxLen(50).
 			Default(domain.PlatformOpenAI).
+			Validate(func(s string) error {
+				// 组合路由仅接入文本平台；独立媒体通道不参与。
+				if !domain.IsTextPlatform(s) {
+					return fmt.Errorf("target_platform %q is not a concrete platform", s)
+				}
+				return nil
+			}).
 			Comment("Concrete provider platform."),
 		field.String("upstream_model").
 			MaxLen(200).

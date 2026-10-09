@@ -151,6 +151,12 @@ func ExtractContentModerationInputOutcome(protocol string, body []byte) ContentM
 			currentText = moderationPartsText(parts)
 		}
 		collectImageFields(root, &images, budget)
+	case ContentModerationProtocolTypeSafeSystemOne:
+		// System One carries no client-harness reminder blocks, so a literal
+		// <system-reminder> is ordinary user text and must never be skipped.
+		shapeSupported = true
+		collectSystemOneModerationInput(root, &parts, budget)
+		currentText = moderationPartsText(parts)
 	default:
 		input := root.Get("input")
 		messages := root.Get("messages")
@@ -179,6 +185,9 @@ func ExtractContentModerationInputOutcome(protocol string, body []byte) ContentM
 	}
 
 	extractedText := strings.TrimSpace(strings.Join(parts, "\n\n"))
+	if protocol == ContentModerationProtocolTypeSafeSystemOne {
+		extractedText = moderationPartsText(parts)
+	}
 	currentText = normalizeContentModerationText(currentText)
 	if currentText != "" && (!strings.Contains(extractedText, currentText) || len([]rune(extractedText)) > maxModerationInputRunes) {
 		extractedText = strings.TrimSpace("[CURRENT]\n" + currentText + "\n\n" + extractedText)
@@ -216,6 +225,70 @@ func linkContentModerationResponsesToolContinuation(turns []ContentModerationTur
 		}
 		turns[index].LinkedToUserIntent = true
 		return
+	}
+}
+
+// collectSystemOneInput moderates every client-controlled text of a System One
+// request: question IDs, every question field except the validated type,
+// unknown top-level extension fields, and the evaluated state. Object keys are
+// sent to Jev as part of the JSON, so they are moderated like values.
+func collectSystemOneModerationInput(root gjson.Result, parts *[]string, budget *contentModerationExtractionBudget) {
+	questions := root.Get("questions")
+	if !questions.IsObject() {
+		collectSystemOneModerationText(questions, parts, budget, 0)
+	}
+	questions.ForEach(func(id, question gjson.Result) bool {
+		if !budget.visit(0) {
+			return false
+		}
+		addModerationText(parts, id.String())
+		if !question.IsObject() {
+			collectSystemOneModerationText(question, parts, budget, 1)
+			return true
+		}
+		question.ForEach(func(field, value gjson.Result) bool {
+			switch field.String() {
+			case "type":
+				return true
+			case "instructions", "criteria":
+			default:
+				addModerationText(parts, field.String())
+			}
+			collectSystemOneModerationText(value, parts, budget, 1)
+			return !budget.truncated
+		})
+		return true
+	})
+	root.ForEach(func(field, value gjson.Result) bool {
+		switch field.String() {
+		case "model", "stream", "state", "questions":
+			return true
+		}
+		addModerationText(parts, field.String())
+		collectSystemOneModerationText(value, parts, budget, 0)
+		return !budget.truncated
+	})
+	collectSystemOneModerationText(root.Get("state"), parts, budget, 0)
+}
+
+func collectSystemOneModerationText(value gjson.Result, parts *[]string, budget *contentModerationExtractionBudget, depth int) {
+	if !value.Exists() || !budget.visit(depth) {
+		return
+	}
+	switch {
+	case value.Type == gjson.String:
+		addModerationText(parts, value.String())
+	case value.IsArray():
+		value.ForEach(func(_, child gjson.Result) bool {
+			collectSystemOneModerationText(child, parts, budget, depth+1)
+			return !budget.truncated
+		})
+	case value.IsObject():
+		value.ForEach(func(key, child gjson.Result) bool {
+			addModerationText(parts, key.String())
+			collectSystemOneModerationText(child, parts, budget, depth+1)
+			return !budget.truncated
+		})
 	}
 }
 

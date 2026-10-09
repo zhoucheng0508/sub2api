@@ -27,6 +27,15 @@ const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listE
   }
 })
 
+const storedGroups = new Map<string, string>()
+beforeEach(() => {
+  storedGroups.clear()
+  vi.mocked(localStorage.getItem).mockImplementation(key => storedGroups.get(key) ?? null)
+  vi.mocked(localStorage.setItem).mockImplementation((key, value) => { storedGroups.set(key, value) })
+  vi.mocked(localStorage.removeItem).mockImplementation(key => { storedGroups.delete(key) })
+})
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 1 } }) }))
+
 const messages: Record<string, string> = {
   'admin.dashboard.timeRange': 'Time Range',
   'admin.dashboard.day': 'Day',
@@ -198,6 +207,48 @@ describe('admin UsageView route filters', () => {
   afterEach(() => {
     Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
     vi.useRealTimers()
+  })
+
+  it('restores the saved group before the initial usage and statistics requests', async () => {
+    storedGroups.set('sub2api:admin-group-filter:usage:user:1', '7')
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ group_id: 7 }), expect.anything())
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ group_id: 7 }))
+    wrapper.unmount()
+  })
+
+  it('prioritizes an explicit routed group and remembers it for future visits', async () => {
+    storedGroups.set('sub2api:admin-group-filter:usage:user:1', '8')
+    routeQuery.group_id = '7'
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ group_id: 7 }), expect.anything())
+    expect(storedGroups.get('sub2api:admin-group-filter:usage:user:1')).toBe('7')
+    wrapper.unmount()
+  })
+
+  it('remembers a manually changed group and clears it on reset', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    ;(wrapper.vm as any).filters.group_id = 7
+    await wrapper.vm.$nextTick()
+    expect(storedGroups.get('sub2api:admin-group-filter:usage:user:1')).toBe('7')
+    ;(wrapper.vm as any).resetFilters()
+    await flushPromises()
+    expect(storedGroups.has('sub2api:admin-group-filter:usage:user:1')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('clears a deleted remembered group after the available groups load', async () => {
+    storedGroups.set('sub2api:admin-group-filter:usage:user:1', '7')
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    wrapper.findComponent(UsageFiltersStub).vm.$emit('groupsLoaded', [{ id: 8 }])
+    await flushPromises()
+    expect((wrapper.vm as any).filters.group_id).toBeUndefined()
+    expect(storedGroups.has('sub2api:admin-group-filter:usage:user:1')).toBe(false)
+    wrapper.unmount()
   })
 
   it('shows the routed user while applying user_id to usage requests', async () => {

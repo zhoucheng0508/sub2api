@@ -530,6 +530,8 @@ export default {
       allTypes: 'All Types',
       inputCost: 'Input Cost',
       outputCost: 'Output Cost',
+      longContext: 'Long context',
+      longContextPricingTooltip: 'Long-context pricing was applied. Input and output rates depend on the pricing tier, not a uniform multiplier.',
       cacheCreationCost: 'Cache Creation Cost',
       cacheReadCost: 'Cache Read Cost',
       inputTokens: 'Input Tokens',
@@ -555,6 +557,7 @@ export default {
 	  upstreamModelMatchedOnly: 'Matched only',
       ipAddress: 'IP',
       clickToViewBalance: 'Click to view balance history',
+      clickToManageAccount: 'View this account in its group',
       failedToLoadUser: 'Failed to load user info',
       userDeletedBadge: 'Deleted',
       tokenRanking: {

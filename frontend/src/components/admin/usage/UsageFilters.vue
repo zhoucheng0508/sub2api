@@ -235,7 +235,8 @@ const emit = defineEmits([
   'refresh',
   'reset',
   'export',
-  'cleanup'
+  'cleanup',
+  'groupsLoaded'
 ])
 
 const { t } = useI18n()
@@ -527,6 +528,7 @@ onMounted(async () => {
   try {
     const gs = await adminAPI.groups.list(1, 1000)
     groupOptions.value.push(...gs.items.map((g: any) => ({ value: g.id, label: g.name })))
+    emit('groupsLoaded', gs.items)
   } catch {
     // Ignore filter option loading errors (page still usable)
   }

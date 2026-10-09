@@ -33,6 +33,17 @@ func TestMaybeReset(t *testing.T) {
 	}
 }
 
+func TestValidateQuotaPlatformsRejectsMedia(t *testing.T) {
+	for _, platform := range []string{"seedance", "composite", "bogus"} {
+		if err := validateQuotaPlatforms([]UserPlatformQuotaRecord{{Platform: "openai"}, {Platform: platform}}); err == nil {
+			t.Fatalf("unsupported quota platform %q was accepted", platform)
+		}
+	}
+	if err := validateQuotaPlatforms([]UserPlatformQuotaRecord{{Platform: "openai"}, {Platform: "typesafe"}}); err != nil {
+		t.Fatalf("text platform quota was rejected: %v", err)
+	}
+}
+
 // TestMonthlyMaybeReset_NilStart 验证 prevStart=nil 时重置。
 func TestMonthlyMaybeReset_NilStart(t *testing.T) {
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)

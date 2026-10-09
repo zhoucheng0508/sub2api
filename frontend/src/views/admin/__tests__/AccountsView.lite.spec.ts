@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
-import { defineComponent } from 'vue'
+import { defineComponent, reactive } from 'vue'
 
 import AccountsView from '../AccountsView.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
+
+const accountRouteQuery = reactive<Record<string, string>>({})
+vi.mock('vue-router', async () => ({
+  ...await vi.importActual<typeof import('vue-router')>('vue-router'),
+  useRoute: () => ({ query: accountRouteQuery })
+}))
 
 const {
   listAccounts,
@@ -53,7 +59,7 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ token: 'test-token', isSimpleMode: false })
+  useAuthStore: () => ({ token: 'test-token', isSimpleMode: false, user: { id: 1 } })
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -66,6 +72,7 @@ const DataTableStub = defineComponent({
   template: `
     <div>
       <div v-for="row in data" :key="row.id" :data-account-name="row.name">
+        <slot name="cell-name" :row="row" :value="row.name" />
         <slot name="cell-groups" :row="row" />
         <slot name="cell-actions" :row="row" />
       </div>
@@ -158,6 +165,7 @@ const fullAccount = {
 
 describe('admin AccountsView lite account list', () => {
   beforeEach(() => {
+    Object.keys(accountRouteQuery).forEach(key => delete accountRouteQuery[key])
     localStorage.clear()
     listAccounts.mockReset().mockResolvedValue({ items: [listRow], total: 1, page: 1, page_size: 20, pages: 1 })
     listWithEtag.mockReset().mockResolvedValue({ notModified: true, etag: 'compact-etag', data: null })
@@ -174,6 +182,76 @@ describe('admin AccountsView lite account list', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it('restores the saved group for the initial account list request', async () => {
+    localStorage.setItem('sub2api:admin-group-filter:accounts:user:1', '7')
+    const wrapper = mountView()
+    await flushPromises()
+    expect(listAccounts).toHaveBeenCalledWith(1, 20, expect.objectContaining({ group: '7' }), expect.anything())
+    wrapper.unmount()
+  })
+
+  it('opens the usage record group instead of the saved group and highlights the exact account', async () => {
+    localStorage.setItem('sub2api:admin-group-filter:accounts:user:1', '8')
+    Object.assign(accountRouteQuery, { group: '7', account_id: '42' })
+    listAccounts.mockResolvedValue({ items: [listRow, { ...listRow, id: 43, name: 'another account' }], total: 2, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(listAccounts).toHaveBeenCalledWith(1, 20, expect.objectContaining({ group: '7', search: '' }), expect.anything())
+    expect(localStorage.getItem('sub2api:admin-group-filter:accounts:user:1')).toBe('7')
+    expect(wrapper.find('[data-focused-account="42"]').exists()).toBe(true)
+    expect(wrapper.find('[data-account-name="another account"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('finds an account on a later page by ID without hiding other accounts or matching names', async () => {
+    Object.assign(accountRouteQuery, { group: '7', account_id: '42' })
+    listAccounts.mockImplementation(async page => ({
+      items: page === 1 ? [{ ...listRow, id: 99 }] : [listRow, { ...listRow, id: 43 }],
+      total: 21, pages: 2, page, page_size: 20
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(listAccounts).toHaveBeenCalledWith(2, 20, expect.objectContaining({ group: '7', search: '' }), expect.anything())
+    expect(wrapper.find('[data-focused-account="42"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-account-name]')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('ignores an in-flight account location after the group is changed', async () => {
+    Object.assign(accountRouteQuery, { group: '7', account_id: '42' })
+    let resolvePage!: (value: unknown) => void
+    listAccounts.mockImplementation(page => page === 1
+      ? Promise.resolve({ items: [{ ...listRow, id: 99 }], total: 21, pages: 2 })
+      : new Promise(resolve => { resolvePage = resolve }))
+    const wrapper = mountView()
+    await flushPromises()
+    ;(wrapper.vm as any).params.group = ''
+    resolvePage({ items: [listRow], total: 21, pages: 2 })
+    await flushPromises()
+    expect(wrapper.find('[data-focused-account="42"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-account-name]')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('clears a deleted group and reloads all accounts', async () => {
+    localStorage.setItem('sub2api:admin-group-filter:accounts:user:1', '999')
+    const wrapper = mountView()
+    await flushPromises()
+    expect(localStorage.getItem('sub2api:admin-group-filter:accounts:user:1')).toBeNull()
+    expect(listAccounts).toHaveBeenLastCalledWith(1, 20, expect.objectContaining({ group: '' }), expect.anything())
+    wrapper.unmount()
+  })
+
+  it('keeps the group list usable when the referenced account was deleted', async () => {
+    Object.assign(accountRouteQuery, { group: '7', account_id: '100' })
+    getById.mockRejectedValue(new Error('not found'))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(showWarning).toHaveBeenCalledWith('admin.accounts.focusedAccountUnavailable')
+    expect(wrapper.find('[data-account-name="compact row"]').exists()).toBe(true)
+    wrapper.unmount()
   })
 
   it('keeps lite=1 on the initial list request', async () => {

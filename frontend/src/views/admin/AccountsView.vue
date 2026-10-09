@@ -4,6 +4,7 @@
       <template #filters>
         <div class="flex flex-wrap-reverse items-start justify-between gap-3">
           <AccountTableFilters
+            class="lg:w-auto lg:flex-1"
             v-model:searchQuery="params.search"
             :filters="params"
             :groups="groups"
@@ -229,7 +230,12 @@
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
           </template>
           <template #cell-name="{ row, value }">
-            <div class="flex flex-col">
+            <div
+              class="flex flex-col rounded px-1"
+              :class="{ 'bg-primary-100 ring-2 ring-primary-400 dark:bg-primary-900/40': row.id === focusedAccountId }"
+              :data-focused-account="row.id === focusedAccountId ? row.id : undefined"
+              :tabindex="row.id === focusedAccountId ? -1 : undefined"
+            >
               <HelpTooltip
                 v-if="accountHomepageUrl(row)"
                 :content="accountHomepageUrl(row)"
@@ -384,8 +390,12 @@
               @probe="handleProbeUpstreamBilling(row)"
             />
           </template>
-          <template #cell-priority="{ value }">
-            <span class="text-sm text-gray-700 dark:text-gray-300">{{ value }}</span>
+          <template #cell-priority="{ row }">
+            <AccountPriorityCell
+              :account="row"
+              @updated="handleAccountUpdated"
+              @error="(message: string) => appStore.showError(message)"
+            />
           </template>
           <template #header-scheduler_score="{ column }">
             <div class="flex items-center">
@@ -493,13 +503,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
+import { useRememberedAdminGroup, normalizeAdminGroup } from '@/composables/useRememberedAdminGroup'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
 import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
@@ -527,6 +539,7 @@ import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vu
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
+import AccountPriorityCell from '@/components/account/AccountPriorityCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
@@ -545,6 +558,11 @@ import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupSc
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const route = useRoute()
+const rememberedGroup = useRememberedAdminGroup('accounts', () => authStore.user?.id)
+const focusedAccountId = ref<number | null>(null)
+let accountLocationController: AbortController | null = null
+let accountRouteRevision = 0
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -1092,7 +1110,7 @@ const {
     type: '',
     status: '',
     privacy_mode: '',
-    group: '',
+    group: rememberedGroup.group.value,
     search: '',
     lite: '1',
     include_scheduler_score: shouldIncludeSchedulerScore() ? '1' : '0',
@@ -1100,6 +1118,93 @@ const {
     sort_order: sortState.sort_order
   }
 })
+
+watch(() => params.group, value => {
+  rememberedGroup.group.value = normalizeAdminGroup(value, 'accounts')
+}, { flush: 'sync' })
+watch(rememberedGroup.group, value => { params.group = value }, { flush: 'sync' })
+
+const singleRouteValue = (value: unknown) => Array.isArray(value) ? value[0] : value
+const applyAccountRoute = () => {
+  const query = route?.query ?? {}
+  if (Object.prototype.hasOwnProperty.call(query, 'group')) {
+    params.group = normalizeAdminGroup(singleRouteValue(query.group), 'accounts')
+  }
+  const id = Number(singleRouteValue(query.account_id))
+  if (Number.isSafeInteger(id) && id > 0) {
+    // Show the record's entire group and clear filters that could hide its account.
+    Object.assign(params, { platform: '', type: '', status: '', privacy_mode: '', search: '' })
+    focusedAccountId.value = id
+  } else {
+    focusedAccountId.value = null
+  }
+}
+
+watch(() => [params.platform, params.type, params.status, params.privacy_mode, params.group, params.search, params.sort_by, params.sort_order], () => {
+  accountLocationController?.abort()
+  focusedAccountId.value = null
+}, { flush: 'sync' })
+
+const focusAccountRow = async (id: number) => {
+  await nextTick()
+  const index = accounts.value.findIndex(account => account.id === id)
+  if (index < 0 || focusedAccountId.value !== id) return
+  dataTableRef.value?.virtualizer?.scrollToIndex(index, { align: 'center' })
+  await nextTick()
+  const element = accountTableRef.value?.querySelector<HTMLElement>(`[data-focused-account="${id}"]`)
+  element?.scrollIntoView?.({ block: 'center' })
+  element?.focus({ preventScroll: true })
+}
+
+const locateAccount = async () => {
+  accountLocationController?.abort()
+  const id = focusedAccountId.value
+  if (!id) return
+  const controller = new AbortController()
+  accountLocationController = controller
+  const isCurrent = () => !controller.signal.aborted && focusedAccountId.value === id
+  try {
+    if (!accounts.value.some(account => account.id === id)) {
+      // Check existence and current membership before searching later pages.
+      const account = await adminAPI.accounts.getById(id)
+      if (!isCurrent()) return
+      const groupIds = account.group_ids ?? account.groups?.map(group => group.id) ?? []
+      if ((params.group === 'ungrouped' && groupIds.length > 0)
+        || (params.group && params.group !== 'ungrouped' && !groupIds.includes(Number(params.group)))) {
+        appStore.showWarning(t('admin.accounts.focusedAccountUnavailable'))
+        return
+      }
+      const requestParams = { ...toRaw(params) }
+      const pageSize = pagination.page_size
+      // Locate by ID, including duplicate account names, while keeping the group list intact.
+      for (let page = 2; page <= pagination.pages; page++) {
+        const result = await adminAPI.accounts.list(page, pageSize, requestParams, { signal: controller.signal })
+        if (!isCurrent()) return
+        if (result.items.some(account => account.id === id)) {
+          accounts.value = result.items
+          Object.assign(pagination, { page, total: result.total, pages: result.pages })
+          void refreshTodayStatsBatch()
+          break
+        }
+      }
+    }
+    if (!isCurrent()) return
+    if (accounts.value.some(account => account.id === id)) await focusAccountRow(id)
+    else appStore.showWarning(t('admin.accounts.focusedAccountUnavailable'))
+  } catch {
+    if (isCurrent()) appStore.showWarning(t('admin.accounts.focusedAccountUnavailable'))
+  }
+}
+
+watch(() => route?.query, async () => {
+  const revision = ++accountRouteRevision
+  accountLocationController?.abort()
+  applyAccountRoute()
+  clearSelection()
+  pagination.page = 1
+  await load()
+  if (revision === accountRouteRevision) await locateAccount()
+}, { deep: true })
 
 const {
   selectedSet,
@@ -1306,6 +1411,7 @@ const debouncedReload = () => {
 }
 
 const handlePageChange = (page: number) => {
+  accountLocationController?.abort()
   syncAccountListDerivedParams()
   hasPendingListSync.value = false
   resetAutoRefreshCache()
@@ -1314,6 +1420,7 @@ const handlePageChange = (page: number) => {
 }
 
 const handlePageSizeChange = (size: number) => {
+  accountLocationController?.abort()
   syncAccountListDerivedParams()
   hasPendingListSync.value = false
   resetAutoRefreshCache()
@@ -2547,7 +2654,9 @@ onMounted(async () => {
     }
   }
 
-  load()
+  applyAccountRoute()
+  const initialRouteRevision = accountRouteRevision
+  const initialLoad = load()
   loadUpstreamBillingProbeGlobalState()
   const [proxiesResult, groupsResult] = await Promise.allSettled([
     adminAPI.proxies.getAll(),
@@ -2560,9 +2669,15 @@ onMounted(async () => {
   }
   if (groupsResult.status === 'fulfilled') {
     groups.value = groupsResult.value
+    if (rememberedGroup.validate(groups.value)) {
+      await initialLoad
+      await reload()
+    }
   } else {
     console.error('Failed to load groups:', groupsResult.reason)
   }
+  await initialLoad
+  if (initialRouteRevision === accountRouteRevision) void locateAccount()
   window.addEventListener('scroll', handleScroll, true)
   window.addEventListener('resize', handleViewportResize)
   document.addEventListener('click', handleClickOutside)
@@ -2576,6 +2691,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  accountLocationController?.abort()
   upstreamBillingRateAbortController?.abort()
   if (usageBatchFlushTimer !== null) {
     clearTimeout(usageBatchFlushTimer)

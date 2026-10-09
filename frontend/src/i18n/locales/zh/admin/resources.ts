@@ -527,6 +527,8 @@ export default {
       allTypes: '全部类型',
       inputCost: '输入费用',
       outputCost: '输出费用',
+      longContext: '长上下文',
+      longContextPricingTooltip: '已应用长上下文计费。输入和输出费率取决于定价档位，并非统一倍率。',
       cacheCreationCost: '缓存创建费用',
       cacheReadCost: '缓存读取费用',
       inputTokens: '输入 Token',
@@ -552,6 +554,7 @@ export default {
 	  upstreamModelMatchedOnly: '仅一致',
       ipAddress: 'IP',
       clickToViewBalance: '点击查看充值记录',
+      clickToManageAccount: '查看此分组中的账号',
       failedToLoadUser: '加载用户信息失败',
       userDeletedBadge: '已删除',
       tokenRanking: {
