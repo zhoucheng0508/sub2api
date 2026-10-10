@@ -1,5 +1,21 @@
 export default {
     accounts: {
+      upstreamBalance: {
+        title: 'Upstream balance',
+        refreshPage: 'Refresh page balances',
+        refresh: 'Refresh balance',
+        loading: 'Loading…',
+        unavailable: 'Unavailable',
+        unlimited: 'Unlimited key quota',
+        wallet: 'Account balance',
+        key: 'Remaining key quota',
+        subscription: 'Remaining subscription quota',
+        upstream: 'Upstream balance / quota',
+        quotaUnit: 'quota units',
+        updated: 'Updated {time}',
+        stale: 'Refresh failed; showing previous result',
+        hint: 'Supports Sub2API and New API only. Updates about every 5 minutes while this page is open. New API returns account balance or key quota depending on upstream settings; an unlimited key does not mean an unlimited account balance.'
+      },
       syncUpstreamModelsMetadataPartial: 'Models synced; some upstream metadata was unavailable.',
       upstreamRequestIdHeader: 'Upstream request ID header',
       upstreamRequestIdHeaderPlaceholder: 'For example, X-Request-ID',

@@ -18,6 +18,9 @@
             @create="showCreate = true"
           >
             <template #after>
+              <button v-if="balanceEnabled" class="btn btn-secondary" :disabled="loading || balanceRefreshing" @click="refreshBalances()">
+                {{ t('admin.accounts.upstreamBalance.refreshPage') }}
+              </button>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -295,6 +298,9 @@
               </div>
             </div>
           </template>
+          <template #cell-upstream_balance="{ row }">
+            <AccountBalanceCell :state="balanceStates.get(row.id)" :eligible="row.type === 'apikey'" @refresh="refreshBalance(row, true)" />
+          </template>
           <template #cell-capacity="{ row }">
             <AccountCapacityCell :account="row" />
           </template>
@@ -538,6 +544,8 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
+import AccountBalanceCell from '@/components/account/AccountBalanceCell.vue'
+import { useUpstreamBalances } from '@/composables/useUpstreamBalances'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
 import AccountPriorityCell from '@/components/account/AccountPriorityCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
@@ -1905,6 +1913,7 @@ const allColumns = computed(() => {
   const c = [
     { key: 'select', label: '', sortable: false },
     { key: 'name', label: t('admin.accounts.columns.name'), sortable: true },
+    { key: 'upstream_balance', label: t('admin.accounts.upstreamBalance.title'), sortable: false },
     { key: 'id', label: t('admin.accounts.columns.id'), sortable: true },
     { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
@@ -1930,6 +1939,10 @@ const allColumns = computed(() => {
   )
   return c
 })
+
+const balanceEnabled = computed(() => !hiddenColumns.has('upstream_balance'))
+const { states: balanceStates, refresh: refreshBalance, refreshAll: refreshBalances } = useUpstreamBalances(accounts, balanceEnabled)
+const balanceRefreshing = computed(() => [...balanceStates.values()].some(state => state.loading))
 
 // Columns that can be toggled (exclude select, name, and actions)
 const toggleableColumns = computed(() =>

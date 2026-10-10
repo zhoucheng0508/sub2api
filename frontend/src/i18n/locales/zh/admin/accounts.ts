@@ -1,5 +1,21 @@
 export default {
     accounts: {
+      upstreamBalance: {
+        title: '上游余额',
+        refreshPage: '刷新本页余额',
+        refresh: '刷新余额',
+        loading: '查询中…',
+        unavailable: '无法获取',
+        unlimited: '密钥不限额',
+        wallet: '账户余额',
+        key: '密钥剩余额度',
+        subscription: '订阅剩余额度',
+        upstream: '上游余额 / 额度',
+        quotaUnit: '额度单位',
+        updated: '更新于 {time}',
+        stale: '刷新失败，显示上次结果',
+        hint: '仅支持 Sub2API 和 New API。页面打开期间约每 5 分钟更新。New API 返回账户余额或密钥额度，取决于上游设置；密钥不限额不代表账户余额无限。'
+      },
       syncUpstreamModelsMetadataPartial: '模型已同步，但部分上游元数据暂不可用。',
       upstreamRequestIdHeader: '上游请求 ID 响应头',
       upstreamRequestIdHeaderPlaceholder: '例如 X-Request-ID',
