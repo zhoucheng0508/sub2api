@@ -2555,6 +2555,7 @@ func (r *accountRepository) ClearTempUnschedulable(ctx context.Context, id int64
 		UPDATE accounts
 		SET temp_unschedulable_until = NULL,
 			temp_unschedulable_reason = NULL,
+			credentials = jsonb_set(COALESCE(credentials, '{}'::jsonb), '{first_token_monitor_revision}', to_jsonb(gen_random_uuid()::text), true),
 			updated_at = NOW()
 		WHERE id = $1
 			AND deleted_at IS NULL

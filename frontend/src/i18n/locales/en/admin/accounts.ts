@@ -1,5 +1,14 @@
 export default {
     accounts: {
+      firstTokenMonitor: {
+        title: 'Enable first token monitoring',
+        hint: 'Monitor this account across all groups. Disabled by default.',
+        threshold: 'Threshold (seconds)',
+        anomalyCount: 'Anomalies within 10 minutes',
+        cooldown: 'Scheduling pause (minutes)',
+        notice: 'Only first token times strictly above the threshold count. Reaching the anomaly limit in a rolling 10-minute window pauses this account globally. Normal requests do not clear anomalies; missing measurements are ignored. Automatic or manual recovery starts a fresh window. Disabling monitoring does not end an existing pause early.',
+        invalid: 'Enter integers: threshold 1–3600 seconds, anomalies within 10 minutes 1–100, pause 1–1440 minutes.'
+      },
       upstreamBalance: {
         title: 'Upstream balance',
         refreshPage: 'Refresh page balances',

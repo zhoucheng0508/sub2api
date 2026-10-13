@@ -2520,6 +2520,8 @@
         </template>
       </div>
 
+      <FirstTokenMonitorSettings :model-value="firstTokenMonitor" @update:model-value="Object.assign(firstTokenMonitor, $event)" />
+
       <!-- Temp Unschedulable Rules -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
         <div class="mb-3 flex items-center justify-between">
@@ -4000,6 +4002,8 @@
 </template>
 
 <script setup lang="ts">
+import FirstTokenMonitorSettings from '@/components/account/FirstTokenMonitorSettings.vue'
+import { useFirstTokenMonitor } from '@/composables/useFirstTokenMonitor'
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4217,6 +4221,7 @@ const emit = defineEmits<{
 }>()
 
 const appStore = useAppStore()
+const { monitor: firstTokenMonitor, load: loadFirstTokenMonitor, apply: applyFirstTokenMonitor } = useFirstTokenMonitor()
 
 const hideAccountLongContextBilling = computed(() => {
   return allSelectedGroupsEnableLongContextPricing(form.group_ids, props.groups)
@@ -5394,6 +5399,13 @@ const openMixedChannelDialog = (opts: {
   showMixedChannelWarning.value = true
 }
 
+const createAccountWithMonitor = (payload: CreateAccountRequest) => {
+  const credentials = { ...payload.credentials }
+  if (!applyFirstTokenMonitor(credentials)) {
+    throw new Error(t('admin.accounts.firstTokenMonitor.invalid'))
+  }
+  return adminAPI.accounts.create({ ...payload, credentials })
+}
 const withAntigravityConfirmFlag = (payload: CreateAccountRequest): CreateAccountRequest => {
   if (needsMixedChannelCheck(payload.platform) && antigravityMixedChannelConfirmed.value) {
     return {
@@ -5439,7 +5451,7 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
 const submitCreateAccount = async (payload: CreateAccountRequest) => {
   submitting.value = true
   try {
-    const account = await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
+    const account = await createAccountWithMonitor(withAntigravityConfirmFlag(payload))
     const modelMapping = payload.credentials.model_mapping
     const hasConcreteMappedTarget = payload.type === 'apikey' &&
       typeof modelMapping === 'object' &&
@@ -5590,6 +5602,7 @@ const resetForm = () => {
   vertexProjectId.value = ''
   vertexClientEmail.value = ''
   vertexLocation.value = 'global'
+  loadFirstTokenMonitor()
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -6281,7 +6294,7 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
           return
         }
 
-        await adminAPI.accounts.create({
+        await createAccountWithMonitor({
           name: accountName,
           notes: form.notes,
           platform: 'grok',
@@ -6458,7 +6471,7 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
           return
         }
 
-        await adminAPI.accounts.create({
+        await createAccountWithMonitor({
           name: accountName,
           notes: form.notes,
           platform: 'grok',
@@ -6557,7 +6570,7 @@ const handleOpenAIExchange = async (authCode: string) => {
     }
 
     if (shouldCreateOpenAI) {
-      await adminAPI.accounts.create({
+      await createAccountWithMonitor({
         name: form.name,
         notes: form.notes,
         platform: 'openai',
@@ -6743,6 +6756,7 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
 
   try {
     const extra = buildOpenAICodexImportExtra()
+    if (!applyFirstTokenMonitor(credentialExtras)) throw new Error(t('admin.accounts.firstTokenMonitor.invalid'))
     await adminAPI.accounts.createOpenAICodexPAT({
       access_token: trimmed,
       name: form.name,
@@ -6838,7 +6852,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
         const accountName = refreshTokens.length > 1 ? `${baseName} #${i + 1}` : baseName
 
         if (shouldCreateOpenAI) {
-          await adminAPI.accounts.create({
+          await createAccountWithMonitor({
             name: accountName,
             notes: form.notes,
             platform: 'openai',
@@ -6953,7 +6967,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
         })
-        await adminAPI.accounts.create(createPayload)
+        await createAccountWithMonitor(createPayload)
         successCount++
       } catch (error: any) {
         failedCount++
@@ -7318,7 +7332,7 @@ const handleCookieAuth = async (sessionKey: string) => {
           credentials.temp_unschedulable_rules = tempUnschedPayload
         }
 
-        await adminAPI.accounts.create({
+        await createAccountWithMonitor({
           name: accountName,
           notes: form.notes,
           platform: form.platform,

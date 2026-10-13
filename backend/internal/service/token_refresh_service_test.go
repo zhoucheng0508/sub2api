@@ -566,16 +566,18 @@ func TestTokenRefreshService_RefreshWithRetry_AntigravityClearsForceRefreshOnSuc
 	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
 	until := time.Now().Add(10 * time.Minute)
 	account := &Account{
-		ID:                     3709,
-		Platform:               PlatformAntigravity,
-		Type:                   AccountTypeOAuth,
-		TempUnschedulableUntil: &until,
+		ID:                      3709,
+		Platform:                PlatformAntigravity,
+		Type:                    AccountTypeOAuth,
+		TempUnschedulableUntil:  &until,
+		TempUnschedulableReason: "OAuth 401: expired",
 		Extra: map[string]any{
 			antigravityForceTokenRefreshExtraKey:       true,
 			antigravityForceTokenRefreshReasonExtraKey: "401_invalid",
 			"privacy_mode": AntigravityPrivacySet,
 		},
 	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
 	refresher := &tokenRefresherStub{
 		credentials: map[string]any{
 			"access_token": "new-ag-token",
@@ -837,11 +839,13 @@ func TestTokenRefreshService_RefreshWithRetry_ClearsTempUnschedulable(t *testing
 	service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, tempCache)
 	until := time.Now().Add(10 * time.Minute)
 	account := &Account{
-		ID:                     15,
-		Platform:               PlatformGemini,
-		Type:                   AccountTypeOAuth,
-		TempUnschedulableUntil: &until,
+		ID:                      15,
+		Platform:                PlatformGemini,
+		Type:                    AccountTypeOAuth,
+		TempUnschedulableUntil:  &until,
+		TempUnschedulableReason: "OAuth 401: expired",
 	}
+	repo.accountsByID = map[int64]*Account{account.ID: account}
 	refresher := &tokenRefresherStub{
 		credentials: map[string]any{
 			"access_token": "new-token",

@@ -1,5 +1,14 @@
 export default {
     accounts: {
+      firstTokenMonitor: {
+        title: '开启首字监控',
+        hint: '监控此账户在所有分组的首字耗时，默认关闭。',
+        threshold: '异常阈值（秒）',
+        anomalyCount: '10 分钟内异常次数',
+        cooldown: '暂停调度（分钟）',
+        notice: '首字耗时严格超过阈值才计为异常；滚动 10 分钟内达到设定异常次数后，全局暂停此账户。正常请求不清零，无首字耗时不计数。到期或手动解除暂停后重新计数。关闭监控不会提前解除已触发的暂停。',
+        invalid: '请输入有效整数：阈值 1–3600 秒、10 分钟内异常次数 1–100、暂停时间 1–1440 分钟。'
+      },
       upstreamBalance: {
         title: '上游余额',
         refreshPage: '刷新本页余额',

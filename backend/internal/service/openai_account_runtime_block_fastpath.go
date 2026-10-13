@@ -391,6 +391,14 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	s.openaiAccountRuntimeBlockGeneration.Store(accountID, s.openaiAccountRuntimeBlockSequence.Add(1))
 }
 
+// Called inside the repository's monitoring/recovery guard by admin clear-error.
+func (s *OpenAIGatewayService) ResetAccountMonitoring(ctx context.Context, accountID int64) error {
+	if s == nil || s.rateLimitService == nil || s.rateLimitService.tempUnschedCache == nil {
+		return nil
+	}
+	return s.rateLimitService.tempUnschedCache.DeleteTempUnsched(ctx, accountID)
+}
+
 func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) bool {
 	if s == nil || !isOpenAIAccount(account) {
 		return false

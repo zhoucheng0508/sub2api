@@ -1450,6 +1450,8 @@
         </div>
       </div>
 
+      <FirstTokenMonitorSettings :model-value="firstTokenMonitor" @update:model-value="Object.assign(firstTokenMonitor, $event)" />
+
       <!-- Temp Unschedulable Rules -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
         <div class="mb-3 flex items-center justify-between">
@@ -3157,6 +3159,8 @@
 </template>
 
 <script setup lang="ts">
+import FirstTokenMonitorSettings from '@/components/account/FirstTokenMonitorSettings.vue'
+import { useFirstTokenMonitor } from '@/composables/useFirstTokenMonitor'
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -3277,6 +3281,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const { monitor: firstTokenMonitor, load: loadFirstTokenMonitor, apply: applyFirstTokenMonitor } = useFirstTokenMonitor()
 const browserTimeZone = getBrowserTimeZone()
 
 const selectableGroups = computed(() => {
@@ -4414,6 +4419,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load quota control settings (Anthropic OAuth/SetupToken only)
   loadQuotaControlSettings(newAccount)
 
+  loadFirstTokenMonitor(credentials)
   loadTempUnschedRules(credentials)
   loadAccountSchedulingThresholdOverride(newAccount.platform, credentials)
 
@@ -5196,6 +5202,12 @@ const persistGrokMediaEligibility = async (accountID: number, updatedAccount: Ac
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
   submitting.value = true
   try {
+    const credentials = { ...((updatePayload.credentials as Record<string, unknown> | undefined) ?? props.account?.credentials ?? {}) }
+    if (!applyFirstTokenMonitor(credentials)) {
+      appStore.showError(t('admin.accounts.firstTokenMonitor.invalid'))
+      return
+    }
+    updatePayload.credentials = credentials
     let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
     appStore.showSuccess(t('admin.accounts.accountUpdated'))

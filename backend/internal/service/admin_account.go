@@ -411,6 +411,9 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	if err := ValidateFirstTokenMonitorCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
 	if input.Platform == PlatformTypeSafe && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
@@ -575,6 +578,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
+	if err := ValidateFirstTokenMonitorCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -645,6 +651,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Notes != nil {
 		account.Notes = normalizeAccountNotes(input.Notes)
 	}
+	previousFirstTokenMonitor := firstTokenMonitorConfig(account.Credentials)
 	if account.IsCredentialShadow() && input.Credentials != nil {
 		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
 	} else if len(input.Credentials) > 0 {
@@ -662,6 +669,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		account.Credentials = SanitizeStoredCredentials(account.Platform, account.Credentials)
 	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
+	nextFirstTokenMonitor := firstTokenMonitorConfig(account.Credentials)
+	if nextFirstTokenMonitor != previousFirstTokenMonitor && account.Credentials != nil {
+		account.Credentials["first_token_monitor_revision"] = fmt.Sprint(time.Now().UnixNano())
+	}
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
 	requestedProbeEnabledUpdate := input.ProbeEnabled
 	requestedRateSyncEnabledUpdate := input.RateSyncEnabled
@@ -954,6 +965,9 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	if err := ValidateFirstTokenMonitorCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)
@@ -1309,6 +1323,18 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 }
 
 func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Account, error) {
+	var updated *Account
+	err := withFirstTokenMonitorGuard(ctx, s.accountRepo, id, func(repo AccountRepository) error {
+		copy := *s
+		copy.accountRepo = repo
+		var err error
+		updated, err = copy.clearAccountErrorLocked(ctx, id)
+		return err
+	})
+	return updated, err
+}
+
+func (s *adminServiceImpl) clearAccountErrorLocked(ctx context.Context, id int64) (*Account, error) {
 	if err := s.accountRepo.ClearError(ctx, id); err != nil {
 		return nil, err
 	}
@@ -1323,6 +1349,11 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	}
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return nil, err
+	}
+	if resetter, ok := s.runtimeBlocker.(AccountMonitoringResetter); ok {
+		if err := resetter.ResetAccountMonitoring(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	if s.runtimeBlocker != nil {
 		s.runtimeBlocker.ClearAccountSchedulingBlock(id)

@@ -33,8 +33,15 @@ func persistAccountCredentials(ctx context.Context, repo AccountRepository, acco
 // sparkShadowAllowedCredentialKeys 是 spark 影子账号唯一可写的凭据键集合(仅模型映射)。
 // 校验(isAllowed)与 sanitize 共用此单一来源,避免两处独立硬编码列表漂移。
 var sparkShadowAllowedCredentialKeys = map[string]struct{}{
-	"model_mapping":         {},
-	"compact_model_mapping": {},
+	"first_token_monitor_enabled":           {},
+	"first_token_monitor_threshold_seconds": {},
+	"first_token_monitor_anomaly_count":     {},
+	"first_token_monitor_cooldown_minutes":  {},
+	"first_token_monitor_revision":          {},
+	"first_token_monitor_generation":        {},
+	"scheduler_state_version":               {},
+	"model_mapping":                         {},
+	"compact_model_mapping":                 {},
 }
 
 func isAllowedSparkShadowCredentialsUpdate(credentials map[string]any) bool {

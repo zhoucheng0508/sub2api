@@ -61,6 +61,24 @@ end
 return updated
 `)
 
+// Persistent barriers shared by single-account and bucket writers.
+// Keep it across payload deletion so an in-flight old snapshot cannot resurrect
+// a pause after recovery, even if its database session no longer owns a lock.
+var setSchedulerAccountFencedScript = redis.NewScript(`
+local incoming = tonumber(ARGV[3]) or 0
+local current = tonumber(redis.call('GET', KEYS[3])) or 0
+if incoming < current then return 0 end
+local version = ARGV[4]
+local stored_version = redis.call('GET', KEYS[4]) or '0'
+-- Canonical nonnegative decimal strings avoid Lua double precision loss.
+if #version < #stored_version or (#version == #stored_version and version < stored_version) then return 0 end
+redis.call('SET', KEYS[3], tostring(incoming))
+redis.call('SET', KEYS[4], version)
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+`)
+
 var (
 	// epoch 标识 bucket writer 的代际，retired key 是持久退休标记。
 	// Capture、allocate、activate 都在 Lua 内同时校验两者：-1 表示已退休，-2 表示 epoch 无效或与 token 代际不匹配；
@@ -807,8 +825,14 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 		}
 
 		id := strconv.FormatInt(account.ID, 10)
-		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, 0)
+		generation, _ := strconv.ParseInt(fmt.Sprint(account.Credentials["first_token_monitor_generation"]), 10, 64)
+		version, _ := strconv.ParseInt(fmt.Sprint(account.Credentials["scheduler_state_version"]), 10, 64)
+		if version < 0 {
+			version = 0
+		}
+		setSchedulerAccountFencedScript.Eval(ctx, pipe,
+			[]string{schedulerAccountKey(id), schedulerAccountMetaKey(id), "sched:monitor_generation:" + id, "sched:state_version:" + id},
+			string(fullPayload), string(metaPayload), generation, strconv.FormatInt(version, 10))
 		// Keep the hot LastUsedAt side key untouched: a lagging snapshot rebuild
 		// must not overwrite a newer scheduler update.
 		accountIDs = append(accountIDs, account.ID)
@@ -956,7 +980,9 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	}
 	// Candidate-list admission evaluates the account override before hydrating
 	// the full account. Dropping it silently falls back to the platform threshold.
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold"}
+	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
+		"scheduler_state_version", "first_token_monitor_enabled", "first_token_monitor_generation", "first_token_monitor_revision",
+		"first_token_monitor_threshold_seconds", "first_token_monitor_anomaly_count", "first_token_monitor_cooldown_minutes"}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
