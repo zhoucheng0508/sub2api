@@ -23,6 +23,92 @@ func newSchedulerCacheUnit(t *testing.T) *schedulerCache {
 	return cache
 }
 
+func TestFirstTokenMonitorSchedulerSnapshotRejectsRecoveredGeneration(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	until := time.Now().Add(time.Hour)
+	old := service.Account{ID: 9271, Credentials: map[string]any{"first_token_monitor_generation": 4}, TempUnschedulableUntil: &until}
+	recovered := old
+	recovered.Credentials = map[string]any{"first_token_monitor_generation": 5}
+	recovered.TempUnschedulableUntil = nil
+	require.NoError(t, cache.SetAccount(ctx, &recovered))
+	// Delayed direct publication and bucket rebuild both use this writer.
+	require.NoError(t, cache.SetAccount(ctx, &old))
+	_, err := cache.writeAccountIDs(ctx, []service.Account{old})
+	require.NoError(t, err)
+	got, err := cache.GetAccount(ctx, old.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.TempUnschedulableUntil)
+	// Payload eviction must not erase the generation barrier.
+	require.NoError(t, cache.DeleteAccount(ctx, old.ID))
+	require.NoError(t, cache.SetAccount(ctx, &old))
+	got, err = cache.GetAccount(ctx, old.ID)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestFirstTokenMonitorSameGenerationOldSnapshotCannotUndoPause(t *testing.T) {
+	for _, writer := range []string{"single", "bucket"} {
+		t.Run(writer, func(t *testing.T) {
+			ctx := context.Background()
+			cache := newSchedulerCacheUnit(t)
+			bucket := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+			publish := func(account service.Account) {
+				t.Helper()
+				if writer == "single" {
+					require.NoError(t, cache.SetAccount(ctx, &account))
+				} else {
+					token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+					require.NoError(t, err)
+					require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+				}
+			}
+			// Adjacent versions above 2^53 must remain distinguishable in Lua.
+			old := service.Account{ID: 9272, Platform: service.PlatformOpenAI, GroupIDs: []int64{21},
+				Credentials: map[string]any{"first_token_monitor_generation": 4, "scheduler_state_version": "9007199254740992"}}
+			paused := old
+			paused.Credentials = map[string]any{"first_token_monitor_generation": 4, "scheduler_state_version": "9007199254740993"}
+			until := time.Now().Add(time.Hour)
+			paused.TempUnschedulableUntil = &until
+			paused.TempUnschedulableReason = "First token monitor: 3 slow requests"
+			// A read old before pause. Outbox publishes the pause first, then A
+			// publishes the unpaused snapshot with the SAME monitor generation.
+			publish(paused)
+			publish(old)
+			got, err := cache.GetAccount(ctx, old.ID)
+			publicCheck := func(account *service.Account) {
+				t.Helper()
+				require.NotNil(t, account)
+				require.NotNil(t, account.TempUnschedulableUntil)
+				require.Equal(t, until.Unix(), account.TempUnschedulableUntil.Unix())
+			}
+			require.NoError(t, err)
+			publicCheck(got)
+			meta, err := cache.rdb.Get(ctx, schedulerAccountMetaKey("9272")).Result()
+			require.NoError(t, err)
+			metadata, err := decodeCachedAccount(meta)
+			require.NoError(t, err)
+			publicCheck(metadata)
+			if writer == "bucket" {
+				accounts, hit, err := cache.GetSnapshot(ctx, bucket)
+				require.NoError(t, err)
+				require.True(t, hit)
+				require.Len(t, accounts, 1)
+				publicCheck(accounts[0])
+			}
+			// Normal updates in the same monitoring generation still propagate.
+			paused.Name = "updated during cooldown"
+			paused.Credentials = map[string]any{"first_token_monitor_generation": 4, "scheduler_state_version": "9007199254740994"}
+			publish(paused)
+			publish(paused) // Same row version remains idempotent.
+			got, err = cache.GetAccount(ctx, old.ID)
+			require.NoError(t, err)
+			require.Equal(t, paused.Name, got.Name)
+			publicCheck(got)
+		})
+	}
+}
+
 func newSchedulerCacheUnitWithRedis(t *testing.T) (*schedulerCache, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)

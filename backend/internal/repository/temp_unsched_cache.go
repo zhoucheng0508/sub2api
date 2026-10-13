@@ -111,7 +111,11 @@ func (c *tempUnschedCache) GetTempUnsched(ctx context.Context, accountID int64) 
 // DeleteTempUnsched 删除临时不可调度状态
 func (c *tempUnschedCache) DeleteTempUnsched(ctx context.Context, accountID int64) error {
 	key := fmt.Sprintf("%s%d", tempUnschedPrefix, accountID)
-	return c.rdb.Del(ctx, key).Err()
+	if err := c.rdb.Del(ctx, key).Err(); err != nil {
+		return err
+	}
+	monitorKey := fmt.Sprintf("first_token_monitor:{%d}", accountID)
+	return c.rdb.Del(ctx, monitorKey, monitorKey+":samples").Err()
 }
 
 func (c *tempUnschedCache) openAIAPIKeyHealthKey(accountID int64) string {

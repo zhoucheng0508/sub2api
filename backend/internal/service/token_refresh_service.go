@@ -1175,24 +1175,10 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 		}
 	}
 	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）
-	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
-		if clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); clearErr != nil {
-			slog.Warn("token_refresh.clear_temp_unschedulable_failed",
-				"account_id", account.ID,
-				"error", clearErr,
-			)
-		} else {
-			slog.Info("token_refresh.cleared_temp_unschedulable", "account_id", account.ID)
-			s.notifyAccountSchedulingBlockCleared(account.ID)
-		}
-		// 同步清除 Redis 缓存，避免调度器读到过期的临时不可调度状态
-		if s.tempUnschedCache != nil {
-			if clearErr := s.tempUnschedCache.DeleteTempUnsched(ctx, account.ID); clearErr != nil {
-				slog.Warn("token_refresh.clear_temp_unsched_cache_failed",
-					"account_id", account.ID,
-					"error", clearErr,
-				)
-			}
+	// Successful credential refresh only repairs credential-related pauses.
+	if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(time.Now()) {
+		if err := s.clearCredentialPauseAfterRefresh(ctx, account.ID); err != nil {
+			slog.Warn("token_refresh.clear_credential_pause_failed", "account_id", account.ID, "error", err)
 		}
 	}
 	s.postRefreshStateSync(ctx, account)
@@ -1204,6 +1190,43 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	if account != nil && account.Platform == PlatformGrok && accountGrokNeedsReauth(account) {
 		clearGrokNeedsReauthExtra(ctx, s.accountRepo, account.ID)
 	}
+}
+
+func credentialRefreshRepairsPause(reason string) bool {
+	return strings.HasPrefix(reason, "OAuth 401:") ||
+		reason == "Authentication failed (401): invalid or expired credentials" ||
+		reason == "token refresh retry exhausted" ||
+		strings.HasPrefix(reason, "token refresh retry exhausted:")
+}
+
+func (s *TokenRefreshService) clearCredentialPauseAfterRefresh(ctx context.Context, id int64) error {
+	return withFirstTokenMonitorGuard(ctx, s.accountRepo, id, func(repo AccountRepository) error {
+		current, err := repo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if current.TempUnschedulableUntil == nil || !current.TempUnschedulableUntil.After(time.Now()) ||
+			!credentialRefreshRepairsPause(current.TempUnschedulableReason) {
+			return nil
+		}
+		if conditional, ok := repo.(interface {
+			ClearCredentialRefreshPause(context.Context, int64, time.Time, string) (bool, error)
+		}); ok {
+			applied, err := conditional.ClearCredentialRefreshPause(ctx, id, *current.TempUnschedulableUntil, current.TempUnschedulableReason)
+			if err != nil || !applied {
+				return err
+			}
+		} else if err := repo.ClearTempUnschedulable(ctx, id); err != nil {
+			return err // Legacy repository test doubles.
+		}
+		if s.tempUnschedCache != nil {
+			if err := s.tempUnschedCache.DeleteTempUnsched(ctx, id); err != nil {
+				return err
+			}
+		}
+		s.notifyAccountSchedulingBlockCleared(id)
+		return nil
+	})
 }
 
 func (s *TokenRefreshService) postRefreshStateSyncWithCleanup(parent context.Context, account *Account) {
@@ -1230,7 +1253,12 @@ func (s *TokenRefreshService) postRefreshStateSync(ctx context.Context, account 
 	}
 	// 同步更新调度器缓存，确保调度获取的 Account 对象包含最新的 credentials
 	if s.schedulerCache != nil {
-		if err := s.schedulerCache.SetAccount(ctx, account); err != nil {
+		// Never publish a pre-refresh pause snapshot. Generation fencing in
+		// the Redis writer also protects against recovery after this read.
+		current, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err != nil {
+			slog.Warn("token_refresh.read_current_state_failed", "account_id", account.ID, "error", err)
+		} else if err := s.schedulerCache.SetAccount(ctx, current); err != nil {
 			slog.Warn("token_refresh.sync_scheduler_cache_failed",
 				"account_id", account.ID,
 				"error", err,

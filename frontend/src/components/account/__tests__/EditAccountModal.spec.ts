@@ -1196,7 +1196,12 @@ describe('EditAccountModal', () => {
       },
       compact_model_mapping: {
         'gpt-5.3-codex-spark': 'gpt-5.3-codex-spark-compact'
-      }
+      },
+      first_token_monitor_enabled: false,
+      first_token_monitor_threshold_seconds: 30,
+      first_token_monitor_anomaly_count: 3,
+      first_token_monitor_cooldown_minutes: 10,
+      first_token_monitor_revision: expect.any(String)
     })
   })
 

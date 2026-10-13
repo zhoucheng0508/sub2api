@@ -300,7 +300,7 @@ func TestDisableOllamaCloudUsageAutoRefreshUsesGroupIdentityCAS(t *testing.T) {
 func TestUpdateCredentialsCleanupBranchRequiresChangedCredentials(t *testing.T) {
 	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
 	mock.ExpectBegin()
-	mock.ExpectExec(`(?s)UPDATE accounts.*CASE.*AND credentials IS DISTINCT FROM \$1::jsonb\s+AND \(\s+credentials -> 'api_key' IS DISTINCT FROM`).
+	mock.ExpectExec(`(?s)UPDATE accounts.*CASE.*AND \(credentials - 'scheduler_state_version'\) IS DISTINCT FROM \(\$1::jsonb - 'scheduler_state_version'\)\s+AND \(\s+credentials -> 'api_key' IS DISTINCT FROM`).
 		WithArgs(`{"api_key":"same-key","base_url":"https://relay.example.com/v1"}`, int64(17)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).
@@ -373,7 +373,7 @@ func TestUpdateCredentialsPlainCNAPIKeyAccountCleanupStaysSemanticallyEquivalent
 	require.NoError(t, err)
 	query := normalizeSQLWhitespace(capturedSQL)
 	require.Contains(t, query,
-		"platform IN ('openai', 'anthropic', 'kimi', 'zhipu', 'deepseek', 'minimax') AND type = 'apikey' AND credentials IS DISTINCT FROM $1::jsonb")
+		"platform IN ('openai', 'anthropic', 'kimi', 'zhipu', 'deepseek', 'minimax') AND type = 'apikey' AND (credentials - 'scheduler_state_version') IS DISTINCT FROM ($1::jsonb - 'scheduler_state_version')")
 	require.Contains(t, query,
 		"THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe' - 'ollama_cloud_usage_session' - 'ollama_cloud_usage_auto_refresh' - 'ollama_cloud_usage_snapshot'")
 	require.NotContains(t, query, "- 'upstream_billing_probe_enabled'")

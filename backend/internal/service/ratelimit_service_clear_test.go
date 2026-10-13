@@ -170,7 +170,7 @@ func TestRateLimitService_ClearRateLimit_ClearModelRateLimitsFailed(t *testing.T
 	require.Empty(t, cache.deletedIDs)
 }
 
-func TestRateLimitService_ClearRateLimit_CacheDeleteFailedShouldNotFail(t *testing.T) {
+func TestRateLimitService_ClearRateLimit_CacheDeleteFailureIsReported(t *testing.T) {
 	repo := &rateLimitClearRepoStub{}
 	cache := &tempUnschedCacheRecorder{
 		deleteErr: errors.New("cache delete failed"),
@@ -178,7 +178,7 @@ func TestRateLimitService_ClearRateLimit_CacheDeleteFailedShouldNotFail(t *testi
 	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, cache)
 
 	err := svc.ClearRateLimit(context.Background(), 14)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, cache.deleteErr)
 
 	require.Equal(t, 1, repo.clearRateLimitCalls)
 	require.Equal(t, 1, repo.clearAntigravityCalls)

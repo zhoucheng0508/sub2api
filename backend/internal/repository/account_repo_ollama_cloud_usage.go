@@ -301,7 +301,7 @@ func lockOllamaCloudUsageGroup(
 			id = $2
 				AND platform = $3
 				AND type = $4
-				AND credentials = $5::jsonb
+				AND (credentials - 'scheduler_state_version') = ($5::jsonb - 'scheduler_state_version')
 				AND proxy_id IS NOT DISTINCT FROM $6,
 			COALESCE((extra -> 'ollama_cloud_usage_session')::text, 'null'),
 			COALESCE((extra -> 'ollama_cloud_usage_auto_refresh')::text, 'null'),

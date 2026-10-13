@@ -25,6 +25,17 @@ type tokenRefreshCandidateRepo struct {
 	listActiveCalls       int
 }
 
+func (r *tokenRefreshCandidateRepo) GetByID(_ context.Context, id int64) (*Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, account := range r.accounts {
+		if account.ID == id {
+			return snapshotOAuthRefreshAccount(&account), nil
+		}
+	}
+	return nil, ErrAccountNotFound
+}
+
 func (r *tokenRefreshCandidateRepo) ListActive(context.Context) ([]Account, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -2127,6 +2127,13 @@ func (s *RateLimitService) samplePassiveUsageFromHeaders(ctx context.Context, ac
 
 // ClearRateLimit 清除账号的限流状态
 func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) error {
+	return withFirstTokenMonitorGuard(ctx, s.accountRepo, accountID, func(repo AccountRepository) error {
+		copy := s.monitoringScope(repo)
+		return copy.clearRateLimitLocked(ctx, accountID)
+	})
+}
+
+func (s *RateLimitService) clearRateLimitLocked(ctx context.Context, accountID int64) error {
 	if err := s.accountRepo.ClearRateLimit(ctx, accountID); err != nil {
 		return err
 	}
@@ -2143,6 +2150,7 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 	if s.tempUnschedCache != nil {
 		if err := s.tempUnschedCache.DeleteTempUnsched(ctx, accountID); err != nil {
 			slog.Warn("temp_unsched_cache_delete_failed", "account_id", accountID, "error", err)
+			return err
 		}
 	}
 	s.ResetOpenAI403Counter(ctx, accountID)
@@ -2202,12 +2210,20 @@ func (s *RateLimitService) RecoverAccountAfterSuccessfulTest(ctx context.Context
 }
 
 func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID int64) error {
+	return withFirstTokenMonitorGuard(ctx, s.accountRepo, accountID, func(repo AccountRepository) error {
+		copy := s.monitoringScope(repo)
+		return copy.clearTempUnschedulableLocked(ctx, accountID)
+	})
+}
+
+func (s *RateLimitService) clearTempUnschedulableLocked(ctx context.Context, accountID int64) error {
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, accountID); err != nil {
 		return err
 	}
 	if s.tempUnschedCache != nil {
 		if err := s.tempUnschedCache.DeleteTempUnsched(ctx, accountID); err != nil {
 			slog.Warn("temp_unsched_cache_delete_failed", "account_id", accountID, "error", err)
+			return err
 		}
 	}
 	// 同时清除模型级别限流
@@ -2288,7 +2304,9 @@ func (s *RateLimitService) GetTempUnschedStatus(ctx context.Context, accountID i
 		}
 	}
 
-	if s.tempUnschedCache != nil {
+	// Monitor pauses are database/outbox authoritative. A status read must not
+	// republish a pause after concurrent recovery either.
+	if s.tempUnschedCache != nil && !strings.HasPrefix(account.TempUnschedulableReason, "First token monitor:") {
 		if err := s.tempUnschedCache.SetTempUnsched(ctx, accountID, state); err != nil {
 			slog.Warn("temp_unsched_cache_set_failed", "account_id", accountID, "error", err)
 		}

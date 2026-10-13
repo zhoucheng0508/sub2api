@@ -311,7 +311,7 @@ func lockOpenCodeGoUsageGroup(
 			id = $2
 				AND platform = $3
 				AND type = $4
-				AND credentials = $5::jsonb
+				AND (credentials - 'scheduler_state_version') = ($5::jsonb - 'scheduler_state_version')
 				AND proxy_id IS NOT DISTINCT FROM $6,
 			COALESCE((extra -> 'opencode_go_usage_auto_refresh')::text, 'null'),
 			COALESCE((extra -> 'opencode_go_usage_snapshot')::text, 'null')
