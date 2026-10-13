@@ -611,6 +611,9 @@ func (r *accountRepository) updateLockedAccount(
 	return builder.Save(ctx)
 }
 
+// scheduler_state_version is a database-owned snapshot fence, not upstream
+// credential identity. Credential CAS and change detection below exclude only
+// this field; actual keys, tokens and monitoring settings remain protected.
 func lockAndMergeAccountProbeExtra(
 	ctx context.Context,
 	client *dbent.Client,
@@ -630,7 +633,7 @@ func lockAndMergeAccountProbeExtra(
 		SELECT
 			platform = $2
 			AND type = $3
-			AND credentials = $4::jsonb
+			AND (credentials - 'scheduler_state_version') = ($4::jsonb - 'scheduler_state_version')
 			AND proxy_id IS NOT DISTINCT FROM $5,
 			COALESCE(
 				platform IN (`+ollamaCloudUsagePlatformsSQL+`)
@@ -879,7 +882,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 				-- ollama.com 基址正则）：Ollama 行不会被 OpenCode 分支遮蔽；
 				-- opencode_go 平台行不在 Ollama 白名单内，与 Ollama 分支真互斥。
 				WHEN type = 'apikey'
-					AND credentials IS DISTINCT FROM $1::jsonb
+					AND (credentials - 'scheduler_state_version') IS DISTINCT FROM ($1::jsonb - 'scheduler_state_version')
 					AND (
 						-- 旧行按新谓词属于 OpenCode 用量身份
 						(platform = 'opencode_go'
@@ -910,7 +913,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 				-- 非 Ollama 账号的无变化持久化误清探测快照或重写 NULL extra。
 				WHEN platform IN (`+ollamaCloudUsagePlatformsSQL+`)
 					AND type = 'apikey'
-					AND credentials IS DISTINCT FROM $1::jsonb
+					AND (credentials - 'scheduler_state_version') IS DISTINCT FROM ($1::jsonb - 'scheduler_state_version')
 					AND (
 						credentials -> 'api_key' IS DISTINCT FROM $1::jsonb -> 'api_key'
 						OR NOT (
@@ -926,7 +929,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 				-- 上游倍率探测已放宽到全部 API-key 平台：凭证变化即视为探测
 				-- 身份变化，丢弃 stale 快照。
 				WHEN type = 'apikey'
-					AND credentials IS DISTINCT FROM $1::jsonb
+					AND (credentials - 'scheduler_state_version') IS DISTINCT FROM ($1::jsonb - 'scheduler_state_version')
 				THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe'
 				ELSE extra
 			END,
@@ -1499,7 +1502,7 @@ func (r *accountRepository) SetGrokCredentialErrorIfMatch(
 			AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
 			AND (a.overload_until IS NULL OR a.overload_until <= NOW())
 			AND (a.auto_pause_on_expired IS NOT TRUE OR a.expires_at IS NULL OR a.expires_at > NOW())
-			AND a.credentials = $7::jsonb
+			AND (a.credentials - 'scheduler_state_version') = ($7::jsonb - 'scheduler_state_version')
 			AND a.proxy_id IS NOT DISTINCT FROM $8
 			AND ($2 <> $9 OR (
 				a.proxy_id IS NOT NULL AND NOT EXISTS (
@@ -1554,7 +1557,7 @@ func (r *accountRepository) SetGrokOAuthErrorIfCredentialsUnchanged(
 			AND a.platform = $4
 			AND a.type = $5
 			AND a.status = $6
-			AND a.credentials = $7::jsonb
+			AND (a.credentials - 'scheduler_state_version') = ($7::jsonb - 'scheduler_state_version')
 			AND NULLIF(BTRIM(a.credentials->>'refresh_token'), '') IS NULL
 		RETURNING a.id
 		)
@@ -1616,7 +1619,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 			AND a.deleted_at IS NULL
 			AND a.platform = $3
 			AND a.type = $4
-			AND a.credentials = $5::jsonb
+			AND (a.credentials - 'scheduler_state_version') = ($5::jsonb - 'scheduler_state_version')
 			AND a.proxy_id IS NOT DISTINCT FROM $6
 		RETURNING a.id
 		)
@@ -1675,7 +1678,7 @@ func (r *accountRepository) SetGrokOAuthRefreshErrorIfCredentialsUnchanged(
 			AND a.platform = $4
 			AND a.type = $5
 			AND a.status = $6
-			AND a.credentials = $7::jsonb
+			AND (a.credentials - 'scheduler_state_version') = ($7::jsonb - 'scheduler_state_version')
 			AND a.proxy_id IS NOT DISTINCT FROM $8
 		RETURNING a.id
 		)
@@ -1735,7 +1738,7 @@ func (r *accountRepository) SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnc
 			AND a.platform = $4
 			AND a.type = $5
 			AND a.status = $6
-			AND a.credentials = $7::jsonb
+			AND (a.credentials - 'scheduler_state_version') = ($7::jsonb - 'scheduler_state_version')
 			AND a.proxy_id IS NOT DISTINCT FROM $8
 			AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until < $1)
 		RETURNING a.id
@@ -2531,7 +2534,7 @@ func (r *accountRepository) SetGrokCredentialTempUnschedulableIfMatch(
 			AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
 			AND (a.overload_until IS NULL OR a.overload_until <= NOW())
 			AND (a.auto_pause_on_expired IS NOT TRUE OR a.expires_at IS NULL OR a.expires_at > NOW())
-			AND a.credentials = $7::jsonb
+			AND (a.credentials - 'scheduler_state_version') = ($7::jsonb - 'scheduler_state_version')
 			AND a.proxy_id IS NOT DISTINCT FROM $8
 		RETURNING a.id
 		)
@@ -2911,7 +2914,7 @@ func (r *accountRepository) updateUpstreamBillingProbeSnapshotInTx(
 		WHERE id = $2
 			AND platform = $3
 			AND type = $4
-			AND credentials = $5::jsonb
+			AND (credentials - 'scheduler_state_version') = ($5::jsonb - 'scheduler_state_version')
 			AND proxy_id IS NOT DISTINCT FROM $6
 			AND COALESCE(extra -> 'upstream_billing_probe', 'null'::jsonb) = $7::jsonb
 			AND COALESCE(extra -> 'upstream_billing_probe_enabled', 'null'::jsonb) = $8::jsonb

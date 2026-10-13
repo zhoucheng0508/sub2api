@@ -16,6 +16,7 @@
 - 后端监控/使用记录、恢复、TokenRefresh、调度快照相关定向测试通过。
 - 本地真实 PostgreSQL 18、Redis 集成测试通过：隔离 schema 执行 243/244，包含 session 终止恢复、凭证条件清理、版本推进与防伪、暂停前快照迟到和双客户端写入。测试 schema/键已清理。
 - 前端创建/编辑、组件、composable、locale 共 5 文件 111 项测试通过；ESLint、类型检查及全新生产构建通过。
+- 远端集成测试发现调度版本影响原有 credentials 全量比较，已将数据库管理的 scheduler_state_version 排除于凭证身份比较；保留真实密钥、Token、监控配置校验。原失败 PostgreSQL 用例与新增普通更新/实际 Token 更换回归通过。
 - 路由和 server 编译检查通过；golangci-lint 对相对 origin/custom 的变更检查通过。
 
 远端 PR：[首字监控 #36](https://github.com/zhoucheng0508/sub2api/pull/36)。必须等待 PR/custom CI 与安全扫描通过，再按 `CUSTOM_UPGRADE.md` 创建标签，由 `custom-image.yml` 构建 Linux amd64 镜像。正式部署使用核实后的 GHCR 镜像摘要，不使用挂载二进制预览代替正式镜像。
