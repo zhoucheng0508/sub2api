@@ -65,5 +65,14 @@ func (c *tempUnschedCache) ObserveFirstToken(ctx context.Context, accountID int6
 	if err != nil {
 		return 0, 0, "", err
 	}
-	return values[0].(int64), values[1].(int64), values[2].(string), nil
+	if len(values) != 3 {
+		return 0, 0, "", fmt.Errorf("first token monitor: unexpected result length %d", len(values))
+	}
+	count, countOK := values[0].(int64)
+	until, untilOK := values[1].(int64)
+	reason, reasonOK := values[2].(string)
+	if !countOK || !untilOK || !reasonOK {
+		return 0, 0, "", fmt.Errorf("first token monitor: unexpected result types %T/%T/%T", values[0], values[1], values[2])
+	}
+	return count, until, reason, nil
 }

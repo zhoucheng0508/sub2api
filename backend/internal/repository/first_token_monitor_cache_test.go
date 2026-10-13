@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -108,7 +107,7 @@ func TestFirstTokenMonitorConcurrentDeduplication(t *testing.T) {
 	for err := range errors {
 		require.NoError(t, err)
 	}
-	count, until, _, err := store.ObserveFirstToken(context.Background(), 42, fmt.Sprint("next"), &ms, cfg)
+	count, until, _, err := store.ObserveFirstToken(context.Background(), 42, "next", &ms, cfg)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, count)
 	require.Zero(t, until)
