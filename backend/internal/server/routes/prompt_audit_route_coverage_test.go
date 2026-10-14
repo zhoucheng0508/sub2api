@@ -49,6 +49,7 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 		"/media/videos":             {"../custom/business/media/handler.go"},
 		"/models/*modelAction":      {"gemini_v1beta_handler.go"},
 		"/messages/count_tokens":    {"gateway_handler.go", "openai_gateway_count_tokens.go"},
+		"/cachedContents":           {"gemini_cached_contents_handler.go"},
 		"/tts":                      {"grok_audio.go"},
 		"/web_search":               {"gateway_web_search.go"},
 		"/x_search":                 {"gateway_web_search.go"},
