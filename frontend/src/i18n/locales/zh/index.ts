@@ -3,6 +3,7 @@ import { startPageMessages } from '@/custom/vote-ai/quick-connect/page-messages'
 import { zh as quickCreateKey } from '@/custom/vote-ai/quick-connect/create-key-messages'
 import { entryMessages } from '@/custom/vote-ai/quick-connect/entry-messages'
 import { journeyMessages } from '@/custom/vote-ai/quick-connect/journey-messages'
+import adminAccessKeys from './adminAccessKeys'
 import landing from './landing'
 import common from './common'
 import dashboard from './dashboard'
@@ -16,6 +17,7 @@ export default {
   rikkaHub: rikkaHubMessages.zh,
   quickConnect: { ...quickConnectMessages, startPage: startPageMessages.zh, entryFlow: entryMessages.zh },
   quickCreateKey,
+  adminAccessKeys,
   ...landing,
   ...common,
   ...dashboard,
