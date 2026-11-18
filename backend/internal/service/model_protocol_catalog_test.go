@@ -29,6 +29,16 @@ const commandCodeModelsSample = `{"object":"list","data":[
 	{"id":"no-endpoints"}
 ]}`
 
+// modelCatalogTestSeq 为各用例生成进程内唯一的 ID，用来隔离全局模型目录缓存的键。
+// 不能每次都直接取纳秒时间戳：Windows 时钟粒度较粗，连续两次取值可能相同，
+// 导致不同用例（或同一用例的相邻步骤）撞上同一个缓存条目。
+var modelCatalogTestSeq atomic.Int64
+
+func init() { modelCatalogTestSeq.Store(time.Now().UnixNano()) }
+
+// nextModelCatalogTestID 每次前进 16，给调用方留出 id+1、id+2 这类相邻取值。
+func nextModelCatalogTestID() int64 { return modelCatalogTestSeq.Add(16) }
+
 func TestParseModelProtocolCatalog(t *testing.T) {
 	models, err := parseModelProtocolCatalog([]byte(commandCodeModelsSample))
 	require.NoError(t, err)
@@ -249,7 +259,7 @@ func TestModelProtocolCatalogOfficialAccountsAreIsolated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			upstream := &modelCatalogAccountUpstream{failureStatus: tc.status, failureErr: tc.err}
 			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-			id := time.Now().UnixNano()
+			id := nextModelCatalogTestID()
 			bad, chat, responses := commandCodeTestAccount(id), commandCodeTestAccount(id+1), commandCodeTestAccount(id+2)
 			bad.Credentials["api_key"] = "invalid-key"
 			responses.Credentials["header_override_enabled"] = true
@@ -334,7 +344,7 @@ func TestCommandCodeGatewayPassesThroughCatalogProtocols(t *testing.T) {
 	}
 	forward := func(t *testing.T, ingress routingMatrixIngress, model string, catalog map[string][]string) observation {
 		t.Helper()
-		base := fmt.Sprintf("http://cc-%s-%d.example", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
+		base := fmt.Sprintf("http://cc-%s-%d.example", strings.ReplaceAll(t.Name(), "/", "-"), nextModelCatalogTestID())
 		account := commandCodeTestAccount(12)
 		account.Credentials["api_base_urls"] = map[string]any{
 			APIProtocolChatCompletions: base + "/provider/v1",
@@ -385,7 +395,7 @@ func TestCommandCodeGatewayPassesThroughCatalogProtocols(t *testing.T) {
 // 目录缺失时网关拉取目录，首个请求即按目录分流；自定义上游按账号各自拉取，并带上
 // 账号的请求头覆写。
 func TestCommandCodeGatewayFetchesModelCatalog(t *testing.T) {
-	base := fmt.Sprintf("http://cc-fetch-%d.example/provider/v1", time.Now().UnixNano())
+	base := fmt.Sprintf("http://cc-fetch-%d.example/provider/v1", nextModelCatalogTestID())
 	newAccount := func(id int64) *Account {
 		account := commandCodeTestAccount(id)
 		account.Credentials["api_base_urls"] = map[string]any{
